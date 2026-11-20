@@ -93,6 +93,27 @@ fn off_or_flat_the_output_is_bit_identical() {
     assert!(got == input, "on and flat: untouched");
 }
 
+/// A float file holding a NaN and infinities: decoded as silence there, every other sample
+/// bit-identical, and with the equalizer on the track plays on (it is not NaN, or silent,
+/// until the next seek).
+#[test]
+fn a_float_file_with_non_finite_samples_plays_on_through_the_equalizer() {
+    let d = dir("eq-fixtures");
+    let f = d.join("non-finite.wav");
+    let mut input = tones(48_000, 1.0, &[(440.0, 0.4)]);
+    for (i, bad) in [(2000, f32::NAN), (2001, f32::INFINITY), (30_001, f32::NEG_INFINITY)] {
+        input[i] = bad;
+    }
+    write_wav(&f, 48_000, &input);
+    let want: Vec<f32> = input.iter().map(|&x| if x.is_finite() { x } else { 0.0 }).collect();
+    assert!(decode(&f).iter().map(|x| x.to_bits()).eq(want.iter().map(|x| x.to_bits())), "decoded clean, the rest untouched");
+    let boost = EqParams::new(true, &[Band::new(Kind::Peak, 440.0, 3.0, 1.0)], Preamp::Manual(-3.0));
+    let (got, _) = play(Capture::default(), &[f], off(), |p| p.set_eq(&boost), gapless, |_, _, _| {});
+    assert!(got.iter().all(|x| x.is_finite()), "nothing non-finite reaches the device");
+    let tail = &got[got.len() - 9600..];
+    assert!(peak(tail) > 0.3, "still playing at the end: {}", peak(tail));
+}
+
 #[test]
 fn the_measured_response_is_the_filters_curve_at_every_rate() {
     let d = dir("eq-fixtures");

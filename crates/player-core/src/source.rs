@@ -12,6 +12,7 @@ use symphonia::core::codecs::audio::well_known::{
     CODEC_ID_AAC, CODEC_ID_ADPCM_G722, CODEC_ID_ALAC, CODEC_ID_FLAC, CODEC_ID_MP2, CODEC_ID_MP3, CODEC_ID_OPUS, CODEC_ID_PCM_S32LE,
     CODEC_ID_VORBIS,
 };
+use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::AudioCodecId;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::registry::CodecRegistry;
@@ -296,7 +297,16 @@ impl Source {
         {
             kept = kept.min(t.saturating_sub(start) as usize);
         }
-        let src = &self.scratch[skip * channels..(skip + kept) * channels];
+        let float = matches!(decoded, GenericAudioBufferRef::F32(_) | GenericAudioBufferRef::F64(_));
+        let src = &mut self.scratch[skip * channels..(skip + kept) * channels];
+        if float {
+            // A float file can hold a NaN or an infinity (or a 64-bit value beyond f32's
+            // range): it would poison the equalizer's filters and the limiter, and reach
+            // the device. Silence instead. Finite samples are left exactly as they are;
+            // integer samples cannot be anything but finite, so they are not looked at.
+            clean(src);
+        }
+        let src = &*src;
         out.reserve(kept * 2);
         match channels {
             1 => src.iter().for_each(|&s| out.extend_from_slice(&[s, s])),
@@ -313,6 +323,14 @@ impl Source {
         }
         self.position = start + kept as u64;
         Ok(true)
+    }
+}
+
+/// Non-finite samples (NaN, an infinity) to 0.0; every other sample untouched. A select,
+/// not a branch, so it vectorises.
+fn clean(samples: &mut [f32]) {
+    for s in samples {
+        *s = if s.is_finite() { *s } else { 0.0 };
     }
 }
 
@@ -354,6 +372,14 @@ fn content_start(pts: i64, trim_start: u64, ts_offset: i64, frames: usize, trim_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_finite_samples_are_silenced_and_the_rest_left_alone() {
+        let mut v = [0.5, f32::NAN, -1.25, f32::INFINITY, f32::NEG_INFINITY, f32::MIN_POSITIVE / 2.0, -0.0, f32::MAX];
+        clean(&mut v);
+        let want = [0.5, 0.0, -1.25, 0.0, 0.0, f32::MIN_POSITIVE / 2.0, -0.0, f32::MAX];
+        assert_eq!(v.map(f32::to_bits), want.map(f32::to_bits), "finite samples bit-identical");
+    }
 
     #[test]
     fn seek_timestamps_saturate_on_hostile_values() {

@@ -878,6 +878,7 @@ impl Equalizer {
                 *h = [x, h[0]];
             }
         }
+        let mut poisoned = false;
         for s in self.slots.iter_mut().filter(|s| s.active) {
             let Coefs { b0, b1, b2, a1, a2 } = s.coefs;
             for (c, st) in s.st.iter_mut().enumerate() {
@@ -899,6 +900,20 @@ impl Equalizer {
                     }
                 }
                 *st = [x1, x2, y1, y2];
+                // A NaN or an infinity in the state would stay there, and every sample after
+                // it would be NaN until the next reset: the slot starts empty again instead.
+                // (The decoder silences non-finite samples; this is the second line.)
+                if !st.iter().all(|v| v.is_finite()) {
+                    *st = [0.0; 4];
+                    poisoned = true;
+                }
+            }
+        }
+        if poisoned {
+            for h in self.hist.iter_mut().flatten().chain(buf.iter_mut()) {
+                if !h.is_finite() {
+                    *h = 0.0;
+                }
             }
         }
         for (o, &y) in block.iter_mut().zip(buf.iter()) {
@@ -1084,6 +1099,25 @@ mod tests {
             let mut out = input.clone();
             eq.process(&mut out);
             assert!(out == input);
+        }
+    }
+
+    /// A NaN or an infinity reaching the filters (a float file the decoder did not clean):
+    /// the block's bad samples are silenced and the filters recover at once, not NaN
+    /// until the next seek.
+    #[test]
+    fn a_non_finite_sample_does_not_poison_the_filters() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let bands = [Band::new(Kind::Peak, 1000.0, 6.0, 1.0), Band::new(Kind::LowPass, 8000.0, 0.0, 0.7)];
+            let mut eq = Equalizer::settled(&EqParams::new(true, &bands, Preamp::Manual(0.0)), 48_000);
+            let mut s = sine(440.0, 48_000, 4800, 0.5);
+            s[1000] = bad;
+            eq.process(&mut s);
+            assert!(s.iter().all(|x| x.is_finite()), "{bad}: nothing non-finite comes out");
+            let mut next = sine(440.0, 48_000, 4800, 0.5);
+            eq.process(&mut next);
+            assert!(next.iter().all(|x| x.is_finite()), "{bad}: the filters recovered");
+            assert!(rms(&next) > 0.3, "{bad}: and still play the signal");
         }
     }
 
