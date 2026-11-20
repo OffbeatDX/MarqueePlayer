@@ -26,7 +26,10 @@ import com.offbeat.marquee.player.session.AppSession
 import com.offbeat.marquee.player.net.NetworkMonitor
 import com.offbeat.marquee.player.offline.Downloads
 import com.offbeat.marquee.player.sync.Sync
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -36,6 +39,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -446,6 +450,10 @@ object Library {
 
     private fun favouritesFile() = File(app.filesDir, "favourites.json")
     private val favouritesSerializer = kotlinx.serialization.builtins.MapSerializer(String.serializer(), Boolean.serializer())
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val favouritesScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+    private val favouritesSnapshotLock = Any()
+    private val favouritesWriter = FavouritesWriter()
 
     private fun loadFavourites() {
         val f = favouritesFile()
@@ -456,15 +464,16 @@ object Library {
     }
 
     private fun publishFavourites() {
-        val snap = favouriteOverrides.snapshot()
-        _favourites.value = snap
-        runCatching {
-            val f = favouritesFile()
-            val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(json.encodeToString(favouritesSerializer, snap))
-            if (!tmp.renameTo(f)) {
-                f.delete()
-                tmp.renameTo(f)
+        val snap: Map<String, Boolean>
+        val seq: Long
+        synchronized(favouritesSnapshotLock) {
+            snap = favouriteOverrides.snapshot()
+            seq = favouritesWriter.nextSeq()
+            _favourites.value = snap
+        }
+        favouritesScope.launch {
+            runCatching {
+                favouritesWriter.write(favouritesFile(), json.encodeToString(favouritesSerializer, snap), seq)
             }
         }
     }
@@ -536,5 +545,30 @@ object Library {
         _favourites.value = emptyMap()
         _ratings.value = emptyMap()
         _playlistsChanged.value = null
+    }
+}
+
+/**
+ * Serializes atomic writes to `favourites.json` via `<name>.tmp` and skips any snapshot whose
+ * sequence number is older than the last write.
+ */
+internal class FavouritesWriter {
+    private val seqGen = java.util.concurrent.atomic.AtomicLong(0)
+    private var lastSeq = 0L
+
+    fun nextSeq(): Long = seqGen.incrementAndGet()
+
+    @Synchronized
+    fun write(file: File, text: String, seq: Long = nextSeq()): Boolean {
+        if (seq <= lastSeq) return false
+        lastSeq = seq
+        file.parentFile?.mkdirs()
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText(text)
+        if (!tmp.renameTo(file)) {
+            file.delete()
+            if (!tmp.renameTo(file)) tmp.delete()
+        }
+        return true
     }
 }

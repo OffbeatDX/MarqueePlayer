@@ -113,6 +113,7 @@ class PlaybackService : MediaLibraryService() {
     private var effectSession = C.AUDIO_SESSION_ID_UNSET
     private var fadeVolume = 1f
     private var periodicSave: Job? = null
+    private var saveJob: Job? = null
     private var restored = false
     /** A saved play order waiting for its items (playback resumption hands the items over first). */
     private var pendingShuffleOrder: List<Int>? = null
@@ -220,12 +221,15 @@ class PlaybackService : MediaLibraryService() {
             AppSession.client.collect { c ->
                 if (c == null && signedIn) {
                     AppLog.i(TAG, "signed out: clearing the queue")
+                    stopPeriodicSave()
+                    saveJob?.cancel()
                     recovery.reset()
                     player.stop()
                     player.clearMediaItems()
                     prefetcher.stop()
                     auto.clear()
-                    withContext(io) { queueStore.clear() }
+                    val seq = queueStore.nextSeq()
+                    withContext(io) { queueStore.clear(seq) }
                 }
                 signedIn = c != null
             }
@@ -614,6 +618,8 @@ class PlaybackService : MediaLibraryService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession = session
 
     override fun onDestroy() {
+        stopPeriodicSave()
+        saveJob?.cancel()
         if (restored) saveNow()
         widget.onServiceStopped()
         scrobbler.onStopped()
@@ -979,13 +985,16 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun save() {
+        val seq = queueStore.nextSeq()
         val q = snapshot()
-        scope.launch(io) { if (q == null) queueStore.clear() else queueStore.save(q) }
+        saveJob?.cancel()
+        saveJob = scope.launch(io) { if (q == null) queueStore.clear(seq) else queueStore.save(q, seq) }
     }
 
     private fun saveNow() {
+        val seq = queueStore.nextSeq()
         val q = snapshot()
-        if (q == null) queueStore.clear() else queueStore.save(q)
+        if (q == null) queueStore.clear(seq) else queueStore.save(q, seq)
     }
 
     private fun startPeriodicSave() {
