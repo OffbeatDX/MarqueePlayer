@@ -650,13 +650,17 @@ impl Worker {
             self.fill_mbid(&mut one);
             match self.client().scrobble(&self.creds.session_key, &one) {
                 Ok(o) if o.first() == Some(&Outcome::Limited) => return Some(true),
-                Ok(o) => {
-                    if o.first() == Some(&Outcome::Accepted) {
-                        *sent += 1;
-                    } else {
+                Ok(o) => match o.first() {
+                    Some(Outcome::Accepted) => *sent += 1,
+                    Some(Outcome::Ignored(why)) => {
                         *dropped += 1;
+                        log::warn!("last.fm: a scrobble was ignored ({why}); dropped");
                     }
-                }
+                    _ => {
+                        *dropped += 1;
+                        log::warn!("last.fm: a scrobble got no answer of its own; dropped");
+                    }
+                },
                 Err(ApiError::Rejected(code, m)) => {
                     log::warn!("last.fm: scrobble rejected (error {code}: {m}); dropped");
                     *dropped += 1;

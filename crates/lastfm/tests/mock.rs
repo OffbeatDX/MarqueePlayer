@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, unbounded};
@@ -601,4 +601,62 @@ fn a_redirect_to_another_server_is_refused_without_sending_the_body() {
     assert!(matches!(client.get_token(), Err(lastfm::ApiError::Network(_))));
     assert!(matches!(client.get_session("tok-1"), Err(lastfm::ApiError::Network(_))));
     assert!(trapped.lock().unwrap().is_empty(), "other server received a redirected signed request: {:?}", trapped.lock().unwrap());
+}
+
+static LOG_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+struct CaptureLog;
+
+impl log::Log for CaptureLog {
+    fn enabled(&self, m: &log::Metadata) -> bool {
+        m.target().starts_with("lastfm")
+    }
+    fn log(&self, r: &log::Record) {
+        if self.enabled(r.metadata()) {
+            LOG_LINES.lock().unwrap().push(format!("{} {}", r.level(), r.args()));
+        }
+    }
+    fn flush(&self) {}
+}
+
+fn capture_logs() {
+    static ONCE: OnceLock<()> = OnceLock::new();
+    ONCE.get_or_init(|| {
+        log::set_logger(&CaptureLog).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+#[test]
+fn one_by_one_fallback_logs_why_an_ignored_play_was_dropped() {
+    capture_logs();
+    let d = dir("fallback-ignored");
+    connected(&d);
+    let m = mock(Box::new(|f| {
+        if f.values().any(|v| v == "bad") {
+            (400, r#"{"error":6,"message":"Invalid parameters"}"#.into())
+        } else if f.get("track[0]").map(String::as_str) == Some("old") {
+            (200, r##"{"scrobbles":{"@attr":{"accepted":0,"ignored":1},"scrobble":{"ignoredMessage":{"code":"3","#text":"Timestamp too old in the fallback"}}}}"##.into())
+        } else {
+            accept_all(f)
+        }
+    }));
+    // Queue both plays while offline so they go out in one batch, which is rejected and
+    // retried one by one.
+    let mut run = start(&d, &offline());
+    run.wait("connected", |s| matches!(s.state, State::Connected { .. }));
+    run.s.scrobble(play(1, "old"));
+    run.s.scrobble(play(2, "bad"));
+    run.wait("both queued offline", |s| s.note.contains("could not be reached") && s.queued == 2);
+    drop(run);
+
+    let start_idx = LOG_LINES.lock().unwrap().len();
+    let mut run = start(&d, &m.url);
+    let st = run.wait("done", |s| s.queued == 0 && s.note.starts_with("Sent"));
+    assert_eq!(st.note, "Sent 0, 2 not accepted by Last.fm");
+    let lines = LOG_LINES.lock().unwrap()[start_idx..].to_vec();
+    assert!(
+        lines.iter().any(|l| l.contains("WARN") && l.contains("a scrobble was ignored (code 3: Timestamp too old in the fallback); dropped")),
+        "expected ignored warning in fallback logs: {lines:?}"
+    );
 }
