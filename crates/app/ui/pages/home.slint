@@ -237,7 +237,15 @@ component HeroShelf inherits Rectangle {
                     drop-shadow-blur: 10px;
                     drop-shadow-color: #00000080;
                     accessible-role: none;
-                    cover-play := TouchArea { mouse-cursor: pointer; clicked => { Actions.play-album(root.album.id); } }
+                    // Drawn transparent until the pointer is on the cover: a press where it was
+                    // not yet shown (a touch, with no hover before it) opens the album as the
+                    // cover around it does.
+                    cover-play := TouchArea {
+                        private property <bool> armed;
+                        mouse-cursor: pointer;
+                        pointer-event(ev) => { if ev.kind == PointerEventKind.down { self.armed = parent.opacity > 0.5; } }
+                        clicked => { if self.armed { Actions.play-album(root.album.id); } else { Actions.open-album(root.album.id); } }
+                    }
                     Icon { glyph: Icons.play; width: 30px; height: 30px; color: Theme.accent-text; }
                 }
             }
@@ -456,6 +464,7 @@ export component HomePage inherits Rectangle {
                     label: shelf.title;
                     max-rows: shelf.rows;
                     albums: shelf.layout == ShelfLayout.grid ? shelf.albums : [];
+                    columns(n) => { if shelf.layout == ShelfLayout.grid { Actions.home-grid-columns(n); } }
                 }
                 h := HeroShelf {
                     visible: shelf.layout == ShelfLayout.hero;

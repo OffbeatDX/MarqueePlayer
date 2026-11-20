@@ -351,39 +351,87 @@ thread_local! {
     static HERO_AT: std::cell::RefCell<std::collections::HashMap<usize, usize>> = std::cell::RefCell::new(std::collections::HashMap::new());
     /// The art stems of each hero shelf's albums, for the blur behind the one featured.
     static HERO_ART: std::cell::RefCell<std::collections::HashMap<usize, Vec<Option<String>>>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The covers a row of Home's grid shelves holds, as the page last reported it (0: not yet).
+    static GRID_COLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The covers a row of Home's grid shelves holds: as the page reported it, or until then as
+/// the window's width would hold them (lists.slint, `CoverGrid`).
+fn grid_cols(st: &State) -> usize {
+    let reported = GRID_COLS.with(|c| c.get());
+    if reported > 0 {
+        return reported;
+    }
+    let Some(app) = st.app.upgrade() else { return 1 };
+    let theme = app.global::<Theme>();
+    let width = app.window().size().to_logical(app.window().scale_factor()).width;
+    let gap = 24.0;
+    ((width - 2.0 * theme.get_page_margin() + gap) / (theme.get_cover_size() + gap)).floor().max(1.0) as usize
+}
+
+/// Home's grid shelves now hold `cols` covers a row (the window's width or the interface size
+/// changed): each grid shelf takes exactly its rows of them, in place; nothing else changes.
+pub fn home_grid_cols(st: &Rc<State>, cols: usize) {
+    let cols = cols.max(1);
+    if GRID_COLS.with(|c| c.replace(cols)) == cols {
+        return;
+    }
+    let Some(vm) = HOME.with(|h| h.borrow().clone()) else { return };
+    let shelves = st.settings.borrow().shelves.clone();
+    let models = st.models.home.borrow().clone();
+    for row in 0..vm.row_count().min(models.len()) {
+        let Some(v) = vm.row_data(row) else { continue };
+        let Some(s) = shelves.get(v.index as usize).filter(|s| s.layout == ShelfLayout::Grid) else { continue };
+        match shelf_albums(st, v.index as usize, s, s.fetch_limit(cols), cols) {
+            Ok(albums) if !albums.is_empty() => models[row].update(albums),
+            Ok(_) => {}
+            Err(e) => log::warn!("shelf {:?}: {e}", s.query),
+        }
+    }
+}
+
+/// A shelf's albums, `limit` of them asked for, then those it shows (whole rows of `cols`
+/// for a grid).
+fn shelf_albums(st: &Rc<State>, index: usize, s: &crate::settings::ShelfConfig, limit: usize, cols: usize) -> rusqlite::Result<Vec<Album>> {
+    let random = s.query == ShelfQuery::Random;
+    let opts = ShelfOpts {
+        seed: if random { shelf_seed(st, index) } else { 0 },
+        // The big card wants art: a random hero shelf only features albums with an
+        // image.
+        art_only: random && s.layout == ShelfLayout::Hero,
+    };
+    // A smart playlist's shelf is worked out off the UI thread (playlists/smart.rs): what was last
+    // worked out shows, and the shelf comes in when it is first ready.
+    let mut albums = match &s.query {
+        ShelfQuery::Playlist { id } if crate::playlists::smart::is_smart(st, *id) => {
+            crate::playlists::smart::shelf_albums(st, *id, limit).unwrap_or_default().into_iter().take(s.fetch_limit(cols)).collect()
+        }
+        _ => query::shelf_with(&st.db, &s.query, s.fetch_limit(cols), opts)?,
+    };
+    albums.truncate(s.shown(albums.len(), cols));
+    Ok(albums)
 }
 
 /// The visible shelves that have albums: (place in the settings, the shelf, its albums).
 fn home_shelves(st: &Rc<State>) -> Vec<(usize, crate::settings::ShelfConfig, Vec<Album>)> {
     let shelves = st.settings.borrow().shelves.clone();
+    let cols = grid_cols(st);
     // Shelves of one smart playlist share its worked-out albums: asked for with the most any
     // of them shows, so that shelves of different lengths do not ask again in turn.
     let mut smart_limit: HashMap<i64, usize> = HashMap::new();
     for s in shelves.iter().filter(|s| s.visible) {
         if let ShelfQuery::Playlist { id } = s.query {
             let l = smart_limit.entry(id).or_default();
-            *l = (*l).max(s.fetch_limit());
+            *l = (*l).max(s.fetch_limit(cols));
         }
     }
     let mut out = Vec::new();
     for (index, s) in shelves.into_iter().enumerate().filter(|(_, s)| s.visible) {
-        let random = s.query == ShelfQuery::Random;
-        let opts = ShelfOpts {
-            seed: if random { shelf_seed(st, index) } else { 0 },
-            // The big card wants art: a random hero shelf only features albums with an
-            // image.
-            art_only: random && s.layout == ShelfLayout::Hero,
+        let limit = match s.query {
+            ShelfQuery::Playlist { id } => smart_limit.get(&id).copied().unwrap_or(s.fetch_limit(cols)),
+            _ => s.fetch_limit(cols),
         };
-        // A smart playlist's shelf is worked out off the UI thread (playlists/smart.rs): what was last
-        // worked out shows, and the shelf comes in when it is first ready.
-        let smart_shelf = match &s.query {
-            ShelfQuery::Playlist { id } if crate::playlists::smart::is_smart(st, *id) => {
-                let limit = smart_limit.get(id).copied().unwrap_or(s.fetch_limit());
-                Some(crate::playlists::smart::shelf_albums(st, *id, limit).unwrap_or_default().into_iter().take(s.fetch_limit()).collect())
-            }
-            _ => None,
-        };
-        match smart_shelf.map_or_else(|| query::shelf_with(&st.db, &s.query, s.fetch_limit(), opts), Ok) {
+        match shelf_albums(st, index, &s, limit, cols) {
             Ok(a) if !a.is_empty() => out.push((index, s, a)),
             Ok(_) => {}
             Err(e) => log::warn!("shelf {:?}: {e}", s.query),
@@ -466,7 +514,14 @@ fn refresh_home_live(st: &Rc<State>, grow: bool) {
         }
         if vm.row_data(row).is_some_and(|v| v.index as usize == *index) {
             let m = &models[row];
-            let next = if grow || s.query == ShelfQuery::Random { m.grown(albums.clone(), s.fetch_limit(), |id| query::album(&st.db, id).ok().flatten()) } else { albums.clone() };
+            let cols = grid_cols(st);
+            let next = if grow || s.query == ShelfQuery::Random {
+                let mut next = m.grown(albums.clone(), s.fetch_limit(cols), |id| query::album(&st.db, id).ok().flatten());
+                next.truncate(s.shown(next.len(), cols));
+                next
+            } else {
+                albums.clone()
+            };
             m.update(next);
         } else {
             let (view, m, stem) = shelf_view(st, *index, s, albums.clone());

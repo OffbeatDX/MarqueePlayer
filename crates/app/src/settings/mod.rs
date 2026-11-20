@@ -50,9 +50,6 @@ fn default_rows() -> usize {
 
 /// The most rows a grid shelf shows.
 pub const GRID_ROWS_MAX: usize = 6;
-/// The albums a grid shelf asks for per row: more than a row holds on a wide window at the
-/// smallest covers, so that every row it shows is full.
-const GRID_ROW_ALBUMS: usize = 20;
 
 fn yes() -> bool {
     true
@@ -67,11 +64,22 @@ impl ShelfConfig {
         self.title.clone().unwrap_or_else(|| self.query.default_title())
     }
 
-    /// The albums to ask for: the limit, or for a grid enough to fill its rows at any width.
-    pub fn fetch_limit(&self) -> usize {
+    /// The albums to ask for: the limit, or for a grid its rows of `grid_cols` covers (the
+    /// columns the page's width holds, `views::grid_cols`), so that it builds no tile it hides.
+    pub fn fetch_limit(&self, grid_cols: usize) -> usize {
         match self.layout {
-            ShelfLayout::Grid => self.rows.clamp(1, GRID_ROWS_MAX) * GRID_ROW_ALBUMS,
+            ShelfLayout::Grid => self.rows.clamp(1, GRID_ROWS_MAX) * grid_cols.max(1),
             _ => self.limit,
+        }
+    }
+
+    /// Of `n` albums found for this shelf, those it shows: all of them, or for a grid whole
+    /// rows of `grid_cols` only (one short row when there are fewer than a row holds).
+    pub fn shown(&self, n: usize, grid_cols: usize) -> usize {
+        let cols = grid_cols.max(1);
+        match self.layout {
+            ShelfLayout::Grid if n > cols => self.rows.clamp(1, GRID_ROWS_MAX).min(n / cols) * cols,
+            _ => n,
         }
     }
 }
@@ -770,15 +778,23 @@ mod tests {
     }
 
     #[test]
-    fn a_grid_shelf_asks_for_enough_albums_to_fill_its_rows() {
+    fn a_grid_shelf_asks_for_its_rows_of_covers() {
         let mut s = ShelfConfig::new(ShelfQuery::RecentlyAdded, ShelfLayout::Row, 18);
-        assert_eq!((s.rows, s.fetch_limit()), (2, 18), "a row shelf: its limit");
+        assert_eq!((s.rows, s.fetch_limit(9), s.shown(18, 9)), (2, 18, 18), "a row shelf: its limit, all shown");
         s.layout = ShelfLayout::Grid;
-        assert_eq!(s.fetch_limit(), 2 * GRID_ROW_ALBUMS);
+        assert_eq!(s.fetch_limit(9), 18);
+        assert_eq!(s.fetch_limit(26), 52, "as many columns as the width holds, past 20 too");
+        assert_eq!(s.fetch_limit(0), 2, "never less than one column");
         s.rows = 99;
-        assert_eq!(s.fetch_limit(), GRID_ROWS_MAX * GRID_ROW_ALBUMS, "never more than the most rows");
+        assert_eq!(s.fetch_limit(9), GRID_ROWS_MAX * 9, "never more than the most rows");
         s.rows = 0;
-        assert_eq!(s.fetch_limit(), GRID_ROW_ALBUMS, "never less than one row");
+        assert_eq!(s.fetch_limit(9), 9, "never less than one row");
+        // Whole rows only, or one short row.
+        s.rows = 2;
+        assert_eq!(s.shown(18, 9), 18);
+        assert_eq!(s.shown(13, 9), 9, "a second row would be short: one");
+        assert_eq!(s.shown(5, 9), 5, "fewer than a row: one short row");
+        assert_eq!(s.shown(0, 9), 0);
         // A settings file from before has no `rows`: two.
         let mut json = serde_json::to_value(ShelfConfig { rows: 5, ..s.clone() }).unwrap();
         json.as_object_mut().unwrap().remove("rows");

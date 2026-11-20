@@ -1764,6 +1764,9 @@ fn wire(app: &AppWindow) {
             views::shelves_changed(st);
         });
     });
+    a.on_home_grid_columns(|n| {
+        state::with(|st| views::home_grid_cols(st, n.max(1) as usize));
+    });
     a.on_shelf_title(|i, title| {
         state::with(|st| {
             if let Some(s) = st.settings.borrow_mut().shelves.get_mut(i as usize) {

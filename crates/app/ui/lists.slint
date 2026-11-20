@@ -91,7 +91,12 @@ export component CoverGrid inherits Rectangle {
     in property <string> label: "Albums";
     // A shelf's grid: at most this many rows, each one full (0: every album, as the album pages).
     in property <int> max-rows: 0;
+    // The covers a row holds, each time it changes once the grid has a width (a shelf's grid:
+    // Rust then gives it exactly its rows of albums, so that it builds no tile it hides).
+    callback columns(int);
     private property <int> cols: max(1, floor((self.width + gap) / (size + gap)));
+    changed cols => { if self.width > 0 { root.columns(self.cols); } }
+    init => { if self.width > 0 { root.columns(self.cols); } }
     private property <length> step: (self.width + gap) / cols;
     private property <length> row-h: size + 50px + gap;
     // The albums shown: all of them, or whole rows only (one short row when there are fewer

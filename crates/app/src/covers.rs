@@ -414,25 +414,31 @@ impl AlbumModel {
 
     /// Show `albums` with as little change on screen as can be: the same albums in the same
     /// places change only the tiles whose album changed (a cover came in), albums after the
-    /// last are added after it, and only anything else starts the list again (`set`). What a
-    /// scan in progress brings to an open page (see `views::library_changed_live`).
+    /// last are added after it, the last ones taken away when the list is shorter (a grid
+    /// shelf with fewer columns), and only anything else starts the list again (`set`). What
+    /// a scan in progress brings to an open page (see `views::library_changed_live`).
     pub fn update(&self, albums: Vec<Album>) {
-        let (changed, added) = {
+        let (changed, old_len) = {
             let old = self.albums.borrow();
-            if old.len() > albums.len() || old.iter().zip(&albums).any(|(a, b)| a.id != b.id) {
+            if old.iter().zip(&albums).any(|(a, b)| a.id != b.id) {
                 drop(old);
                 self.set(albums);
                 return;
             }
             let changed: Vec<usize> = old.iter().zip(&albums).enumerate().filter(|(_, (a, b))| a != b).map(|(i, _)| i).collect();
-            (changed, (old.len(), albums.len() - old.len()))
+            (changed, old.len())
         };
+        let new_len = albums.len();
         *self.albums.borrow_mut() = albums;
+        if new_len < old_len {
+            self.waiting.borrow_mut().values_mut().for_each(|rows| rows.retain(|&r| r < new_len));
+            self.notify.row_removed(new_len, old_len - new_len);
+        }
         for row in changed {
             self.notify.row_changed(row);
         }
-        if added.1 > 0 {
-            self.notify.row_added(added.0, added.1);
+        if new_len > old_len {
+            self.notify.row_added(old_len, new_len - old_len);
         }
     }
 
@@ -608,5 +614,21 @@ mod tests {
         with_image("gone", Kind::Full, |_| panic!("no image"));
         assert_eq!((held(), listeners()), (0, 0), "known to fail: not held");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A grid shelf with fewer columns: the first albums kept in place, the rest taken off the
+    /// end; more columns: added after them; another order: the list again.
+    #[test]
+    fn an_album_list_shrinks_and_grows_at_its_end() {
+        let albums = |ids: &[i64]| ids.iter().map(|&id| Album { id, ..Default::default() }).collect::<Vec<_>>();
+        let m = AlbumModel::new(albums(&[1, 2, 3, 4, 5, 6]));
+        m.waiting.borrow_mut().insert("a".into(), vec![1, 5]);
+        m.update(albums(&[1, 2, 3, 4]));
+        assert_eq!((m.ids(), m.row_count()), (vec![1, 2, 3, 4], 4));
+        assert_eq!(m.waiting.borrow().get("a"), Some(&vec![1]), "no row past the end waits for a cover");
+        m.update(albums(&[1, 2, 3, 4, 7, 8]));
+        assert_eq!(m.ids(), vec![1, 2, 3, 4, 7, 8]);
+        m.update(albums(&[2, 1]));
+        assert_eq!(m.ids(), vec![2, 1]);
     }
 }

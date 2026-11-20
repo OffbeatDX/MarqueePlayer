@@ -70,6 +70,7 @@ font_heading = 22
 font_display = 40
 
 [size]
+# The album grids' covers: 64 to 512.
 cover = 184
 sidebar_width = 232
 queue_width = 340
@@ -398,7 +399,8 @@ fn apply(app: &AppWindow, t: &ThemeFile) {
     g.set_font_title(t.type_.font_title);
     g.set_font_heading(t.type_.font_heading);
     g.set_font_display(t.type_.font_display);
-    g.set_cover_size(t.size.cover);
+    // The grids' covers: 0 or less would give a grid no sensible number of columns.
+    g.set_cover_size(t.size.cover.clamp(64.0, 512.0));
     g.set_sidebar_width(t.size.sidebar_width);
     g.set_queue_width(t.size.queue_width);
     g.set_bar_height(t.size.bar_height);

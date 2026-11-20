@@ -1256,6 +1256,8 @@ export global Actions {
     callback shelf-layout(int, ShelfLayout);
     callback shelf-limit(int, int);
     callback shelf-rows(int, int);
+    // The covers a row of Home's grid shelves holds now (the page's width, the interface size).
+    callback home-grid-columns(int);
     callback shelf-title(int, string);
     callback shelf-add(string /* kind */, string /* param */);
     callback shelves-reset();
