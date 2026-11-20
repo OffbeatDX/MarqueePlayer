@@ -112,10 +112,10 @@ impl ArtCache {
         let p = self.paths(&stem);
         let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
         let img = DynamicImage::ImageRgb8(img.to_rgb8());
-        save(&fit(&img, FULL_PX), &p.full, FULL_QUALITY)?;
-        save(&fit(&img, THUMB_PX), &p.thumb, THUMB_QUALITY)?;
+        save(&fit(&img, FULL_PX), &p.full, FULL_QUALITY, p.full.exists())?;
+        save(&fit(&img, THUMB_PX), &p.thumb, THUMB_QUALITY, p.thumb.exists())?;
         let small = img.resize_exact(BLUR_PX, BLUR_PX, FilterType::Triangle);
-        save(&small.blur(BLUR_SIGMA), &p.blur, BLUR_QUALITY)?;
+        save(&small.blur(BLUR_SIGMA), &p.blur, BLUR_QUALITY, p.blur.exists())?;
         let _ = self.write_accent(&stem, &img);
         Ok(stem)
     }
@@ -142,7 +142,7 @@ impl ArtCache {
             .filter(|l| !l.is_empty());
         match colour {
             Some(c) => {
-                let _ = std::fs::write(self.accent_path(stem), format!("{c}\n{}\n", format_tag()));
+                let _ = write_atomic(&self.accent_path(stem), format!("{c}\n{}\n", format_tag()).as_bytes());
             }
             None => {
                 if let Ok(img) = image::open(self.paths(stem).thumb) {
@@ -175,7 +175,7 @@ impl ArtCache {
         let small = img.resize_exact(64, 64, FilterType::Triangle).to_rgb8();
         let colour = crate::accent::extract(small.pixels().map(|p| p.0));
         let text = colour.map_or_else(|| "none".to_owned(), |[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"));
-        let _ = std::fs::write(self.accent_path(stem), format!("{text}\n{}\n", format_tag()));
+        let _ = write_atomic(&self.accent_path(stem), format!("{text}\n{}\n", format_tag()).as_bytes());
         colour
     }
 
@@ -273,7 +273,7 @@ impl ArtCache {
 }
 
 /// The stem of a file the cache writes: `<16 hex>_<t|f|b>.jpg`, `<16 hex>_a.txt`, or a
-/// temporary name of one (`<16 hex>_<t|f|b>.<pid>-<n>.tmp`). Nothing else is the cache's.
+/// temporary name of one (`<16 hex>_<t|f|b|a>.<pid>-<n>.tmp`). Nothing else is the cache's.
 fn cache_stem(name: &str) -> Option<&str> {
     let (stem, rest) = (name.get(..16)?, name.get(16..)?);
     if !stem.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
@@ -282,7 +282,7 @@ fn cache_stem(name: &str) -> Option<&str> {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
     let ok = match rest {
         "_t.jpg" | "_f.jpg" | "_b.jpg" | "_a.txt" => true,
-        _ => ["_t.", "_f.", "_b."]
+        _ => ["_t.", "_f.", "_b.", "_a."]
             .iter()
             .find_map(|p| rest.strip_prefix(p))
             .and_then(|r| r.strip_suffix(".tmp"))
@@ -316,14 +316,33 @@ fn format_tag() -> String {
     format!("v{CACHE_VERSION}")
 }
 
-fn save(img: &DynamicImage, path: &Path, quality: u8) -> Result<(), String> {
+fn temp_path(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("{}-{n}.tmp", std::process::id()))
+}
+
+/// Write `bytes` to a unique temporary file beside `path` and rename it into place, so a
+/// concurrent scan worker or a crash never leaves a truncated or half-written file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = temp_path(path);
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
+    Ok(())
+}
+
+fn save(img: &DynamicImage, path: &Path, quality: u8, replace: bool) -> Result<(), String> {
     // Write to a temp name and rename, so a crash never leaves a half-written file
     // that `store` would later treat as cached.
     // The temp name is unique per call: albums sharing one cover are cached
     // concurrently by different scan threads.
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
+    let tmp = temp_path(path);
     let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
     if let Err(e) = write_jpeg(img, file, quality) {
         let _ = std::fs::remove_file(&tmp);
@@ -331,12 +350,17 @@ fn save(img: &DynamicImage, path: &Path, quality: u8) -> Result<(), String> {
     }
     match std::fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
-        // Another thread won the race with identical content.
-        Err(_) if path.exists() => {
+        // Creating a new entry and another thread won the race with identical content.
+        // On an upgrade (`replace`), the target already holds older content, so a refused
+        // rename must fail instead of letting `_a.txt` be stamped current.
+        Err(_) if !replace && path.exists() => {
             let _ = std::fs::remove_file(&tmp);
             Ok(())
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
     }
 }
 
@@ -384,13 +408,14 @@ mod tests {
         assert_eq!(cache_stem("0123456789abcdef_t.jpg"), Some("0123456789abcdef"));
         assert_eq!(cache_stem("0123456789abcdef_a.txt"), Some("0123456789abcdef"));
         assert_eq!(cache_stem("0123456789abcdef_f.1234-7.tmp"), Some("0123456789abcdef"));
+        assert_eq!(cache_stem("0123456789abcdef_a.1-2.tmp"), Some("0123456789abcdef"));
         for other in [
             "version.txt",
             "0123456789ABCDEF_t.jpg",
             "0123456789abcdef_x.jpg",
             "0123456789abcde_t.jpg",
             "0123456789abcdef_t.jpg.bak",
-            "0123456789abcdef_a.1-2.tmp",
+            "0123456789abcdef_x.1-2.tmp",
             "0123456789abcdef_t.-2.tmp",
             "cover.jpg",
             "0123456789abcdef",
@@ -510,6 +535,137 @@ mod tests {
         assert_eq!(image::open(&p.full).unwrap().width(), FULL_PX, "re-made at the new size");
         cache.mark_upgraded();
         assert!(!cache.needs_upgrade());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// On a cache-format upgrade, refusing to replace an existing JPEG (open in the UI or an
+    /// AV scanner on Windows) must return an error instead of stamping `_a.txt` as current on
+    /// the old file.
+    #[test]
+    fn upgrade_does_not_stamp_current_when_target_cannot_be_replaced() {
+        let dir = crate::testdir::TestDir::new("art-upgrade-locked");
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = ArtCache::new(&dir);
+        let img = image::RgbImage::from_fn(1600, 1600, |x, y| image::Rgb([(x / 7 % 256) as u8, (y / 5 % 256) as u8, 200]));
+        let mut bytes = Vec::new();
+        DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png).unwrap();
+        let stem = cache.store(&bytes).unwrap();
+        let p = cache.paths(&stem);
+        // Pretend it was made by the old format.
+        let old = image::open(&p.full).unwrap().resize(900, 900, FilterType::Triangle);
+        old.save(&p.full).unwrap();
+        let first = std::fs::read_to_string(dir.join(format!("{stem}_a.txt"))).unwrap().lines().next().unwrap().to_owned();
+        std::fs::write(dir.join(format!("{stem}_a.txt")), &first).unwrap();
+        assert!(!cache.is_current(&stem));
+
+        #[cfg(windows)]
+        let res = {
+            use std::os::windows::fs::OpenOptionsExt;
+            // FILE_SHARE_READ only (no delete/write sharing): MoveFileExW fails as under a lock.
+            let _lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&p.full).unwrap();
+            cache.store(&bytes)
+        };
+        #[cfg(not(windows))]
+        let res = {
+            let saved = std::fs::read(&p.full).unwrap();
+            std::fs::remove_file(&p.full).unwrap();
+            std::fs::create_dir(&p.full).unwrap();
+            std::fs::write(p.full.join("keep"), b"x").unwrap();
+            let r = cache.store(&bytes);
+            std::fs::remove_dir_all(&p.full).unwrap();
+            std::fs::write(&p.full, saved).unwrap();
+            r
+        };
+
+        assert!(res.is_err(), "upgrade must fail when the old JPEG cannot be replaced");
+        assert!(!cache.is_current(&stem), "old JPEG must not be stamped as current");
+        assert_eq!(image::open(&p.full).unwrap().width(), 900, "old JPEG is left intact");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "failed rename leaves no temp file: {leftovers:?}");
+
+        // Once unlocked, upgrading succeeds.
+        assert_eq!(cache.store(&bytes).unwrap(), stem);
+        assert!(cache.is_current(&stem));
+        assert_eq!(image::open(&p.full).unwrap().width(), FULL_PX);
+
+        // Creating a new entry still tolerates another worker winning the race.
+        let raced = dir.join("fedcba9876543210_f.jpg");
+        std::fs::write(&raced, b"already written by sibling worker").unwrap();
+        let small = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(16, 16, image::Rgb([10, 20, 30])));
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let _lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&raced).unwrap();
+            assert!(save(&small, &raced, FULL_QUALITY, false).is_ok());
+            assert!(save(&small, &raced, FULL_QUALITY, true).is_err());
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::remove_file(&raced).unwrap();
+            std::fs::create_dir(&raced).unwrap();
+            std::fs::write(raced.join("keep"), b"x").unwrap();
+            assert!(save(&small, &raced, FULL_QUALITY, false).is_ok());
+            assert!(save(&small, &raced, FULL_QUALITY, true).is_err());
+            std::fs::remove_dir_all(&raced).unwrap();
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left behind: {leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accent_writes_are_atomic_and_their_temp_files_are_swept() {
+        assert_eq!(cache_stem("0123456789abcdef_a.1-2.tmp"), Some("0123456789abcdef"));
+        let dir = crate::testdir::TestDir::new("art-accent-atomic");
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = ArtCache::new(&dir);
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 20])));
+        let stem = "0123456789abcdef";
+        let expected = cache.write_accent(stem, &img);
+        assert!(expected.is_some());
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..25 {
+                        assert_eq!(cache.write_accent(stem, &img), expected);
+                        match std::fs::read_to_string(cache.accent_path(stem)) {
+                            Ok(text) => {
+                                let lines: Vec<&str> = text.lines().collect();
+                                assert_eq!(lines.len(), 2, "never half-written: {text:?}");
+                                assert_eq!(lines[1], format_tag());
+                                reads.fetch_add(1, Ordering::Relaxed);
+                            }
+                            // On Windows a reader opening a file at the instant MoveFileExW
+                            // swaps it can see a transient sharing/delete-pending error.
+                            Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied => {}
+                            Err(e) => panic!("unexpected error reading accent file: {e}"),
+                        }
+                    }
+                });
+            }
+        });
+        assert!(reads.load(Ordering::Relaxed) > 0);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "no temp files left behind: {leftovers:?}");
+        // A cut-short accent temp file is recognised and removed by `sweep`.
+        let leftover = dir.join(format!("{stem}_a.99-1.tmp"));
+        std::fs::write(&leftover, b"cut short").unwrap();
+        let swept = cache.sweep(Duration::ZERO, || Ok(HashSet::new())).unwrap();
+        assert_eq!(swept.files, 2, "accent file and its leftover temp: {swept:?}");
+        assert!(!leftover.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
