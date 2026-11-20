@@ -117,10 +117,14 @@ struct Run {
 }
 
 fn start(d: &std::path::Path, root: &str) -> Run {
+    start_sealed(d, root, Sealer::PLAIN)
+}
+
+fn start_sealed(d: &std::path::Path, root: &str, sealer: Sealer) -> Run {
     let (tx, status) = unbounded();
     let opened: Arc<Mutex<Vec<String>>> = Arc::default();
     let o = opened.clone();
-    let opts = Options { root: root.into(), auth_poll: Duration::from_millis(30), retry_min: Duration::from_millis(150), ..Options::new(d) };
+    let opts = Options { root: root.into(), auth_poll: Duration::from_millis(30), retry_min: Duration::from_millis(150), sealer, ..Options::new(d) };
     let s = Scrobbler::start(
         opts,
         Box::new(|p| (p == "M:/music/01.flac").then(|| "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_owned())),
@@ -222,8 +226,95 @@ fn desktop_auth_flow_connects_and_keeps_the_session_in_the_config_folder() {
     let mut run = start(&d, &m.url);
     run.wait("connected after restart", |s| s.state == State::Connected { user: "alice".into() });
     run.s.disconnect();
-    assert!(!run.wait("disconnected", |s| s.state == State::Disconnected).accepting, "disconnected: plays are no longer taken");
-    assert!(Credentials::read(&d.join("lastfm.json"), &Sealer::PLAIN).0.session_key.is_empty(), "disconnect forgets the session");
+    assert!(!run.wait("disconnected", |s| s.state == State::NoCredentials).accepting, "disconnected: plays are no longer taken");
+    assert_eq!(Credentials::read(&d.join("lastfm.json"), &Sealer::PLAIN).0, Credentials::default(), "disconnect forgets the key, secret and session");
+}
+
+/// A stand-in for the app's sealing: reversible, and not the plain text.
+const XOR: Sealer = Sealer { scheme: "xor-test", seal: |b| Some(b.iter().map(|c| c ^ 0x5a).collect()), open: |b| Some(b.iter().map(|c| c ^ 0x5a).collect()), write: |p, b| std::fs::write(p, b) };
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|c| format!("{c:02x}")).collect()
+}
+
+/// Every file left in the folder, with its bytes.
+fn files(d: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    std::fs::read_dir(d).unwrap().flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default())).collect()
+}
+
+/// Whether `needle` is anywhere in the bytes.
+fn holds(bytes: &[u8], needle: &str) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+/// Connected, with plays waiting (Last.fm unreachable) and the copies the app writes beside its
+/// files: Disconnect leaves nothing of the account in the worker, in what it reports, or on
+/// disk (not the key, the secret, the session, the user, nor their sealed hex), and drops the
+/// plays waiting; started again, it has no credentials.
+#[test]
+fn disconnect_forgets_the_key_secret_session_and_the_plays_waiting() {
+    let d = dir("forget");
+    let session = "sk-forget-9f8e7d";
+    Credentials { api_key: KEY.into(), api_secret: SECRET.into(), session_key: session.into(), username: "alice".into() }.save(&d.join("lastfm.json"), &XOR);
+    let sealed = [hex(&(XOR.seal)(SECRET.as_bytes()).unwrap()), hex(&(XOR.seal)(session.as_bytes()).unwrap())];
+    assert!(holds(&std::fs::read(d.join("lastfm.json")).unwrap(), &sealed[0]), "the test looks for what is really written");
+    // A damaged file kept aside, a save cut short, the same for the queue.
+    for (name, text) in [("lastfm.json.bad", format!("{{\"api_key\":\"{KEY}\",\"secret\":\"{}\"", sealed[0])), ("lastfm.json.tmp", format!("{KEY} {}", sealed[1])), ("scrobbles.json.bad", "[".into())] {
+        std::fs::write(d.join(name), text).unwrap();
+    }
+    let root = offline();
+    let mut run = start_sealed(&d, &root, XOR);
+    run.wait("connected", |s| s.state == State::Connected { user: "alice".into() });
+    run.s.scrobble(play(1, "Waiting"));
+    run.s.scrobble(play(2, "Also waiting"));
+    run.wait("kept for later", |s| s.queued == 2 && !s.note.is_empty());
+    assert_eq!(queue_file(&d).len(), 2);
+
+    run.s.disconnect();
+    let st = run.wait("forgotten", |s| s.state == State::NoCredentials);
+    assert!(!st.accepting && st.queued == 0 && run.s.queued() == 0, "{st:?}");
+    assert!(!format!("{st:?}").contains("alice"));
+    let left = files(&d);
+    for (name, bytes) in &left {
+        for needle in [KEY, SECRET, session, "alice", &sealed[0], &sealed[1]] {
+            assert!(!holds(bytes, needle), "{name} still holds {needle}");
+        }
+    }
+    assert!(left.is_empty(), "nothing of Last.fm's is left in the folder: {:?}", left.iter().map(|f| &f.0).collect::<Vec<_>>());
+    // A restart has nothing to show.
+    drop(run);
+    let mut run = start_sealed(&d, &root, XOR);
+    let st = run.wait("no credentials after a restart", |s| s.state == State::NoCredentials);
+    assert!(!st.accepting && st.queued == 0);
+    assert_eq!(Credentials::read(&d.join("lastfm.json"), &XOR).0, Credentials::default());
+    assert!(!d.join("lastfm.json").exists());
+}
+
+/// What an older version left after its Disconnect: the key and the secret, no session. Not
+/// connected, Disconnect still forgets them, and a restart shows nothing.
+#[test]
+fn a_key_and_secret_left_by_an_older_version_can_be_removed() {
+    let d = dir("older");
+    // As the older version wrote it (the secret in plain text, before sealing).
+    std::fs::write(d.join("lastfm.json"), format!(r#"{{"api_key":"{KEY}","api_secret":"{SECRET}","username":""}}"#)).unwrap();
+    let mut run = start_sealed(&d, &offline(), XOR);
+    let st = run.wait("disconnected", |s| s.state == State::Disconnected);
+    assert!(!st.accepting);
+    assert_eq!(Credentials::read(&d.join("lastfm.json"), &XOR).0.api_key, KEY, "still there before");
+    run.s.disconnect();
+    run.wait("forgotten", |s| s.state == State::NoCredentials);
+    assert!(files(&d).is_empty(), "{:?}", files(&d).iter().map(|f| &f.0).collect::<Vec<_>>());
+    drop(run);
+    let mut run = start_sealed(&d, &offline(), XOR);
+    run.wait("no credentials after a restart", |s| s.state == State::NoCredentials);
+    assert_eq!(Credentials::read(&d.join("lastfm.json"), &XOR).0, Credentials::default());
+    // An empty key and secret applied (the fields cleared, then Connect): the file goes too.
+    run.s.set_credentials(KEY, SECRET);
+    run.wait("disconnected", |s| s.state == State::Disconnected);
+    assert!(d.join("lastfm.json").exists());
+    run.s.set_credentials("", "");
+    run.wait("no credentials", |s| s.state == State::NoCredentials);
+    assert!(files(&d).is_empty());
 }
 
 #[test]

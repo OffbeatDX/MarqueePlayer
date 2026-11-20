@@ -44,6 +44,7 @@ export component ConnectionsSection inherits VerticalLayout {
             HorizontalLayout {
                 alignment: start;
                 padding-top: 4px;
+                spacing: 8px;
                 if !LastFm.authorising: TextButton {
                     text: "Connect";
                     primary: LastFm.api-key != "" && LastFm.api-secret != "";
@@ -51,6 +52,14 @@ export component ConnectionsSection inherits VerticalLayout {
                     clicked => { Actions.lastfm-connect(LastFm.api-key, LastFm.api-secret); }
                 }
                 if LastFm.authorising: TextButton { text: "Cancel"; label: "Stop waiting for Last.fm"; clicked => { Actions.lastfm-cancel(); } }
+                // A key and secret kept while not connected (entered, or left by an older
+                // version's Disconnect): forgotten here, as Disconnect does.
+                if !LastFm.authorising && (LastFm.api-key != "" || LastFm.api-secret != ""): TextButton {
+                    text: "Remove key and secret";
+                    glyph: Icons.close;
+                    label: "Remove the Last.fm API key and shared secret from this computer";
+                    clicked => { Actions.lastfm-disconnect(); }
+                }
             }
         }
     }

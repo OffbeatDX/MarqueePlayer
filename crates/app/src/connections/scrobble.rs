@@ -43,11 +43,11 @@ pub fn install(st: &Rc<State>) {
         opts.root = root;
     }
     // The key and secret show in their fields (never in the log).
-    let creds = lastfm::Credentials::read(&st.paths.data.join("lastfm.json"), &sealer()).0;
+    let (key, secret) = saved_fields(&st.paths.data, &sealer());
     if let Some(app) = st.app.upgrade() {
         let l = app.global::<LastFm>();
-        l.set_api_key(creds.api_key.into());
-        l.set_api_secret(creds.api_secret.into());
+        l.set_api_key(key.into());
+        l.set_api_secret(secret.into());
     }
     let s = Scrobbler::start(
         opts,
@@ -61,6 +61,13 @@ pub fn install(st: &Rc<State>) {
         }),
     );
     SCROBBLER.with(|c| *c.borrow_mut() = Some(s));
+}
+
+/// What the API key and shared secret fields show at start: `lastfm.json`'s, empty once
+/// disconnected (the file is gone).
+fn saved_fields(data: &std::path::Path, sealer: &lastfm::Sealer) -> (String, String) {
+    let c = lastfm::Credentials::read(&data.join("lastfm.json"), sealer).0;
+    (c.api_key, c.api_secret)
 }
 
 fn with(f: impl FnOnce(&Scrobbler)) {
@@ -207,7 +214,20 @@ pub fn cancel() {
     with(Scrobbler::cancel);
 }
 
-pub fn disconnect() {
+/// Disconnect (or, not connected, "Remove key and secret"): the key and secret leave their
+/// fields, no play is taken from now on, and the scrobbler forgets the account and drops the plays
+/// waiting (`lastfm.json` and `scrobbles.json` deleted).
+pub fn disconnect(st: &Rc<State>) {
+    if let Some(app) = st.app.upgrade() {
+        let l = app.global::<LastFm>();
+        l.set_api_key("".into());
+        l.set_api_secret("".into());
+    }
+    STATUS.with(|s| {
+        if let Some(s) = s.borrow_mut().as_mut() {
+            s.accepting = false;
+        }
+    });
     with(Scrobbler::disconnect);
 }
 
@@ -442,6 +462,38 @@ mod tests {
         assert!(lb.with(|s| s.violations.is_empty()));
         SCROBBLER.with(|c| c.borrow_mut().take());
         crate::connections::listens::use_status(None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Connected, then disconnected: the scrobbler's status keeps no user and takes no play, the
+    /// fields Settings fills at start are empty, and nothing of the key, secret or session is
+    /// left in the data folder. The same for a key and secret left by an older version.
+    #[test]
+    fn disconnect_leaves_nothing_for_settings_to_show() {
+        let (url, _log) = lastfm_mock();
+        let dir = std::env::temp_dir().join(format!("mp-scrobble-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        use_lastfm(&dir, &url);
+        assert_eq!(saved_fields(&dir, &lastfm::Sealer::PLAIN), ("testkey0123456789".into(), "testsecret".into()));
+        with(Scrobbler::disconnect);
+        wait_until("forgotten", || !dir.join("lastfm.json").exists());
+        assert_eq!(saved_fields(&dir, &lastfm::Sealer::PLAIN), (String::new(), String::new()), "a restart shows empty fields");
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = String::from_utf8_lossy(&std::fs::read(e.path()).unwrap()).into_owned();
+            assert!(!text.contains("testkey0123456789") && !text.contains("testsecret") && !text.contains("sk-1"), "{:?}", e.file_name());
+        }
+        // An older version's file: the key and secret, no session.
+        std::fs::write(dir.join("lastfm.json"), r#"{"api_key":"oldkey","api_secret":"oldsecret","username":""}"#).unwrap();
+        assert_eq!(saved_fields(&dir, &lastfm::Sealer::PLAIN), ("oldkey".into(), "oldsecret".into()));
+        SCROBBLER.with(|c| c.borrow_mut().take());
+        let opts = lastfm::Options { root: url.clone(), ..lastfm::Options::new(&dir) };
+        SCROBBLER.with(|c| *c.borrow_mut() = Some(Scrobbler::start(opts, Box::new(|_| None), Box::new(|_| {}), Box::new(|_| {}))));
+        with(Scrobbler::disconnect);
+        wait_until("the older file forgotten", || !dir.join("lastfm.json").exists());
+        assert_eq!(saved_fields(&dir, &lastfm::Sealer::PLAIN), (String::new(), String::new()));
+        SCROBBLER.with(|c| c.borrow_mut().take());
+        STATUS.with(|c| c.borrow_mut().take());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

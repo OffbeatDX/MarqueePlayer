@@ -1060,7 +1060,9 @@ fn wire(app: &AppWindow) {
     a.on_output_menu(output::open_menu);
     a.on_lastfm_connect(|key, secret| connections::scrobble::connect(&key, &secret));
     a.on_lastfm_cancel(connections::scrobble::cancel);
-    a.on_lastfm_disconnect(connections::scrobble::disconnect);
+    a.on_lastfm_disconnect(|| {
+        state::with(connections::scrobble::disconnect);
+    });
     a.on_lastfm_retry(connections::scrobble::retry);
     a.on_listenbrainz_connect(|token, server| connections::listens::connect(&token, &server));
     a.on_listenbrainz_disconnect(connections::listens::disconnect);

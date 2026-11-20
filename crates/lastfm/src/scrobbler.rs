@@ -10,6 +10,11 @@
 //!   written there by the caller's thread before `scrobble` returns, so one made just
 //!   before exit is not lost; the thread submits them in batches of up to 50.
 //!
+//! Disconnect forgets all of it: the key, secret, session and user name leave the worker, and
+//! `lastfm.json` and `scrobbles.json` are deleted with the copies written beside them (`.tmp`,
+//! `.bad`). The plays waiting go too: they were made for the account disconnected from, and a
+//! key connected later may sign in as someone else.
+//!
 //! Errors: no connection or a Last.fm outage keeps the queue and tries again later (30 s,
 //! doubling to 30 min; at once when the user asks). A play Last.fm ignores, or a request
 //! it rejects for good, is dropped and logged; one past the account's daily limit is kept
@@ -144,7 +149,12 @@ impl Credentials {
         (Self { api_key: s.api_key, api_secret, session_key, username }, plain_secret || plain_session)
     }
 
+    /// Write the file; with nothing in it (no key, secret or session), delete it instead.
     pub fn save(&self, path: &Path, sealer: &Sealer) {
+        if self.api_key.is_empty() && self.api_secret.is_empty() && self.session_key.is_empty() {
+            remove_with_copies(path);
+            return;
+        }
         let mut s = Stored { api_key: self.api_key.clone(), username: self.username.clone(), ..Stored::default() };
         if !self.api_secret.is_empty() {
             let Some(sealed) = (sealer.seal)(self.api_secret.as_bytes()) else {
@@ -184,6 +194,22 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
             let _ = std::fs::copy(path, path.with_file_name(bad));
             log::error!("{} cannot be read ({e}); kept as .bad and started afresh", path.display());
             None
+        }
+    }
+}
+
+/// Delete a file of ours and the copies made beside it: `<name>.tmp` (a save cut short) and
+/// `<name>.bad` (a damaged file kept aside by `read_json`).
+pub(crate) fn remove_with_copies(path: &Path) {
+    let name = path.file_name().unwrap_or_default();
+    for suffix in ["", ".tmp", ".bad"] {
+        let mut n = name.to_owned();
+        n.push(suffix);
+        let p = path.with_file_name(n);
+        if let Err(e) = std::fs::remove_file(&p)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("{} cannot be deleted: {e}", p.display());
         }
     }
 }
@@ -240,6 +266,12 @@ impl Queue {
     /// Drop these, as `oldest` gave them (they were sent, or will never be accepted): each one
     /// once, wherever it is now. A play queued meanwhile can sort before them (the clock set
     /// back), so they are not always the oldest any more.
+    /// Drop every play waiting, and the file (with its copies).
+    pub fn clear(&mut self) {
+        self.items.clear();
+        remove_with_copies(&self.path);
+    }
+
     pub fn remove(&mut self, sent: &[Scrobble]) {
         for s in sent {
             if let Some(i) = self.items.iter().position(|q| q == s) {
@@ -358,6 +390,9 @@ impl Scrobbler {
         let _ = self.tx.send(Cmd::Cancel);
     }
 
+    /// Forget the key, secret, session and user name, and drop the plays waiting (the files
+    /// deleted). Also from a state that is not connected (a key and secret saved, never
+    /// connected or no longer accepted).
     pub fn disconnect(&self) {
         let _ = self.tx.send(Cmd::Disconnect);
     }
@@ -479,15 +514,7 @@ impl Worker {
                     }
                 }
                 Some(Cmd::Cancel) => {}
-                Some(Cmd::Disconnect) => {
-                    self.creds.session_key.clear();
-                    self.creds.username.clear();
-                    self.creds.save(&self.creds_path, &self.opts.sealer);
-                    self.accepting = false;
-                    self.state = self.idle_state();
-                    self.note = "Disconnected".into();
-                    self.report();
-                }
+                Some(Cmd::Disconnect) => self.forget(),
                 Some(Cmd::NowPlaying(mut s)) => {
                     if matches!(self.state, State::Connected { .. }) {
                         self.fill_mbid(std::slice::from_mut(&mut s));
@@ -511,6 +538,27 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Disconnect: nothing of the account is kept, in memory or on disk, and the plays waiting
+    /// are dropped (they would go to whichever account connects next).
+    fn forget(&mut self) {
+        let dropped = {
+            let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let n = q.len();
+            q.clear();
+            n
+        };
+        self.creds = Credentials::default();
+        remove_with_copies(&self.creds_path);
+        self.held = false;
+        self.accepting = false;
+        self.retry_at = None;
+        self.backoff = self.opts.retry_min;
+        self.state = self.idle_state();
+        self.note = "Disconnected".into();
+        log::info!("last.fm: disconnected; the key, secret and session are forgotten ({dropped} scrobbles waiting dropped)");
+        self.report();
     }
 
     /// The key and secret the user entered; true if they changed.
@@ -703,9 +751,13 @@ impl Worker {
         let deadline = Instant::now() + self.opts.auth_timeout;
         loop {
             match rx.recv_timeout(self.opts.auth_poll) {
-                Ok(Cmd::Cancel) | Ok(Cmd::Disconnect) => {
+                Ok(Cmd::Cancel) => {
                     self.state = self.idle_state();
                     self.report();
+                    return false;
+                }
+                Ok(Cmd::Disconnect) => {
+                    self.forget();
                     return false;
                 }
                 // Another key or secret: this token was asked for with the old one. Kept, and
