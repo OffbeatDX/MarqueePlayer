@@ -29,12 +29,21 @@ pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()
         Err(e) => return Err(e),
     }
     let mut f = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(0o600).open(path)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    keep_private(f.set_permissions(std::fs::Permissions::from_mode(0o600)))?;
     if f.metadata().is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
         log::warn!("{} can be read by other users: its drive does not keep Unix permissions", path.display());
     }
     f.write_all(bytes)?;
     f.sync_all()
+}
+
+/// What setting the mode came to: a drive that keeps no Unix permissions (FAT, exFAT: the
+/// system refuses or cannot) is no failure, as the check after it says so; anything else is.
+fn keep_private(set: std::io::Result<()>) -> std::io::Result<()> {
+    match set {
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Unsupported) => Ok(()),
+        r => r,
+    }
 }
 
 #[cfg(test)]
@@ -52,6 +61,18 @@ mod tests {
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::read(&p).unwrap(), b"new");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_drive_without_unix_permissions_does_not_stop_the_save() {
+        use std::io::{Error, ErrorKind};
+        // FAT and exFAT answer EPERM (or "not supported") to a mode change: saved anyway, and
+        // the check after it warns.
+        assert!(keep_private(Err(Error::from_raw_os_error(libc::EPERM))).is_ok());
+        assert!(keep_private(Err(Error::from(ErrorKind::Unsupported))).is_ok());
+        assert!(keep_private(Ok(())).is_ok());
+        // Anything else still stops it.
+        assert_eq!(keep_private(Err(Error::from_raw_os_error(libc::EIO))).unwrap_err().kind(), Error::from_raw_os_error(libc::EIO).kind());
     }
 
     #[test]

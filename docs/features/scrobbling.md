@@ -10,7 +10,9 @@ opens Last.fm's authorisation page in the browser, and connects as soon as acces
 allowed; Settings then shows the user name, Disconnect and Send now. The key, secret and
 session key are kept in `lastfm.json` in the data folder (never in the database, never in
 the log), the shared secret and session key sealed as the server's token in `navidrome.json`
-is (DPAPI for the Windows user; on Linux the file is the user's alone, mode 0600). A file
+is (DPAPI for the Windows user; on Linux the file is the user's alone, mode 0600; on a FAT or
+exFAT drive, which keeps no such mode, it is saved anyway and the log says other users can read
+it). A file
 from an older version, with the secret or session key in plain text, is written again sealed
 when read; a secret or session that does not open here (the portable edition on another PC,
 another Windows account, damage) is cleared: the API key stays, and re-entering the secret
