@@ -720,6 +720,9 @@ impl Smart {
         fn walk(g: &Group, v: &mut Vec<String>) {
             for n in &g.nodes {
                 match n {
+                    Node::Unknown { why, .. } if why == RATINGS_GONE => {
+                        v.push("A rule about ratings, which are no longer kept: it matches nothing. Edit the playlist to take it out, or delete the playlist.".into())
+                    }
                     Node::Unknown { why, .. } => v.push(format!("A rule this version of Marquee Player cannot use ({why}): it matches nothing here.")),
                     Node::Group(g) => walk(g, v),
                     Node::Cond(_) => {}
@@ -734,6 +737,19 @@ impl Smart {
             v.push("A limit this version does not know: nothing is shown rather than more than it allows.".into());
         }
         v
+    }
+
+    /// Whether a rule or the limit is one this build cannot use (it then holds less than the
+    /// rules say: a rule matches nothing, a limit leaves it empty).
+    pub fn incomplete(&self) -> bool {
+        fn walk(g: &Group) -> bool {
+            g.nodes.iter().any(|n| match n {
+                Node::Unknown { .. } => true,
+                Node::Group(g) => walk(g),
+                Node::Cond(_) => false,
+            })
+        }
+        walk(&self.root) || matches!(self.limit, Some(Limiting::Unknown(_)))
     }
 
     /// The first condition whose value does not fit (for refusing a save), with its reason.
@@ -768,34 +784,51 @@ impl Smart {
     }
 }
 
-/// Take out of a stored rule set what was about ratings, which the app no longer keeps: each
-/// rating condition is dropped from its group (a group left with no rules goes too), and an
-/// order or a limit's selection by rating becomes the default order. The other rules stay as
-/// they were. Whether anything was taken out.
+/// Why a rule about ratings is kept as one this build cannot use (`Node::Unknown`).
+pub const RATINGS_GONE: &str = "ratings are no longer kept";
+
+/// Take out of a stored rule set what was about ratings, which the app no longer keeps, where
+/// that leaves the other rules meaning what they did less the rating: a rating condition (or a
+/// group of nothing but rating conditions) among other rules of an "all of" group is dropped,
+/// and an order or a limit's selection by rating becomes the default order. Anywhere else (the
+/// only rules of the playlist or of a group, or one choice of an "any of" group) it stays, read
+/// as a rule this build cannot use (`RATINGS_GONE`): it matches nothing and the playlist says
+/// so, so a list that was only about ratings is empty and flagged, never every track. Taking
+/// out again changes nothing. Whether anything was taken out.
 pub fn strip_ratings(m: &mut Map<String, Json>) -> bool {
-    fn rules(nodes: &mut Vec<Json>) -> bool {
-        let before = nodes.len();
+    /// A rating condition, or a group (of rules) of nothing else.
+    fn rating(n: &Json) -> bool {
+        if n.get("group").is_some() {
+            return matches!(n.get("rules"), Some(Json::Array(a)) if !a.is_empty() && a.iter().all(rating));
+        }
+        n.get("field").and_then(Json::as_str) == Some("rating")
+    }
+    fn rules(nodes: &mut Vec<Json>, all: bool) -> bool {
         let mut changed = false;
-        nodes.retain_mut(|n| {
-            if n.get("field").and_then(Json::as_str) == Some("rating") {
-                return false;
-            }
-            if n.get("group").is_some()
+        for n in nodes.iter_mut() {
+            if !rating(n)
+                && let Some(join) = n.get("group").and_then(Json::as_str).map(|j| j == "all")
                 && let Some(Json::Array(inner)) = n.get_mut("rules")
-                && rules(inner)
             {
-                changed = true;
-                return !inner.is_empty();
+                changed |= rules(inner, join);
             }
-            true
-        });
-        changed || nodes.len() != before
+        }
+        if all && nodes.iter().any(|n| !rating(n)) {
+            let before = nodes.len();
+            nodes.retain(|n| !rating(n));
+            changed |= nodes.len() != before;
+        }
+        changed
     }
     fn by_rating(s: Option<&Json>) -> bool {
         s.and_then(|s| s.get("by")).and_then(Json::as_str) == Some("rating")
     }
+    let all = match m.get("match") {
+        None => true,
+        Some(j) => j.as_str() == Some("all"),
+    };
     let mut changed = match m.get_mut("rules") {
-        Some(Json::Array(a)) => rules(a),
+        Some(Json::Array(a)) => rules(a, all),
         _ => false,
     };
     if by_rating(m.get("sort")) {
@@ -889,6 +922,9 @@ fn node_from(j: Json, depth: usize) -> Node {
 
 fn cond_parse(j: &Json) -> Result<Cond, String> {
     let fkey = j.get("field").and_then(Json::as_str).unwrap_or("");
+    if fkey == "rating" {
+        return Err(RATINGS_GONE.into());
+    }
     let field = Field::from_key(fkey).ok_or_else(|| format!("the field “{fkey}”"))?;
     let okey = j.get("op").and_then(Json::as_str).unwrap_or("");
     let op = Op::from_key(okey).filter(|o| field.ops().contains(o)).ok_or_else(|| format!("{} “{okey}”", field.label().to_lowercase()))?;

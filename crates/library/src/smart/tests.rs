@@ -979,36 +979,74 @@ fn random_rule_sets_agree_with_the_reference() {
 }
 
 #[test]
-fn rules_about_ratings_from_an_older_build_are_dropped_and_the_others_kept() {
-    // Rated 3+ among other rules, a group left empty by the drop, an order and a limit by rating.
+fn rules_about_ratings_from_an_older_build_are_dropped_only_where_that_never_widens() {
+    let conn = fixture();
+    let lib = Lib::load(&conn);
+    let jazz = || Cond::new(Field::Genre, Op::Is, Value::Text("jazz".into()));
+    let gone = |raw: serde_json::Value| Node::Unknown { raw, why: RATINGS_GONE.into() };
+    let flagged = |s: &Smart| s.problems().iter().any(|p| p.contains("ratings"));
+    // Among other rules of "all of" (also a group of nothing but ratings): dropped, the
+    // others kept; an order and a limit's choice by rating become the default order.
     let json = r#"{"v":1,"match":"all","rules":[
         {"field":"genre","op":"is","value":"jazz"},
         {"field":"rating","op":"at_least","value":3},
-        {"group":"any","rules":[{"field":"rating","op":"is","value":5},{"field":"favourite","op":"yes"}]},
         {"group":"any","rules":[{"field":"rating","op":"is","value":0}]}
       ],"sort":{"by":"rating","desc":true},"limit":{"n":20,"unit":"tracks","by":{"by":"rating","desc":true}},"seed":7}"#;
     let s = Smart::from_json(json);
     assert!(s.problems().is_empty(), "nothing unknown is left: {:?}", s.problems());
     let want = Smart {
-        root: Group {
-            all: true,
-            nodes: vec![
-                Node::Cond(Cond::new(Field::Genre, Op::Is, Value::Text("jazz".into()))),
-                Node::Group(Group { all: false, nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None))] }),
-            ],
-        },
+        root: Group { all: true, nodes: vec![Node::Cond(jazz())] },
         sort: Sorting::Known(Sort::default()),
         limit: Some(Limiting::Known(Limit { n: 20, unit: LimitUnit::Tracks, by: Sort::default() })),
         seed: 7,
         ..Smart::default()
     };
     assert_eq!(s, want);
-    // Only a rating: every track, as a playlist with no rules is.
-    let only = Smart::from_json(r#"{"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":4}],"sort":{"by":"rating","desc":true}}"#);
-    assert_eq!(only, Smart::default());
-    let conn = fixture();
-    assert_eq!(evaluate(&conn, &only, None, ctx()).unwrap().tracks.len(), 360);
-    // Nothing about ratings: nothing changes.
+
+    // Only a rating (the old "Top rated"): not every track, but nothing, and it says why.
+    let top = r#"{"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":4}],"sort":{"by":"rating","desc":true}}"#;
+    let only = Smart::from_json(top);
+    assert_eq!(only.root.nodes, vec![gone(serde_json::json!({"field":"rating","op":"at_least","value":4}))]);
+    assert_eq!(only.order(), Sort::default());
+    assert!(flagged(&only), "{:?}", only.problems());
+    assert!(check_both(&conn, &lib, &only, "ratings only").is_empty());
+    let two = Smart::from_json(r#"{"rules":[{"field":"rating","op":"at_least","value":2},{"field":"rating","op":"at_most","value":4}]}"#);
+    assert!(two.root.nodes.iter().all(|n| matches!(n, Node::Unknown { .. })) && sql_ids(&conn, &two).is_empty(), "two ratings, nothing else");
+
+    // One choice of "any of": kept (it matches nothing), so the others decide, and it says so.
+    let any = Smart::from_json(r#"{"match":"any","rules":[{"field":"genre","op":"is","value":"jazz"},{"field":"rating","op":"is","value":5}]}"#);
+    assert_eq!(any.root.nodes.len(), 2);
+    assert!(flagged(&any));
+    assert_eq!(check_both(&conn, &lib, &any, "jazz or rated 5"), sql_ids(&conn, &one(jazz())));
+    // In a group: in "jazz and (rated 5 or favourite)", jazz favourites, not jazz.
+    let nested = Smart::from_json(r#"{"rules":[{"field":"genre","op":"is","value":"jazz"},{"group":"any","rules":[{"field":"rating","op":"is","value":5},{"field":"favourite","op":"yes"}]}]}"#);
+    assert!(flagged(&nested));
+    let faves = sql_ids(&conn, &rules(true, vec![jazz(), Cond::new(Field::Favourite, Op::Yes, Value::None)]));
+    assert!(!faves.is_empty());
+    assert_eq!(check_both(&conn, &lib, &nested, "jazz and (rated 5 or favourite)"), faves);
+    // A group of nothing but ratings, alone: matches nothing (it used to leave every track).
+    let group = Smart::from_json(r#"{"rules":[{"group":"any","rules":[{"field":"rating","op":"is","value":5}]}]}"#);
+    assert!(flagged(&group) && check_both(&conn, &lib, &group, "group of a rating").is_empty());
+
+    // Named by another playlist: "is in" it holds nothing, and "is not in" it is refused
+    // rather than every track; both say so.
+    conn.execute("INSERT INTO playlists (id, name, created_at, rules) VALUES (900, 'Top rated', 0, ?1)", [top]).unwrap();
+    let lib = Lib::load(&conn);
+    for op in [Op::In, Op::NotIn] {
+        let s = one(Cond::new(Field::Playlist, op, Value::Id(900)));
+        let out = evaluate(&conn, &s, None, ctx()).unwrap();
+        assert!(out.tracks.is_empty() && out.problems.iter().any(|p| p.contains("Top rated")), "{op:?}: {:?}", out.problems);
+        assert!(lib.eval(&s, None, ctx()).is_empty(), "{op:?}");
+    }
+
+    // Taking them out again changes nothing; nothing about ratings changes nothing.
+    for raw in [json, top, r#"{"match":"any","rules":[{"field":"genre","op":"is","value":"jazz"},{"field":"rating","op":"is","value":5}]}"#] {
+        let mut m = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw).unwrap();
+        strip_ratings(&mut m);
+        let once = m.clone();
+        assert!(!strip_ratings(&mut m), "{raw}");
+        assert_eq!(m, once);
+    }
     let mut m = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(r#"{"rules":[{"field":"plays","op":"at_least","value":1}]}"#).unwrap();
     assert!(!strip_ratings(&mut m));
 }

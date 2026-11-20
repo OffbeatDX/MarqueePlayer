@@ -167,6 +167,39 @@ impl Lib {
         matched.iter().map(|t| t.id).collect()
     }
 
+    /// Whether something in smart playlist `id`, evaluated under `stack`, matches nothing in
+    /// place of what it would (a rule this build cannot use, an unknown limit, a rule whose
+    /// value does not fit, a playlist that is gone, comes back or is too deep, "is not in" one
+    /// that is lossy itself): then "is not in" it matches nothing.
+    fn lossy(&self, id: i64, stack: &mut Vec<i64>) -> bool {
+        let Some(Some(rules)) = self.playlists.get(&id) else { return false };
+        let smart = Smart::from_json(rules);
+        if smart.incomplete() {
+            return true;
+        }
+        fn walk(lib: &Lib, g: &Group, stack: &mut Vec<i64>) -> bool {
+            g.nodes.iter().any(|n| match n {
+                Node::Unknown { .. } => true,
+                Node::Group(g) => walk(lib, g, stack),
+                Node::Cond(c) if c.check().is_err() => true,
+                Node::Cond(c) if c.field == Field::Playlist => {
+                    let Value::Id(r) = c.value else { return true };
+                    match lib.playlists.get(&r) {
+                        None => true,
+                        Some(None) => false,
+                        Some(Some(_)) if stack.contains(&r) || stack.len() >= MAX_DEPTH => true,
+                        Some(Some(_)) => lib.lossy(r, stack),
+                    }
+                }
+                Node::Cond(_) => false,
+            })
+        }
+        stack.push(id);
+        let l = walk(self, &smart.root, stack);
+        stack.pop();
+        l
+    }
+
     fn group(&self, g: &Group, t: &RTrack, stack: &mut Vec<i64>, ctx: Ctx, top: bool) -> bool {
         if g.nodes.is_empty() {
             return top || g.all;
@@ -278,6 +311,9 @@ impl Lib {
                     Some(None) => self.items.get(&id).cloned().unwrap_or_default(),
                     Some(Some(rules)) => {
                         if stack.contains(&id) || stack.len() >= MAX_DEPTH {
+                            return false;
+                        }
+                        if c.op == Op::NotIn && self.lossy(id, stack) {
                             return false;
                         }
                         let key = (id, stack.clone());

@@ -323,12 +323,27 @@ the page and the editor say which ("A rule from a newer version of Marquee Playe
 “mood”)…"). Saving never lowers the version.
 
 **Ratings, from an earlier version.** The app no longer keeps ratings. A smart playlist saved
-with rules about them loses those rules when the app starts (`query::forget_rating_rules`,
-once, logged per playlist) and keeps the others as they were: a rating condition is taken out
-of its group (a group left with no rules goes too), an order or a limit's choice by rating
-becomes the default order. A list that was only "rated 4+" then holds every track, as a
-playlist with no rules does; edit it, or delete it. Read from a file in any other way
-(`Smart::from_json`), the same rules are dropped, never shown as unknown.
+with rules about them is written again when the app starts (`query::forget_rating_rules`,
+logged per playlist; a second start finds nothing more to do), and no rule about ratings ever
+widens what a list holds or turns it into every track:
+
+- Among other rules of "all of", a rating condition (or a group of nothing but rating
+  conditions) is dropped and the others kept: "Jazz, rated 4+" becomes "Jazz".
+- Anywhere else it stays, as a rule this version cannot use: it matches nothing, and the page
+  and the editor say "A rule about ratings, which are no longer kept". A list that was only
+  "rated 4+" (or "rated 2+ and at most 4") is then empty, never the whole library; in "any of"
+  the other choices still count ("Jazz, or rated 5" holds the Jazz); a group of nothing but
+  ratings matches nothing. Edit the list to take the rule out, or delete it.
+- An order by rating, or a limit chosen by rating, becomes the default order (the limit keeps
+  its size).
+
+A list that names one of these ("is in Top rated") holds only what the named list's other
+rules match, and says so; "is not in" a list with a rule that matches nothing in place of what
+it would (a rating, a rule from a newer version, a playlist that is gone, comes back or is too
+deep) matches nothing too, rather than more than it should. A list an earlier start of this
+version already emptied (no rules at all) is left alone: it cannot be told from one made with no
+rules. Read from a file in any other way (`Smart::from_json`), the same rules are read the same
+way.
 
 ## Keys
 

@@ -1119,9 +1119,10 @@ pub fn set_favourite_tracks(conn: &Connection, ids: &[i64], fav: bool) -> rusqli
 // ---- ratings, no longer kept ------------------------------------------------
 
 /// Smart playlists stored with a rule about ratings (from a build that kept them) written
-/// again without it (`smart::strip_ratings`): the rating conditions dropped, an order by
-/// rating back to the default one, every other rule as it was. Logged, one line each. How
-/// many were.
+/// again as `smart::strip_ratings` has them: a rating condition among other rules of "all of"
+/// dropped, one anywhere else kept (it matches nothing, and the playlist says so), an order by
+/// rating back to the default one, every other rule as it was. A second run finds nothing to
+/// do. Logged, one line each. How many were.
 pub fn forget_rating_rules(conn: &Connection) -> rusqlite::Result<usize> {
     let found: Vec<(i64, String, String)> = conn
         .prepare("SELECT id, name, rules FROM playlists WHERE rules IS NOT NULL AND rules LIKE '%rating%'")?
@@ -1132,7 +1133,7 @@ pub fn forget_rating_rules(conn: &Connection) -> rusqlite::Result<usize> {
         let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&rules) else { continue };
         if crate::smart::strip_ratings(&mut m) {
             conn.execute("UPDATE playlists SET rules = ?2 WHERE id = ?1", params![id, serde_json::Value::Object(m).to_string()])?;
-            log::info!("smart playlist \u{201c}{name}\u{201d}: its rules about ratings dropped (ratings are no longer kept), the others kept");
+            log::info!("smart playlist \u{201c}{name}\u{201d}: rules about ratings dropped where the others still decide (ratings are no longer kept)");
             n += 1;
         }
     }
@@ -1733,8 +1734,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&rules(best)).unwrap();
         assert_eq!(v, serde_json::json!({"v":1,"match":"all","rules":[{"field":"genre","op":"is","value":"Jazz"}],"seed":3}));
         assert_eq!(rules(other), plain, "nothing about ratings: not written");
+        // Only about ratings: the order goes, the rule stays (it matches nothing and says so),
+        // never an empty rule set that would hold every track.
+        let top = create_smart_playlist(&c, "Top rated", r#"{"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":4}],"sort":{"by":"rating","desc":true}}"#).unwrap();
+        // Already written without them by an earlier start: left as it is.
+        let emptied = r#"{"v":1,"match":"all","rules":[],"seed":1}"#;
+        let was = create_smart_playlist(&c, "Was rated", emptied).unwrap();
+        assert_eq!(forget_rating_rules(&c).unwrap(), 1);
+        let v: serde_json::Value = serde_json::from_str(&rules(top)).unwrap();
+        assert_eq!(v, serde_json::json!({"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":4}]}));
+        let s = crate::smart::Smart::from_json(&rules(top));
+        assert!(crate::smart::evaluate(&c, &s, Some(top), crate::smart::Ctx::now()).unwrap().tracks.is_empty());
+        assert_eq!(rules(was), emptied);
         assert_eq!(forget_rating_rules(&c).unwrap(), 0, "once only");
-        assert_eq!(playlists(&c).unwrap().len(), 2, "no playlist lost");
+        assert_eq!(playlists(&c).unwrap().len(), 4, "no playlist lost");
     }
 
     #[test]

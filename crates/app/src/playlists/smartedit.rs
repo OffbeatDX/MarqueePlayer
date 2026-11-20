@@ -817,9 +817,14 @@ impl Draft {
                             Node::Unknown { why, .. } => why.clone(),
                             _ => String::new(),
                         };
+                        let note = if why == smart::RATINGS_GONE {
+                            "A rule about ratings, which are no longer kept. It matches nothing: remove it.".to_owned()
+                        } else {
+                            format!("A rule from a newer version of Marquee Player ({why}). It matches nothing here and is kept as it is.")
+                        };
                         Row {
                             kind: UNKNOWN,
-                            note: format!("A rule from a newer version of Marquee Player ({why}). It matches nothing here and is kept as it is."),
+                            note,
                             label: "A rule this version cannot use".into(),
                             ..Row::default()
                         }

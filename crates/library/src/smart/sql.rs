@@ -69,10 +69,15 @@ struct Compiler<'c> {
     /// The smart playlists being compiled, outermost first (cycle refusal).
     stack: Vec<i64>,
     problems: Vec<String>,
+    /// Something in what is being compiled matches nothing in place of what it would
+    /// (a problem, or a rule this build cannot use): what it holds may be less than it
+    /// should, so "is not in" it would be more, and is refused.
+    lossy: bool,
 }
 
 impl Compiler<'_> {
     fn problem(&mut self, p: String) {
+        self.lossy = true;
         if !self.problems.contains(&p) {
             self.problems.push(p);
         }
@@ -333,9 +338,21 @@ impl Compiler<'_> {
                     return Frag::of("0");
                 }
                 let inner = Smart::from_json(&rules);
+                let outer = std::mem::replace(&mut self.lossy, inner.incomplete());
                 self.stack.push(id);
                 let sel = self.selection(&inner);
                 self.stack.pop();
+                let lossy = std::mem::replace(&mut self.lossy, outer);
+                if lossy {
+                    if c.op == Op::NotIn {
+                        self.problem(format!("“{name}” has a rule that matches nothing here, so “is not in” it matches nothing too."));
+                        return Frag::of("0");
+                    }
+                    self.lossy = true;
+                    if inner.incomplete() {
+                        self.problem(format!("“{name}” has a rule that matches nothing here: it holds only what its other rules match."));
+                    }
+                }
                 let mut f = Frag::of(&format!("t.id {not}IN ("));
                 f.f(sel).s(")");
                 f
@@ -390,7 +407,7 @@ impl Compiler<'_> {
 }
 
 fn compiler(conn: &Connection, me: Option<i64>, ctx: Ctx) -> Compiler<'_> {
-    Compiler { conn, ctx, stack: me.into_iter().collect(), problems: Vec::new() }
+    Compiler { conn, ctx, stack: me.into_iter().collect(), problems: Vec::new(), lossy: false }
 }
 
 fn problems(smart: &Smart, c: Compiler<'_>) -> Vec<String> {
