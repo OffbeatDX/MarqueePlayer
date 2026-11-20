@@ -90,6 +90,7 @@ mod details; // details: technical details and "New playlist…"
 mod editing; // editing: tag editing in View metadata
 mod eq; // eq: Settings > Equalizer and the crossfade
 mod eq_paste; // eq-paste: the equalizer's Copy and Paste
+mod home_shelves; // home-shelves: Home's hero and grid shelves, and the shelf editor's rows
 mod listenbrainz; // listenbrainz: Settings > Connections > ListenBrainz
 mod lyrics; // lyrics: the Lyrics tab's timing offset, Copy and Save
 mod messy_library; // home, library: several artists and genres per track, forgiving tags, the home page
@@ -316,6 +317,7 @@ pub fn install(app: &AppWindow) {
             "metadata" => crate::bench::metadata::run(),
             "about" => crate::bench::about::run(),
             "home" => crate::bench::messy_library::run(),
+            "home-shelves" => crate::bench::home_shelves::run(),
             "library" => crate::bench::messy_library::run_library(),
             "editing" => crate::bench::editing::run(),
             "smart" => crate::bench::smart::run(),

@@ -108,6 +108,16 @@ The runner (`crates/bench-runner`, never shipped):
   handlers (the pinch's first finger pressing Back: not clicked), another monitor's scale factor,
   the minimum size at 200% and 100%; then `zoom-check`, the next start on the same data folder:
   150% restored as the window comes up (`zoom-restored-150.png`).
+- **`home-shelves`** (`bench/home_shelves.rs`, the `core` set): Home's hero and grid shelves by the
+  pointer and the keys through the window's dispatch. The hero's play button: not drawn without
+  the pointer or with it elsewhere on the card, drawn with it on the cover and on every move
+  resting on the button and across its edge, a click there playing the album and one elsewhere
+  on the cover opening it; the strip's single click featuring a cover and playing nothing, its
+  double click (at once, and 150 ms apart) playing the cover clicked. The shelf editor's rows,
+  clicked up to 6 and down to 1 and held there. Grid shelves of 1, 2 and 6 rows at window widths
+  from 960 to 1920 and at 70%, 100% and 150%: the page as tall as the rows wanted (its furthest
+  scroll), the first and last rows full; a shelf of fewer albums than a row holds in one row;
+  End and the arrows stopping at the last album shown. Snapshots `hs-*.png`.
 - **`xfade-rates`** (`bench/xfade_rates.rs`, the `formats` set): the 48 kHz Opus track crossfading into a
   44.1 kHz FLAC album in the real app: the device not reopened, the details, Settings > Output and
   the player bar saying the track is converted from 44.1 kHz, the album's next track gapless and
@@ -141,7 +151,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_VOLUME=0` | Start at this volume |
 | `--minimized` (argument) | Start in the tray, the window made but not shown ("Start with Windows" passes it). Ignored without a tray |
 | `--version` (argument) | Print `Marquee Player <version>` and exit (the AppImage's launcher uses it to check the libraries load) |
-| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) need `SLINT_BACKEND=winit-skia-opengl` and a build with `--features bench-opengl` |
+| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) need `SLINT_BACKEND=winit-skia-opengl` and a build with `--features bench-opengl` |
 | `MP_BENCH_IDLE_SECS=<s>` | How long `idle-paused` / `idle-stopped` stay idle, hidden, before quitting (default 90) |
 | `MP_WINDOW=secondary` | Open the window maximized on a monitor other than the primary one, without ever taking the foreground or keyboard focus (also when shown again from the tray); click into it to use it. One monitor: normal placement, still never activated. Bench runs honour it too | On Linux (no monitor to keep clear under a headless compositor): the window opens maximized and never asks for the focus, and the benches size it themselves |
 | `MP_AUDIO=alsa` | Linux: play through ALSA's `default` device instead of PipeWire (the fallback where there is no PipeWire) |

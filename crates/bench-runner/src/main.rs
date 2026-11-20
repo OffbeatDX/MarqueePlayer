@@ -133,6 +133,8 @@ const MODES: &[Mode] = &[
     Mode { name: "listenbrainz", bench: "listenbrainz", sets: &["core"], limit: 180, env: &[], linux: true, kind: Kind::Plain },
     Mode { name: "metadata", bench: "metadata", sets: &["meta"], limit: 300, env: &[], linux: true, kind: Kind::Plain },
     Mode { name: "home", bench: "home", sets: &["messy"], limit: 180, env: &[], linux: true, kind: Kind::Plain },
+    // The hero's play button and strip, the shelf editor's rows, grid shelves at several sizes.
+    Mode { name: "home-shelves", bench: "home-shelves", sets: &["core"], limit: 300, env: &[], linux: true, kind: Kind::Plain },
     Mode { name: "library", bench: "library", sets: &["messy"], limit: 240, env: &[], linux: true, kind: Kind::Plain },
     Mode { name: "editing", bench: "editing", sets: &["edit"], limit: 400, env: &[], linux: true, kind: Kind::Plain },
     Mode { name: "smart", bench: "smart", sets: &["messy120"], limit: 400, env: &[], linux: true, kind: Kind::Plain },
