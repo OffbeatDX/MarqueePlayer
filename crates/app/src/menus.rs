@@ -249,17 +249,17 @@ enum Anchor {
 }
 
 /// `act` with its row index pointing at the item the menu was opened on, wherever that item
-/// is now; `None` when it is no longer in its list.
+/// is now; `None` when it is no longer in its list. A track list's rows are known only by
+/// their tracks (a playlist is kept as a list of track ids, the same track maybe twice), so a
+/// row that moved is the one showing that track nearest where it was: with a track in a
+/// playlist twice, "Remove from playlist" takes the copy the menu was opened on, not the first.
 fn reanchored(st: &State, act: Act) -> Option<Act> {
     let anchor = ANCHOR.with(|a| a.borrow().clone());
     let row = |ctx: &str, i: i32| -> Option<i32> {
         match &anchor {
             Some(Anchor::Row { ctx: c, index, track }) if c == ctx && *index == i => {
-                let list = st.lists.by_ctx(ctx)?;
-                if list.get(i.max(0) as usize).is_some_and(|t| t.id == *track) {
-                    return Some(i);
-                }
-                (0..slint::Model::row_count(&**list)).find(|&j| list.get(j).is_some_and(|t| t.id == *track)).map(|j| j as i32)
+                // The row itself when it still shows the track.
+                st.lists.by_ctx(ctx)?.find_near(i.max(0) as usize, *track).map(|j| j as i32)
             }
             _ => Some(i),
         }
@@ -835,6 +835,20 @@ pub fn key(st: &Rc<State>, key: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_menu_on_a_track_in_a_playlist_twice_acts_on_its_own_copy() {
+        let list = crate::rows::TrackModel::new(false);
+        let t = |id| library::Track { id, ..library::Track::default() };
+        // The menu was opened on row 3, the second copy of track 7.
+        list.set([1, 7, 2, 7, 4].map(t).to_vec(), Default::default(), false);
+        assert_eq!(list.find_near(3, 7), Some(3));
+        // A row above it went meanwhile: that copy is row 2 now, not the first copy (row 0).
+        list.set([7, 2, 7, 4].map(t).to_vec(), Default::default(), false);
+        assert_eq!(list.find_near(3, 7), Some(2));
+        list.set([2, 4].map(t).to_vec(), Default::default(), false);
+        assert_eq!(list.find_near(3, 7), None);
+    }
 
     /// "Show in Explorer" on Windows (the platform's words).
     const SHOW: &str = crate::platform::system::WORDS.show_in;
