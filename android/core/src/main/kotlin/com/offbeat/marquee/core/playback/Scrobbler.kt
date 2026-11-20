@@ -49,6 +49,7 @@ class Scrobbler(
     private val log: (String) -> Unit = {},
     private val queue: ((id: String, timeMillis: Long) -> Unit)? = null,
 ) {
+    private var trackKey: String? = null
     private var songId: String? = null
     private var durationMs: Long? = null
     private var startedAtWallMs = 0L
@@ -57,8 +58,39 @@ class Scrobbler(
     private var submitted = false
     private var timer: Job? = null
 
-    /** A new track became current. [playing] says whether it is playing right now. */
+    /** The current queue entry repeated (repeat-one): the next [onItem] starts a fresh play. */
+    fun onRepeat() {
+        trackKey = null
+    }
+
+    /**
+     * Follows the player's current queue entry. [trackKey] identifies the queue entry (not just
+     * the song id), so the same song twice in a row in the queue counts as two plays. "Now playing"
+     * waits for [playWhenReady], so a queue restored paused sends nothing.
+     */
+    fun onItem(
+        trackKey: String?,
+        songId: String?,
+        durationMs: Long?,
+        playWhenReady: Boolean,
+        isPlaying: Boolean,
+        wallClockMs: Long,
+    ) {
+        if (trackKey == null || songId == null) {
+            onStopped()
+            return
+        }
+        if (trackKey != this.trackKey && playWhenReady) {
+            this.trackKey = trackKey
+            onTrackStarted(songId, durationMs, isPlaying, wallClockMs)
+        } else {
+            onPlayingChanged(isPlaying)
+        }
+    }
+
+    /** A new track became current. Settles the previous play first. [playing] says whether it is playing right now. */
     fun onTrackStarted(id: String, durationMs: Long?, playing: Boolean, wallClockMs: Long) {
+        onPlayingChanged(false)
         timer?.cancel()
         songId = id
         this.durationMs = durationMs
@@ -89,6 +121,7 @@ class Scrobbler(
         onPlayingChanged(false)
         timer?.cancel()
         songId = null
+        trackKey = null
     }
 
     /** Listening time so far on the current track. */

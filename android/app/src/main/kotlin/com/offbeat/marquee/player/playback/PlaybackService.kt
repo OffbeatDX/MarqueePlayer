@@ -113,7 +113,6 @@ class PlaybackService : MediaLibraryService() {
     private var effectSession = C.AUDIO_SESSION_ID_UNSET
     private var fadeVolume = 1f
     private var periodicSave: Job? = null
-    private var scrobbleId: String? = null
     private var restored = false
     /** A saved play order waiting for its items (playback resumption hands the items over first). */
     private var pendingShuffleOrder: List<Int>? = null
@@ -693,7 +692,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) scrobbleId = null
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) scrobbler.onRepeat()
             if (seekReload.pendingMs != null) AppLog.i(TAG, "seek: another track now, the seek that waited is dropped")
             seekReload.onOtherItem()
             updatePendingSeekExtra()
@@ -792,19 +791,14 @@ class PlaybackService : MediaLibraryService() {
 
     private fun updateScrobble() {
         val item = player.currentMediaItem
-        if (item == null) {
-            scrobbler.onStopped()
-            scrobbleId = null
-            return
-        }
-        // "Now playing" is sent when a track actually starts, not when a queue is restored paused.
-        if (item.mediaId != scrobbleId && player.playWhenReady) {
-            scrobbleId = item.mediaId
-            val durationMs = songOf(item)?.duration?.let { it * 1000L }
-            scrobbler.onTrackStarted(item.mediaId, durationMs, player.isPlaying, System.currentTimeMillis())
-        } else {
-            scrobbler.onPlayingChanged(player.isPlaying)
-        }
+        scrobbler.onItem(
+            trackKey = item?.let(::itemKey),
+            songId = item?.mediaId,
+            durationMs = item?.let(::songOf)?.duration?.let { it * 1000L },
+            playWhenReady = player.playWhenReady,
+            isPlaying = player.isPlaying,
+            wallClockMs = System.currentTimeMillis(),
+        )
     }
 
     // ---- Favourite button -----------------------------------------------------------------

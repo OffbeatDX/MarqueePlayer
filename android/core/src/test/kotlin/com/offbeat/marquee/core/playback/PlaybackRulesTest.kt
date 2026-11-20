@@ -296,6 +296,73 @@ class PlaybackRulesTest {
     }
 
     @Test
+    fun trackEndingAtThresholdBeforeTimerRunsIsStillSubmitted() = runTest {
+        val sent = mutableListOf<Sent>()
+        val s = scrobbler(sent)
+        s.onTrackStarted("a", 200_000, playing = true, wallClockMs = 1_000)
+        runCurrent()
+        // Clock reaches the 150 s threshold, and the next track starts before the timer coroutine runs.
+        advanceTimeBy(150_000)
+        s.onTrackStarted("b", 200_000, playing = true, wallClockMs = 151_000)
+        runCurrent()
+        assertEquals(
+            listOf("a" to false, "a" to true, "b" to false),
+            sent.map { it.id to it.submission },
+        )
+        assertEquals(1_000L, sent[1].time)
+    }
+
+    @Test
+    fun sameSongTwiceInARowInTheQueueCountsAsTwoPlays() = runTest {
+        val sent = mutableListOf<Sent>()
+        val s = scrobbler(sent)
+        // Queue restored paused sends nothing until play starts.
+        s.onItem("a#1", "a", 200_000, playWhenReady = false, isPlaying = false, wallClockMs = 0)
+        runCurrent()
+        assertTrue(sent.isEmpty())
+
+        // First queue entry plays past the threshold, then transitions to a second entry of the same song.
+        s.onItem("a#1", "a", 200_000, playWhenReady = true, isPlaying = true, wallClockMs = 1_000)
+        runCurrent()
+        advanceTimeBy(150_000)
+        s.onItem("a#2", "a", 200_000, playWhenReady = true, isPlaying = true, wallClockMs = 151_000)
+        runCurrent()
+        advanceTimeBy(150_000); runCurrent()
+
+        assertEquals(
+            listOf(
+                Triple("a", 1_000L, false),
+                Triple("a", 1_000L, true),
+                Triple("a", 151_000L, false),
+                Triple("a", 151_000L, true),
+            ),
+            sent.map { Triple(it.id, it.time, it.submission) },
+        )
+    }
+
+    @Test
+    fun repeatingTheSameQueueEntryStartsAFreshPlay() = runTest {
+        val sent = mutableListOf<Sent>()
+        val s = scrobbler(sent)
+        s.onItem("a#1", "a", 200_000, playWhenReady = true, isPlaying = true, wallClockMs = 1_000)
+        runCurrent()
+        advanceTimeBy(150_000)
+        s.onRepeat()
+        s.onItem("a#1", "a", 200_000, playWhenReady = true, isPlaying = true, wallClockMs = 201_000)
+        runCurrent()
+        advanceTimeBy(150_000); runCurrent()
+        assertEquals(
+            listOf(
+                Triple("a", 1_000L, false),
+                Triple("a", 1_000L, true),
+                Triple("a", 201_000L, false),
+                Triple("a", 201_000L, true),
+            ),
+            sent.map { Triple(it.id, it.time, it.submission) },
+        )
+    }
+
+    @Test
     fun scrobbleIsRefusedInReadOnlyModeAndNeverSent() = runTest {
         val server = MockWebServer()
         server.start()
