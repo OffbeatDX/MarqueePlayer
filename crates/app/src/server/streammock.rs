@@ -32,6 +32,10 @@ pub struct Behaviour {
     pub stall_at: Option<(u64, Duration)>,
     /// Once: close the connection once the body reaches this offset of the file.
     pub drop_at: Option<u64>,
+    /// Once: when a body reaches this offset of the file, the song is replaced by these bytes
+    /// (as `Mock::replace`), before any more is sent. The answer under way goes on with the old
+    /// file; the requests after it get the new one.
+    pub replace_at: Option<(u64, Vec<u8>)>,
     /// The next this many stream requests answer 503.
     pub fail_next: usize,
     /// Answer every range with the whole file (200), as some servers do.
@@ -128,10 +132,7 @@ impl Mock {
     /// The song's file replaced on the server by `bytes`, under the same id: another
     /// `Last-Modified` from here on.
     pub fn replace(&self, id: &str, bytes: Vec<u8>) {
-        let mut songs = self.shared.songs.lock().unwrap();
-        let song = songs.get_mut(id).expect("a song added before");
-        let next = (1..).map(modified).find(|m| *m != song.modified).unwrap_or_default();
-        *song = Song { bytes: Arc::new(bytes), content_type: song.content_type.clone(), modified: next };
+        replace(&self.shared, id, bytes);
     }
 
     pub fn remove(&self, id: &str) {
@@ -182,6 +183,13 @@ impl Mock {
     pub fn client(&self) -> subsonic::Client {
         subsonic::Client::new(self.credentials(), true).expect("client")
     }
+}
+
+fn replace(s: &Shared, id: &str, bytes: Vec<u8>) {
+    let mut songs = s.songs.lock().unwrap();
+    let song = songs.get_mut(id).expect("a song added before");
+    let next = (1..).map(modified).find(|m| *m != song.modified).unwrap_or_default();
+    *song = Song { bytes: Arc::new(bytes), content_type: song.content_type.clone(), modified: next };
 }
 
 fn decode(s: &str) -> String {
@@ -347,6 +355,14 @@ fn stream(conn: &mut TcpStream, s: &Shared, id: &str, from: u64, if_range: Optio
                     cur.stall_at = None;
                 }
                 Some((o, _)) if at < o && o < end => end = o,
+                _ => {}
+            }
+            match &cur.replace_at {
+                Some((o, _)) if *o == at => {
+                    let (_, bytes) = cur.replace_at.take().unwrap();
+                    replace(s, id, bytes);
+                }
+                Some((o, _)) if at < *o && *o < end => end = *o,
                 _ => {}
             }
             match cur.drop_at {

@@ -711,18 +711,18 @@ fn a_file_changed_during_its_download_fails_and_is_fetched_again() {
     let new: Vec<u8> = old.iter().map(|b| b.wrapping_add(1)).collect();
     let mock = Mock::start();
     mock.add("d", old.clone(), "audio/flac");
+    // Replaced while the first answer still sends the old file (by the mock, at that offset:
+    // not a moment the test picks, which a slow machine could put after the drop): the range
+    // after the drop is asked of the new one.
     mock.set(|b| {
         b.rate = 400_000;
+        b.replace_at = Some((50_000, new.clone()));
         b.drop_at = Some(150_000);
     });
     let i = info("d", &old, "flac");
     let d = dir("changed-during");
     let s = streamer_on(&mock, &d);
     let feed = feed_of(&s.request(1, &i).unwrap());
-    // Replaced while the first answer still sends the old file: the range after the drop is
-    // asked of the new one.
-    wait_until(Duration::from_secs(10), "some of it", || mock.sent() >= 50_000);
-    mock.replace("d", new.clone());
     wait_until(Duration::from_secs(10), "failed", || feed.failure().is_some());
     assert!(feed.failure().unwrap().contains("changed on the server"), "{:?}", feed.failure());
     let froms: Vec<_> = mock.streams().iter().map(|r| (r.from, r.if_range.is_some())).collect();
@@ -734,5 +734,37 @@ fn a_file_changed_during_its_download_fails_and_is_fetched_again() {
     let feed = feed_of(&s.request(2, &i).unwrap());
     wait_until(Duration::from_secs(10), "whole", || feed.is_complete());
     assert_eq!(fs::read(&path).unwrap(), new);
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
+
+/// A download whose feed has failed but whose thread has not yet returned (it deletes its files
+/// and fails the feed, then returns): a request in between starts a new download, not the failed
+/// feed back. As the test above does by chance when its second request comes that soon.
+#[test]
+fn a_request_after_a_failure_is_not_given_the_failed_feed() {
+    let bytes: Vec<u8> = (0..200_000u32).map(|n| (n * 11) as u8).collect();
+    let mock = Mock::start();
+    mock.add("f", bytes.clone(), "audio/flac");
+    let i = info("f", &bytes, "flac");
+    let s = streamer(&mock, "failed-not-ended");
+    let k = key(&i);
+    let failing = Arc::new(Download {
+        key: k.clone(),
+        info: i.clone(),
+        path: data_path(s.dir(), &i),
+        feed: Feed::new(),
+        stop: Mutex::new(None),
+        woken: Condvar::new(),
+        ended: AtomicBool::new(false),
+        thread: Mutex::new(None),
+    });
+    failing.feed.fail("the file changed on the server while it downloaded: play it again".to_owned());
+    s.lock().downloads.insert(k, failing.clone());
+    let feed = feed_of(&s.request(2, &i).unwrap());
+    assert_eq!(feed.failure(), None, "a fresh feed, not the failed one");
+    // Its thread returns now; the new download waited for it, then fetches the file.
+    failing.ended.store(true, Ordering::Release);
+    wait_until(Duration::from_secs(10), "whole", || feed.is_complete());
+    assert_eq!(fs::read(data_path(s.dir(), &i)).unwrap(), bytes);
     assert!(s.shutdown_and_wait(Duration::from_secs(5)));
 }

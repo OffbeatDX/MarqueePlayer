@@ -387,6 +387,13 @@ impl Download {
         self.stop.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
+    /// Still fetching, so a request for its file joins it. Not once its feed failed: the thread
+    /// fails the feed before it returns (and `ended` is set), and a request in between would
+    /// get that failed feed back instead of a fresh download.
+    fn joinable(&self) -> bool {
+        !self.stopping() && !self.ended.load(Ordering::Acquire) && self.feed.failure().is_none()
+    }
+
     fn set_stop(&self, why: Stop) {
         let mut s = self.stop.lock().unwrap_or_else(|e| e.into_inner());
         if s.is_none() {
@@ -514,8 +521,7 @@ impl Streamer {
         let mut g = self.lock();
         g.kept.insert(key.clone());
         if let Some(d) = g.downloads.get(&key)
-            && !d.stopping()
-            && !d.ended.load(Ordering::Acquire)
+            && d.joinable()
         {
             return Ok(TrackRequest::growing(token, d.path.clone(), d.feed.clone()));
         }
@@ -540,7 +546,7 @@ impl Streamer {
         if let Some(client) = g.client.clone() {
             for info in now {
                 let k = key(info);
-                let busy = g.downloads.get(&k).is_some_and(|d| !d.stopping() && !d.ended.load(Ordering::Acquire));
+                let busy = g.downloads.get(&k).is_some_and(|d| d.joinable());
                 if !busy && whole(&self.cfg.dir, info).is_none() {
                     self.start(&mut g, info, client.clone());
                 }
@@ -604,10 +610,12 @@ impl Streamer {
     fn finished(self: &Arc<Self>, d: &Arc<Download>) {
         {
             let mut g = self.lock();
-            if g.downloads.get(&d.key).is_some_and(|x| Arc::ptr_eq(x, d)) {
+            let current = g.downloads.get(&d.key).is_none_or(|x| Arc::ptr_eq(x, d));
+            if current {
                 g.downloads.remove(&d.key);
             }
-            if let Some(m) = d.feed.failure() {
+            // Not when a new download of the file started meanwhile (`start` cleared it).
+            if let Some(m) = d.feed.failure().filter(|_| current) {
                 g.failures.insert(d.info.song_id.clone(), m);
             }
             self.start_ahead(&mut g);
