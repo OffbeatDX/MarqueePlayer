@@ -14,14 +14,17 @@
 //!    the group, also those without the tag (an album tagged on most tracks only).
 //! 2. Album artist tags that disagree: one album per album artist, as tagged; unless a
 //!    track is flagged as part of a compilation, which makes the group one compilation.
-//! 3. No album artist tag at all:
+//! 3. No album artist tag at all (nor a MusicBrainz release id): the folder and the album
+//!    title are the album, whatever the track numbers say (a soundtrack ripped one song at a
+//!    time numbers every track 1, or not at all):
 //!    - every track's first credited artist is the same: theirs ("A" and "A feat. B" are
 //!      one album by A, not two);
-//!    - else a compilation ("Various Artists") when a track carries the compilation flag,
-//!      or when every track has an album tag and no two tracks share a disc and track
-//!      number (a compilation numbers its tracks once; two albums of the same title in one
-//!      folder repeat their numbers);
-//!    - else one album per first credited artist, as before.
+//!    - else a compilation ("Various Artists"). Two albums of one title by different
+//!      artists in one folder are one compilation too, unless their tags tell them apart
+//!      (album artists, release ids);
+//!    - tracks without an album tag stay one "album" per first credited artist (unless
+//!      one is flagged as part of a compilation): a folder of loose singles is not one
+//!      untitled compilation.
 //!
 //! A track with no artist and no album artist at all has an empty artist part (shown as
 //! "Unknown Artist"). An album artist tag that says "Various Artists" (or "VA", ...) is a
@@ -134,7 +137,9 @@ pub fn decide(group: &[&Member]) -> Vec<By> {
         [only] => return vec![By::Main(only.clone()); group.len()],
         _ => {}
     }
-    if flagged || (group.iter().all(|m| m.album.is_some()) && !numbers_repeat(group)) {
+    // Titled (the group shares its title's `norm`): one album, by the folder. Untitled
+    // (no album tag): loose singles, each by its artist, unless flagged.
+    if flagged || !group[0].title_norm().is_empty() {
         return vec![By::Various; group.len()];
     }
     group.iter().map(|m| By::Main(m.main())).collect()
@@ -151,12 +156,6 @@ pub fn decide_one(members: &[&Member]) -> By {
         return first.clone();
     }
     names::most_common(each.iter(), Clone::clone).cloned().unwrap_or(By::Main(String::new()))
-}
-
-/// Two tracks share a disc and track number (no disc number is disc 1).
-fn numbers_repeat(group: &[&Member]) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    group.iter().filter_map(|m| m.track.map(|t| (m.disc.unwrap_or(1), t))).any(|n| !seen.insert(n))
 }
 
 #[cfg(test)]
@@ -212,25 +211,59 @@ mod tests {
     }
 
     #[test]
-    fn two_albums_of_one_title_stay_apart() {
-        // Same folder, same title, two artists, numbers repeated: two albums.
+    fn two_albums_of_one_title_in_one_folder_are_one_compilation() {
+        // Same folder, same title, two artists, no album artist: the folder decides, whatever
+        // the numbers say. Album artist tags still tell them apart.
         let mut ms = Vec::new();
         for a in ["Copper Monks", "Lunar Sparrows"] {
             for t in 1..=3 {
                 ms.push(m("Greatest Hits", None, a, t));
             }
         }
+        assert_eq!(keys(&ms), vec!["t:various artists|greatest hits|m:/x"; 6]);
+        for x in &mut ms {
+            x.album_artist = x.main_artist.clone();
+        }
         let k = keys(&ms);
         assert_eq!(distinct(&k), 2);
         assert!(k.contains(&"t:copper monks|greatest hits|m:/x".to_owned()));
     }
 
+    /// A game soundtrack ripped a song at a time: every track numbered 1, or none numbered,
+    /// one artist per song (some with a featured credit), no album artist. One album.
+    #[test]
+    fn a_soundtrack_without_an_album_artist_is_one_album() {
+        let artists = ["7mai", "40mP", "40mP feat.シャノ", "164", "1640mP（164×40mP）", "40mP"];
+        let soundtrack = |track: Option<u32>| -> Vec<Member> {
+            artists
+                .iter()
+                .map(|a| {
+                    let main = names::credits(a).into_iter().find(|c| !c.featured).map(|c| c.name);
+                    Member { track, main_artist: main, ..m("O.N.G.E.K.I. GST", None, "", 0) }
+                })
+                .collect()
+        };
+        for ms in [soundtrack(Some(1)), soundtrack(None)] {
+            assert_eq!(keys(&ms), vec!["t:various artists|o.n.g.e.k.i. gst|m:/x"; artists.len()]);
+        }
+        // The same songs, all by one artist: that artist's album.
+        let ms: Vec<Member> = ["40mP", "40mP feat.シャノ", "40mP"]
+            .iter()
+            .map(|a| Member { main_artist: names::credits(a).into_iter().find(|c| !c.featured).map(|c| c.name), ..m("O.N.G.E.K.I. GST", None, "", 1) })
+            .collect();
+        assert_eq!(keys(&ms), vec!["t:40mp|o.n.g.e.k.i. gst|m:/x"; 3], "feat. without a space");
+        // In another folder: another album.
+        let mut ms = soundtrack(Some(1));
+        ms[0].folder = "m:/y".into();
+        assert_eq!(distinct(&keys(&ms)), 2);
+    }
+
     #[test]
     fn the_compilation_flag_makes_one_album() {
-        let mut ms: Vec<Member> = ["A", "B"].iter().map(|a| m("Night Drive", None, a, 1)).collect();
-        assert_eq!(distinct(&keys(&ms)), 2, "repeated numbers, no flag: apart");
+        let mut ms: Vec<Member> = ["A", "B"].iter().map(|a| m("", None, a, 1)).collect();
+        assert_eq!(distinct(&keys(&ms)), 2, "untitled, no flag: apart");
         ms[1].compilation = true;
-        assert_eq!(keys(&ms), vec!["t:various artists|night drive|m:/x"; 2]);
+        assert_eq!(keys(&ms), vec!["t:various artists||m:/x"; 2]);
         // And with album artists that disagree.
         let mut ms = vec![m("Mix", Some("A"), "A", 1), m("Mix", Some("B"), "B", 2)];
         assert_eq!(distinct(&keys(&ms)), 2, "album artists as tagged");

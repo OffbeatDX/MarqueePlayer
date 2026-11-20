@@ -273,14 +273,14 @@ fn messy(lib: &mut Lib) {
         );
     }
     lib.covers.push(("Messy/Compilations/Night Drive".into(), 902));
-    // Two different albums sharing a title in one folder: their numbers collide, so they
-    // are two albums, not a compilation.
+    // Two different albums sharing a title in one folder, told apart by their album artist
+    // tags (without them the folder makes them one compilation).
     for (artist, seed) in [("Copper Monks", 903), ("Lunar Sparrows", 904)] {
         for t in 1..=5 {
             lib.add(
                 format!("Messy/Greatest Hits/{artist} - {t:02}.flac"),
                 Fmt::Flac,
-                kv(&[(K::TrackArtist, artist), (K::AlbumTitle, "Greatest Hits"), (K::TrackTitle, &format!("{artist} hit {t}")), (K::TrackNumber, &t.to_string()), (K::RecordingDate, "1999")]),
+                kv(&[(K::TrackArtist, artist), (K::AlbumArtist, artist), (K::AlbumTitle, "Greatest Hits"), (K::TrackTitle, &format!("{artist} hit {t}")), (K::TrackNumber, &t.to_string()), (K::RecordingDate, "1999")]),
             );
         }
         let _ = seed;

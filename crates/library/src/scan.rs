@@ -569,8 +569,11 @@ fn make_art(
 }
 
 /// The scanner's tag reading version (`tracks.tags_read`). Tracks read by an earlier one
-/// (0: before schema 8) are read again by the next full scan (`fill_tags`).
-pub const TAGS_VERSION: i64 = 8;
+/// (0: before schema 8) are read again by the next full scan (`fill_tags`), and their
+/// folders regrouped. 9: "feat." with no space after it, full-width brackets
+/// (`names::featured`); a folder's titled tracks without an album artist are one album
+/// whatever their numbers (`group`).
+pub const TAGS_VERSION: i64 = 9;
 
 /// Tracks read per transaction by `fill_tags`, whole folders at a time.
 const TAGS_BATCH: usize = 384;
@@ -2582,21 +2585,66 @@ mod tests {
                 let n = (t + 1).to_string();
                 lib.tagged(&format!("Comp/Summer/{n}.wav"), &[(K::TrackArtist, a), (K::AlbumTitle, "Summer Hits"), (K::TrackTitle, a), (K::TrackNumber, &n)]);
             }
-            // Two albums of one title in one folder: numbers repeat, so two albums.
+            // Two albums of one title in one folder, no album artist: the folder decides, one
+            // compilation, whatever the numbers say.
             for a in ["Copper Monks", "Lunar Sparrows"] {
                 for t in 1..=2 {
                     let n = t.to_string();
                     lib.tagged(&format!("Mixed/Hits/{a} {n}.wav"), &[(K::TrackArtist, a), (K::AlbumTitle, "Greatest Hits"), (K::TrackTitle, a), (K::TrackNumber, &n)]);
                 }
             }
+            // With album artist tags, two albums.
+            for a in ["Copper Monks", "Lunar Sparrows"] {
+                for t in 1..=2 {
+                    let n = t.to_string();
+                    lib.tagged(&format!("Tagged/Hits/{a} {n}.wav"), &[(K::TrackArtist, a), (K::AlbumArtist, a), (K::AlbumTitle, "Greatest Hits"), (K::TrackTitle, a), (K::TrackNumber, &n)]);
+                }
+            }
             lib.scan();
             assert_eq!(lib.album_of("Comp/Summer/1.wav"), ("Summer Hits".into(), "Various Artists".into(), true));
             assert_eq!(lib.album_id("Comp/Summer/1.wav"), lib.album_id("Comp/Summer/3.wav"));
-            assert_eq!(lib.artist_page("Various Artists"), (vec!["Summer Hits".to_owned()], vec![]));
+            assert_eq!(lib.artist_page("Various Artists"), (vec!["Greatest Hits".to_owned(), "Summer Hits".to_owned()], vec![]));
             assert_eq!(lib.artist_page("Theo Vance"), (vec![], vec!["Summer Hits".to_owned()]), "appears on the compilation");
-            assert_ne!(lib.album_id("Mixed/Hits/Copper Monks 1.wav"), lib.album_id("Mixed/Hits/Lunar Sparrows 1.wav"));
-            assert_eq!(lib.album_of("Mixed/Hits/Copper Monks 1.wav").1, "Copper Monks");
-            assert_eq!(lib.albums(), 3);
+            assert_eq!(lib.album_id("Mixed/Hits/Copper Monks 1.wav"), lib.album_id("Mixed/Hits/Lunar Sparrows 2.wav"));
+            assert_eq!(lib.album_of("Mixed/Hits/Copper Monks 1.wav"), ("Greatest Hits".into(), "Various Artists".into(), true));
+            assert_ne!(lib.album_id("Tagged/Hits/Copper Monks 1.wav"), lib.album_id("Tagged/Hits/Lunar Sparrows 1.wav"));
+            assert_eq!(lib.album_of("Tagged/Hits/Copper Monks 1.wav").1, "Copper Monks");
+            assert_eq!(lib.albums(), 4);
+            lib.assert_no_orphans();
+        }
+
+        /// A game soundtrack in one folder, ripped a song at a time: no album artist, one
+        /// artist per song (a featured credit with no space after "feat."), every track
+        /// numbered 1; another with no numbers at all. One album each, a compilation; one
+        /// artist's songs of it are that artist's. Loose singles without an album tag stay
+        /// apart.
+        #[test]
+        fn a_soundtrack_without_an_album_artist_is_one_album() {
+            let mut lib = Lib::new("gst");
+            let songs = [("7mai", "Song A"), ("40mP", "Song B"), ("40mP feat.\u{30b7}\u{30e3}\u{30ce}", "Song C"), ("164", "Song D"), ("1640mP\u{ff08}164\u{d7}40mP\u{ff09}", "Song E")];
+            for (i, (a, t)) in songs.iter().enumerate() {
+                lib.tagged(&format!("GST/{i}.wav"), &[(K::TrackArtist, a), (K::AlbumTitle, "O.N.G.E.K.I. GST"), (K::TrackTitle, t), (K::TrackNumber, "1")]);
+                lib.tagged(&format!("Unnumbered/{i}.wav"), &[(K::TrackArtist, a), (K::AlbumTitle, "Another GST"), (K::TrackTitle, t)]);
+            }
+            for (i, a) in ["40mP", "40mP feat.\u{30b7}\u{30e3}\u{30ce}"].iter().enumerate() {
+                lib.tagged(&format!("Solo/{i}.wav"), &[(K::TrackArtist, a), (K::AlbumTitle, "Solo"), (K::TrackTitle, a), (K::TrackNumber, "1")]);
+            }
+            for a in ["Mara Lind", "Theo Vance"] {
+                lib.tagged(&format!("Singles/{a}.wav"), &[(K::TrackArtist, a), (K::TrackTitle, a)]);
+            }
+            lib.scan();
+            let gst = lib.album_id("GST/0.wav");
+            for i in 1..songs.len() {
+                assert_eq!(lib.album_id(&format!("GST/{i}.wav")), gst);
+                assert_eq!(lib.album_id(&format!("Unnumbered/{i}.wav")), lib.album_id("Unnumbered/0.wav"));
+            }
+            assert_eq!(lib.album_of("GST/2.wav"), ("O.N.G.E.K.I. GST".into(), "Various Artists".into(), true));
+            assert_eq!(lib.album_of("Unnumbered/2.wav").1, "Various Artists");
+            assert_eq!(lib.album_id("Solo/0.wav"), lib.album_id("Solo/1.wav"));
+            assert_eq!(lib.album_of("Solo/1.wav"), ("Solo".into(), "40mP".into(), false));
+            assert_ne!(lib.album_id("Singles/Mara Lind.wav"), lib.album_id("Singles/Theo Vance.wav"), "no album tag: apart");
+            assert_eq!(lib.albums(), 5);
+            assert_eq!(lib.artist_page("\u{30b7}\u{30e3}\u{30ce}").1, vec!["Another GST".to_owned(), "O.N.G.E.K.I. GST".into(), "Solo".into()], "featured");
             lib.assert_no_orphans();
         }
 
@@ -2807,6 +2855,53 @@ mod tests {
             let r = lib.scan_report(Options::default());
             assert_eq!((r.read, r.tags, r.albums_changed), (0, 0, 0), "{r:?}");
             assert_eq!((lib.albums(), lib.album_id("Comp/Summer/1.wav")), (2, comp));
+        }
+
+        /// A soundtrack the previous scanner split in one album per artist (every track
+        /// numbered 1, "feat." with no space a credit of its own) is regrouped by the next
+        /// scan: one compilation, every play, rating and favourite kept.
+        #[test]
+        fn a_split_soundtrack_is_regrouped_keeping_user_data() {
+            let mut lib = Lib::new("regroup-gst");
+            for (f, a) in [("1.wav", "40mP"), ("2.wav", "40mP feat.\u{30b7}\u{30e3}\u{30ce}"), ("3.wav", "164")] {
+                lib.tagged(&format!("GST/{f}"), &[(K::TrackArtist, a), (K::AlbumTitle, "O.N.G.E.K.I. GST"), (K::TrackTitle, f), (K::TrackNumber, "1")]);
+            }
+            old_state(
+                &mut lib,
+                &[
+                    (1, "40mP", "O.N.G.E.K.I. GST", "GST", &["1.wav"], 3000),
+                    (2, "40mP feat.\u{30b7}\u{30e3}\u{30ce}", "O.N.G.E.K.I. GST", "GST", &["2.wav"], 2000),
+                    (3, "164", "O.N.G.E.K.I. GST", "GST", &["3.wav"], 4000),
+                ],
+            );
+            // As the previous version left it: its tags read by scanner version 8.
+            lib.conn.execute("UPDATE tracks SET tags_read = 8", []).unwrap();
+            let ids_before: Vec<i64> = lib.conn.prepare("SELECT id FROM tracks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+            let two = lib.id("GST/2.wav").unwrap();
+            let three = lib.id("GST/3.wav").unwrap();
+            let pl = lib.history(two);
+            crate::query::record_play(&lib.conn, three).unwrap();
+            crate::query::set_rating(&lib.conn, three, 4).unwrap();
+            lib.conn.execute("INSERT INTO favourite_albums VALUES (3, 60)", []).unwrap();
+            let plays = lib.plays_total();
+            assert_eq!(lib.albums(), 3);
+            let r = lib.scan_report(Options::default());
+            assert_eq!((r.read, r.tags), (0, 3), "no file changed; the tags read again: {r:?}");
+            assert_eq!(lib.albums(), 1);
+            let gst = lib.album_id("GST/1.wav");
+            assert_eq!(lib.album_of("GST/2.wav"), ("O.N.G.E.K.I. GST".into(), "Various Artists".into(), true));
+            let ids_after: Vec<i64> = lib.conn.prepare("SELECT id FROM tracks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+            assert_eq!(ids_after, ids_before, "every track keeps its row");
+            assert!(lib.has_history(two, pl));
+            assert_eq!(lib.plays_total(), plays);
+            assert_eq!(crate::query::rating(&lib.conn, three).unwrap(), 4);
+            assert!(crate::query::is_favourite_album(&lib.conn, gst).unwrap(), "the favourite goes with the album");
+            assert_eq!(lib.added("O.N.G.E.K.I. GST"), 2000, "the oldest date");
+            assert!(crate::query::find_artist(&lib.conn, "40mP feat.\u{30b7}\u{30e3}\u{30ce}").unwrap().is_none(), "the credit split");
+            assert_eq!(lib.artist_page("\u{30b7}\u{30e3}\u{30ce}").1, vec!["O.N.G.E.K.I. GST".to_owned()]);
+            lib.assert_no_orphans();
+            let r = lib.scan_report(Options::default());
+            assert_eq!((r.read, r.tags, r.albums_changed), (0, 0, 0), "{r:?}");
         }
 
         /// The same regrouping when the files were retagged meanwhile (read in full, not by

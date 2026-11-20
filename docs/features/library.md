@@ -147,7 +147,9 @@ over taking ARTIST apart, and MusicBrainz artist ids are kept where there are as
 A single string that joins several is split on ";" and on " / " (a slash with spaces), never on
 ",", "&" or a bare "/": "Earth, Wind & Fire" and "AC/DC" stay one artist, and ID3v2.3's
 conventional "/" is split only spaced. "A feat. B", "A ft. B", "A featuring B" and "A (feat.
-B)" credit A, and B as featured; in a title, only a bracketed credit counts ("Song (feat. B)").
+B)" credit A, and B as featured, also with no space after the dot ("40mP feat.シャノ") and with
+full-width spaces and brackets ("A（feat.B）"); in a title, only a bracketed credit counts
+("Song (feat. B)").
 Genres split the same way ("Hip-Hop/Rap" and "Drum & Bass" stay whole). What is shown is the
 credit as tagged: ARTIST as written ("A feat. B"), or several values joined with "; "; each
 credited artist's name in it is a link to their page.
@@ -170,14 +172,15 @@ the folder that share the title:
 - album artist tags that agree: theirs, also for the tracks that lack the tag;
 - album artist tags that disagree: one album each, as tagged (unless the compilation flag is
   set: then one compilation);
-- no album artist tag: the first credited artist, when all tracks have the same ("A" and "A
-  feat. B" are one album by A); otherwise a compilation, "Various Artists", when a track is
-  flagged as one (TCMP, cpil, COMPILATION) or when every track has an album tag and no two
-  share a disc and track number (two different albums with one title in one folder repeat
-  their numbers, and stay apart, one per artist); otherwise one album per artist, as before.
+- no album artist tag (and no release id): the folder and the title are the album, whatever
+  the track numbers say (a soundtrack ripped a song at a time numbers every track 1, or none).
+  It is the first credited artist's when all tracks have the same ("A" and "A feat. B" are one
+  album by A); otherwise a compilation, "Various Artists". Two albums of one title by different
+  artists in one folder are one compilation too, unless album artist tags tell them apart.
 
-A folder of loose singles without album tags stays one album per artist; "Various Artists" or
-"VA" as album artist is a compilation.
+Tracks without an album tag stay one album per artist (unless flagged as a compilation: TCMP,
+cpil, COMPILATION): a folder of loose singles is not one untitled compilation. "Various
+Artists" or "VA" as album artist is a compilation.
 
 **Album values.** An album's title, album artist, sort name, dates, genre, label and release
 type are worked out from all its tracks, so they no longer depend on which track a scan read
@@ -219,6 +222,8 @@ rows (ids) never change; art is cached again only for albums that changed which 
 hold. Measured on 2,754 fixture tracks: 0.19 s for the re-read, 358 albums becoming 271, no art
 re-made, every play, rating, playlist entry and favourite kept; the scan test
 `regrouping_an_old_library_keeps_every_piece_of_user_data` checks the same on a small library.
+Tag reading version 9 (the folder rule above, "feat." with no space) reads every file's tags
+again the same way, once: `a_split_soundtrack_is_regrouped_keeping_user_data`.
 
 **Online services.** Last.fm's `artist` and LRCLIB's `artist_name` are documented only as "the
 artist name"; Last.fm asks for metadata as tagged, not guessed. Both get the credit as tagged
