@@ -2,8 +2,9 @@
 //! runtime directory (`$XDG_RUNTIME_DIR`, else `/tmp`: macOS has no runtime directory), named
 //! after the data folder. The first
 //! instance binds it and listens on a thread of its own (asleep in `accept`); a second
-//! launch connects, writes its request (show the window, and the files it was given, one
-//! path per line) and exits. The listener hands the request to the UI thread, where it
+//! launch connects, writes its request (show the window, and the files it was given, each
+//! path's bytes as they are, ended by a NUL, so a name with a line break or one that is not
+//! UTF-8 arrives whole) and exits. The listener hands the request to the UI thread, where it
 //! waits until the window exists. A socket left by a crash (nobody accepts on it) is
 //! removed and bound again.
 //!
@@ -13,7 +14,9 @@
 //! this user made, mode 0700, checked to be theirs alone before each use (if it is not, the
 //! app runs without the guard rather than talk to whoever made it). The socket is mode 0600.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -175,14 +178,37 @@ pub fn acquire(dir: &Path, paths: &[PathBuf]) -> Instance {
     Instance::First(Guard { path: None })
 }
 
-fn send(mut stream: UnixStream, paths: &[PathBuf]) -> bool {
-    let mut msg = String::from("show\n");
-    for p in paths {
-        msg.push_str(&p.to_string_lossy());
-        msg.push('\n');
+/// A request: `show`, then each path's bytes, every item ended by a NUL (which no Unix path
+/// holds), then an empty item for the end. An empty path is left out (it would end the list).
+fn encode(paths: &[PathBuf]) -> Vec<u8> {
+    let mut msg = b"show\0".to_vec();
+    for p in paths.iter().filter(|p| !p.as_os_str().is_empty()) {
+        msg.extend_from_slice(p.as_os_str().as_bytes());
+        msg.push(0);
     }
-    msg.push('\n');
-    let ok = stream.write_all(msg.as_bytes()).is_ok();
+    msg.push(0);
+    msg
+}
+
+/// The paths of a request as [`encode`] makes it; none if it is not one, or ends early.
+fn decode(reader: &mut impl BufRead) -> Option<Vec<PathBuf>> {
+    let mut items = Vec::new();
+    loop {
+        let mut item = Vec::new();
+        if !matches!(reader.read_until(0, &mut item), Ok(n) if n > 0) || item.pop() != Some(0) {
+            return None;
+        }
+        if item.is_empty() {
+            break;
+        }
+        items.push(item);
+    }
+    let mut items = items.into_iter();
+    (items.next().as_deref() == Some(b"show".as_slice())).then(|| items.map(|b| PathBuf::from(OsString::from_vec(b))).collect())
+}
+
+fn send(mut stream: UnixStream, paths: &[PathBuf]) -> bool {
+    let ok = stream.write_all(&encode(paths)).is_ok();
     // Wait for the first instance to say it took it (or for it to close the socket).
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
     let mut answer = String::new();
@@ -203,20 +229,8 @@ fn listen(listener: UnixListener) {
             // launches after it.
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
             let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
-            let mut lines = Vec::new();
             let mut reader = BufReader::new(std::io::Read::take(&stream, REQUEST_MAX));
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) if line == "\n" => break,
-                    Ok(_) => lines.push(line.trim_end_matches('\n').to_owned()),
-                }
-            }
-            if lines.first().map(String::as_str) != Some("show") {
-                continue;
-            }
-            let paths: Vec<PathBuf> = lines[1..].iter().filter(|l| !l.is_empty()).map(PathBuf::from).collect();
+            let Some(paths) = decode(&mut reader) else { continue };
             let _ = (&stream).write_all(b"ok\n");
             let _ = slint::invoke_from_event_loop(move || hand_over(paths));
         }
@@ -237,6 +251,22 @@ mod tests {
         assert_ne!(a, key(Path::new("/home/x/.config/Marquee-Player-nonexistent")), "letter case is part of a name");
         assert_ne!(a, key(Path::new("/tmp/mp-test-nonexistent")), "another data folder, another instance");
         assert_eq!(a.len(), 16);
+    }
+
+    #[test]
+    fn unusual_names_are_handed_over_whole() {
+        let odd = vec![
+            PathBuf::from("/music/two\nlines.flac"),
+            PathBuf::from(OsString::from_vec(b"/music/latin1-\xe9t\xe9.flac".to_vec())),
+            PathBuf::from("/music/a b.flac"),
+        ];
+        let mut with_empty = odd.clone();
+        with_empty.insert(1, PathBuf::new());
+        assert_eq!(decode(&mut std::io::Cursor::new(encode(&with_empty))), Some(odd), "byte for byte, an empty path left out");
+        assert_eq!(decode(&mut std::io::Cursor::new(encode(&[]))), Some(vec![]), "show the window, no files");
+        let whole = encode(&[PathBuf::from("/music/a.flac")]);
+        assert_eq!(decode(&mut std::io::Cursor::new(&whole[..whole.len() - 1])), None, "cut short");
+        assert_eq!(decode(&mut std::io::Cursor::new(b"open\0/x\0\0")), None, "not a request");
     }
 
     #[test]
