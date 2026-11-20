@@ -430,8 +430,13 @@ fn note(notes: &mut Vec<String>, n: String) {
 }
 
 fn atom(t: &Tok, playlist: &dyn Fn(&str) -> Option<i64>, notes: &mut Vec<String>) -> Option<Atom> {
+    // A field not understood is searched as typed, less its quotes: `rating:"5 stars"` is the
+    // text "rating:5 stars".
     let as_text = |t: &Tok| {
-        let text = if t.key.is_some() { t.raw.trim_start_matches('-').to_owned() } else { t.value.clone() };
+        let text = match &t.key {
+            Some(k) => format!("{k}:{}", t.value),
+            None => t.value.clone(),
+        };
         let text = super::clean_text(&text);
         (!text.is_empty()).then_some(Atom::Text { neg: t.neg, text })
     };

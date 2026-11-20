@@ -255,6 +255,11 @@ fn what_is_not_understood_is_text_and_said() {
         assert_eq!(parsed.notes.len(), 1, "{q}: {parsed:?}");
     }
     assert!(p("rating:9").notes[0].contains("does not keep ratings"), "{:?}", p("rating:9").notes);
+    // Searched as typed, less the quotes (and the space after a colon).
+    assert_eq!(p(r#"rating:"5 stars""#).clauses, vec![vec![text(false, "rating:5 stars")]]);
+    assert_eq!(p("-composer:\u{201c}j s bach\u{201d} live").clauses[0], vec![text(true, "composer:j s bach")]);
+    assert_eq!(p(r#"re:"stacks""#).clauses, vec![vec![text(false, "re:stacks")]]);
+    assert_eq!(p("year: 85").clauses, vec![vec![text(false, "year:85")]]);
     // A plain query reads as plain: one text term per word, no operators.
     let parsed = p("nina simone");
     assert!(!parsed.has_operators() && parsed.notes.is_empty());
