@@ -190,6 +190,10 @@ The README describes the result.
   to 44 pause as a sign-in problem, 70 counts as missing, the rest as unplayable; the download worker
   sets the song aside, or stops on a sign-in error). Entries an older version stored that way (under
   2 KB, or beginning with `{` or `<`) are dropped once per start and fetched again.
+- **Sign-out** clears the outbox before the session, then deletes the rest in a process-wide scope
+  that no screen can cancel (`Cleanup` in `:core`); a new sign-in waits for it. The outbox keeps a
+  hash of the server address and user it was filled for, refuses entries while signed out or for an
+  account no longer signed in, and drops another account's entries instead of sending them.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

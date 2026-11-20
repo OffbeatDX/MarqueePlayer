@@ -97,7 +97,9 @@ Server address, user name, password. The address must be **https** (`https://` i
 scheme is typed; a path such as `/navidrome` is kept). Plain `http://` is refused by Android, as the
 app allows no cleartext traffic. The password is never stored: the app keeps the Subsonic salt and
 token, encrypted with a key in the Android Keystore, and backups are off (a restored copy could not
-decrypt it anyway). Sign out removes the session, downloads, caches and the saved queue.
+decrypt it anyway). Sign out removes the session, downloads, caches and the saved queue; it finishes
+even if you leave the screen at once, and signing in again waits for it. Plays and favourites still
+waiting to be sent belong to the account that made them: they are never sent for another one.
 
 ## Settings
 

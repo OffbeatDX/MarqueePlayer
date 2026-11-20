@@ -46,6 +46,11 @@ data class OutboxData(
     val stars: List<QueuedStar> = emptyList(),
     val failures: Int = 0,
     val nextAttemptAtMs: Long = 0,
+    /**
+     * Whose entries these are ([Outbox.accountOf]: a hash of the server's address and the user), so
+     * plays and hearts of one account never go to another. Null in an outbox written before it was kept.
+     */
+    val account: String? = null,
 )
 
 /** Where the outbox lives between runs (a file in the app; memory in tests). */
@@ -133,6 +138,12 @@ class Outbox(
     private val maxScrobbles: Int = 1000,
     private val batchSize: Int = 50,
     private val log: (String) -> Unit = {},
+    /**
+     * The signed-in account ([accountOf]), or null when signed out. Nothing is queued while it is
+     * null; entries of another account are dropped when something is queued or flushed (an outbox
+     * written before accounts were kept is taken as the current account's).
+     */
+    private val account: () -> String? = { "" },
 ) {
     private val lock = Any()
     private val sending = Mutex()
@@ -159,16 +170,38 @@ class Outbox(
     /** Something to send and not backing off. */
     fun isDue(): Boolean = synchronized(lock) { (data.scrobbles.isNotEmpty() || data.stars.isNotEmpty()) && clock() >= data.nextAttemptAtMs }
 
-    fun addScrobble(id: String, timeMs: Long) = edit { d ->
+    /** Queues a play; false (nothing queued) when no account is signed in, or [forAccount] is not the one signed in. */
+    fun addScrobble(id: String, timeMs: Long, forAccount: String? = account()): Boolean = editFor(forAccount) { d ->
         val s = QueuedScrobble(id, timeMs)
-        if (s in d.scrobbles) return@edit d
+        if (s in d.scrobbles) return@editFor d
         val list = (d.scrobbles + s).sortedBy { it.timeMs }
         d.copy(scrobbles = if (list.size > maxScrobbles) list.takeLast(maxScrobbles) else list)
     }
 
-    /** The last change to an item wins: a newer one replaces what was waiting. */
-    fun setStar(kind: String, id: String, starred: Boolean, atMs: Long) = edit { d ->
+    /** The last change to an item wins: a newer one replaces what was waiting. False as for [addScrobble]. */
+    fun setStar(kind: String, id: String, starred: Boolean, atMs: Long, forAccount: String? = account()): Boolean = editFor(forAccount) { d ->
         d.copy(stars = d.stars.filterNot { it.kind == kind && it.id == id } + QueuedStar(kind, id, starred, atMs))
+    }
+
+    private inline fun editFor(forAccount: String?, block: (OutboxData) -> OutboxData): Boolean = synchronized(lock) {
+        val now = account()
+        if (now == null || forAccount != now) {
+            log("outbox: not queued (${if (now == null) "signed out" else "made by another account"})")
+            return false
+        }
+        data = block(owned(now)).copy(account = now)
+        save()
+        true
+    }
+
+    /** The entries, if they are [now]'s; another account's are dropped. Under [lock]. */
+    private fun owned(now: String): OutboxData {
+        val d = data
+        if (d.account == null || d.account == now) return d
+        if (d.scrobbles.isNotEmpty() || d.stars.isNotEmpty()) {
+            log("outbox: ${d.scrobbles.size + d.stars.size} entries of another account dropped")
+        }
+        return OutboxData()
     }
 
     /** Whether a favourite change for [id] is still waiting (its local state then stays as set). */
@@ -181,11 +214,21 @@ class Outbox(
      * ignores the backoff (the network just came back).
      */
     suspend fun flush(sender: OutboxSender, force: Boolean = false): FlushResult = sending.withLock {
+        val now = account() ?: return FlushResult.Empty
+        synchronized(lock) {
+            val mine = owned(now)
+            if (mine !== data) {
+                data = mine
+                save()
+            }
+        }
         val first = snapshot()
         if (first.scrobbles.isEmpty() && first.stars.isEmpty()) return FlushResult.Empty
         if (!force && clock() < first.nextAttemptAtMs) return FlushResult.NotDue(first.nextAttemptAtMs)
         // Until empty: what is queued while sending goes out in the same flush.
         while (true) {
+            // Signed out (or into another account) meanwhile: what is queued now is not this sender's.
+            if (account() != now) return FlushResult.Empty
             val start = snapshot()
             if (start.scrobbles.isEmpty() && start.stars.isEmpty()) break
             for (star in start.stars) {
@@ -274,7 +317,17 @@ class Outbox(
         return FlushResult.Retry(at)
     }
 
-    private companion object {
-        val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
+    companion object {
+        private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
+
+        /**
+         * The account an outbox entry belongs to: a hash of the server's address (lower case, no
+         * trailing slash) and the user, so the file names neither.
+         */
+        fun accountOf(serverUrl: String, user: String): String {
+            val key = serverUrl.trim().trimEnd('/').lowercase() + "\n" + user
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
+            return digest.joinToString("") { "%02x".format(it) }
+        }
     }
 }

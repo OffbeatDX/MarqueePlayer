@@ -7,6 +7,8 @@ import coil3.SingletonImageLoader
 import com.offbeat.marquee.core.subsonic.SubsonicClient
 import com.offbeat.marquee.core.subsonic.SubsonicCredentials
 import com.offbeat.marquee.core.subsonic.SubsonicError
+import com.offbeat.marquee.core.session.Cleanup
+import com.offbeat.marquee.player.AppScope
 import com.offbeat.marquee.player.BuildConfig
 import com.offbeat.marquee.player.art.Art
 import com.offbeat.marquee.player.data.Library
@@ -40,6 +42,9 @@ sealed interface SessionState {
     data object SignedOut : SessionState
     data class SignedIn(val readOnly: Boolean, val testServer: Boolean) : SessionState
 }
+
+/** Sign-out's cleanup, one per process: it outlives the view model ([Cleanup]). */
+private val cleanup = Cleanup(AppScope) { msg, e -> AppLog.w("Session", msg, e) }
 
 /** Sign-in and the stored session. Survives rotation. */
 class SessionViewModel(app: Application) : AndroidViewModel(app) {
@@ -86,6 +91,9 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
                 val c = SubsonicClient(creds, readOnly = BuildConfig.READ_ONLY)
                 val info = c.ping()
                 if (info.status != "ok") throw SubsonicError.NotSubsonic("status ${info.status}")
+                // A sign-out's cleanup still deleting the last account's data finishes first: it
+                // would otherwise delete this session too.
+                cleanup.awaitIdle()
                 try {
                     withContext(Dispatchers.IO) { store.save(creds) }
                 } catch (e: CancellationException) {
@@ -104,26 +112,31 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Signs out. The outbox goes first, before the session (nothing of this account can then be sent
+     * for the next one); the rest is deleted by [cleanup], in the process's scope, so leaving the
+     * sign-in screen does not stop it half way, and a new sign-in waits for it.
+     */
     fun signOut() {
+        Sync.clear()
         AppSession.clear()
         val app = getApplication<Application>()
-        viewModelScope.launch(Dispatchers.IO) {
-            store.clear()
-            TestServerConfig.clear(app)
-            // What was kept from this server goes with it.
-            Library.clear()
-            Downloads.clear()
-            Sync.clear()
-            LyricsRepo.clear()
-            LibraryPrefs.clearRecent()
-            UiSettings.setServer(null)
-            // The on-phone log and the last crash go too.
-            AppLog.clear()
-            // The cache of recent and upcoming tracks too (the confirmation says so).
-            runCatching { MediaStores.clearCache(app) }
-            Art.clear()
-            SingletonImageLoader.get(app).let { it.diskCache?.clear(); it.memoryCache?.clear() }
-        }
+        cleanup.start(
+            listOf<Pair<String, suspend () -> Unit>>(
+                "session" to { withContext(Dispatchers.IO) { store.clear(); TestServerConfig.clear(app) } },
+                // What was kept from this server goes with it.
+                "outbox" to { withContext(Dispatchers.IO) { Sync.clear() } }, // again: a write that raced the first
+                "library" to { Library.clear() },
+                "lyrics" to { withContext(Dispatchers.IO) { LyricsRepo.clear() } },
+                "settings" to { withContext(Dispatchers.IO) { LibraryPrefs.clearRecent(); UiSettings.setServer(null) } },
+                // The cache of recent and upcoming tracks too (the confirmation says so).
+                "cache" to { withContext(Dispatchers.IO) { MediaStores.clearCache(app) } },
+                "covers" to { withContext(Dispatchers.IO) { Art.clear(); SingletonImageLoader.get(app).let { it.diskCache?.clear(); it.memoryCache?.clear() } } },
+                "downloads" to { Downloads.clear() },
+                // The on-phone log and the last crash go last, with what the steps logged.
+                "log" to { withContext(Dispatchers.IO) { AppLog.clear() } },
+            ),
+        )
         _form.value = SignInForm()
         _state.value = SessionState.SignedOut
     }

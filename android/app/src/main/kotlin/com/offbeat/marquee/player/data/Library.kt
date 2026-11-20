@@ -410,7 +410,8 @@ object Library {
         val outcome = sendOrQueue(
             online = NetworkMonitor.online,
             send = { starCall(c, item, favourite) },
-            queue = { Sync.queueStar(kind, item.id, favourite) },
+            // Queued for the account it was made with: refused if that one signed out meanwhile.
+            queue = { Sync.queueStar(kind, item.id, favourite, by = c) },
         )
         return when (outcome) {
             DirectWrite.Sent -> {

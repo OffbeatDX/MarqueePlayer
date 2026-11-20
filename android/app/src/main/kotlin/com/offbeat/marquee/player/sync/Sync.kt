@@ -69,6 +69,7 @@ object Sync {
             },
             clock = System::currentTimeMillis,
             log = { AppLog.i(TAG, it) },
+            account = { AppSession.current?.let(::accountOf) },
         )
         if (!outbox.isEmpty) AppLog.i(TAG, "outbox: ${outbox.size} waiting from before")
         scope.launch { NetworkMonitor.cameBack.collect { flush(force = true, why = "network back") } }
@@ -76,16 +77,29 @@ object Sync {
             .addDefaultNetworkActiveListener { flushIfDue("radio active") }
     }
 
-    fun queueScrobble(songId: String, playedAtMs: Long) {
-        outbox.addScrobble(songId, playedAtMs)
+    /** The outbox's name for the account [c] is signed in to. */
+    fun accountOf(c: SubsonicClient): String = Outbox.accountOf(c.credentials.url, c.credentials.user)
+
+    /**
+     * Queues a play made while signed in with [by] (the current session by default). Refused (false,
+     * nothing queued) when signed out, or when [by] is no longer the session: a sign-out, or another
+     * account, came in between.
+     */
+    fun queueScrobble(songId: String, playedAtMs: Long, by: SubsonicClient? = AppSession.current): Boolean {
+        if (!started || by == null) return false
+        if (!outbox.addScrobble(songId, playedAtMs, accountOf(by))) return false
         AppLog.i(TAG, "outbox: scrobble $songId queued, ${outbox.size} waiting")
         afterQueue()
+        return true
     }
 
-    fun queueStar(kind: String, id: String, starred: Boolean) {
-        outbox.setStar(kind, id, starred, System.currentTimeMillis())
+    /** Queues a favourite change made with [by]; refused as [queueScrobble] is. */
+    fun queueStar(kind: String, id: String, starred: Boolean, by: SubsonicClient? = AppSession.current): Boolean {
+        if (!started || by == null) return false
+        if (!outbox.setStar(kind, id, starred, System.currentTimeMillis(), accountOf(by))) return false
         AppLog.i(TAG, "outbox: favourite $kind $id=$starred queued, ${outbox.size} waiting")
         afterQueue()
+        return true
     }
 
     private fun afterQueue() {
