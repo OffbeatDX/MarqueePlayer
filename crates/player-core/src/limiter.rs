@@ -4,8 +4,8 @@
 //!
 //! It is transparent: while every sample stays under the ceiling the gain is exactly 1
 //! and the samples are not touched (bit-identical output). Only around an over does the
-//! gain dip, just enough to keep the peak under the ceiling: it eases in over `ATTACK`
-//! frames before the peak and recovers over ~50 ms after it, which sounds far cleaner
+//! gain dip, just enough to keep the peak under the ceiling: it eases in over 1 ms
+//! (`attack_frames`) before the peak and recovers over ~50 ms after it, which sounds far cleaner
 //! than clipping the waveform flat.
 //!
 //! It runs on frames already decoded, before they are written: on the decode thread, which
@@ -17,8 +17,16 @@
 
 /// Highest allowed sample value: just under full scale, so only real overs are touched.
 pub const CEILING: f32 = 0.9999;
-/// Frames over which the gain eases down before a peak (1 ms at 48 kHz).
+/// Frames over which the gain eases down before a peak at 48 kHz (1 ms).
 const ATTACK: usize = 48;
+
+/// Frames over which the gain eases down before a peak at `rate`: the same 1 ms at every
+/// rate from 48 kHz up (96 at 96 kHz, 192 at 192 kHz; it was 48 frames everywhere, a
+/// quarter of a millisecond at 192 kHz). Below 48 kHz it stays 48 frames (1.09 ms at
+/// 44.1 kHz), so what 44.1 kHz tracks sound like does not change.
+fn attack_frames(rate: u32) -> usize {
+    ((rate as usize * ATTACK + 24_000) / 48_000).max(ATTACK)
+}
 /// Recovery time constant after a peak.
 const RELEASE_SECS: f32 = 0.05;
 
@@ -74,9 +82,9 @@ impl Limiter {
             // A hair under the ceiling, so float rounding of `x * g` cannot cross it.
             if p > CEILING { CEILING * 0.99999 / p } else { 1.0 }
         }));
-        // Ease in before each peak: the gain may fall by at most 1/ATTACK per frame,
+        // Ease in before each peak: the gain may fall by at most 1/attack per frame,
         // walking backwards from the peak.
-        let step = 1.0 / ATTACK as f32;
+        let step = 1.0 / attack_frames(rate) as f32;
         for i in (0..frames.saturating_sub(1)).rev() {
             g[i] = g[i].min(g[i + 1] + step);
         }
@@ -171,5 +179,26 @@ mod tests {
         l.process(&mut next, 1.0, 48_000);
         assert_eq!(*next.last().unwrap(), 0.5);
         assert!(next[0] < 0.5, "recovery continues into the next chunk");
+    }
+
+    /// The ease-in before a peak is the same time at every rate (at 192 kHz it was a
+    /// quarter of it), and 44.1 and 48 kHz are as they were.
+    #[test]
+    fn the_attack_is_the_same_time_at_every_rate() {
+        assert_eq!([44_100, 48_000, 88_200, 96_000, 192_000, 384_000].map(attack_frames), [48, 48, 88, 96, 192, 384]);
+        for rate in [44_100u32, 48_000, 96_000, 192_000] {
+            let mut l = Limiter::default();
+            let n = rate as usize / 10;
+            let mut s = vec![0.5f32; n * 2];
+            s[n] = 2.0;
+            s[n + 1] = 2.0;
+            l.process(&mut s, 1.0, rate);
+            let before = |frames: usize| s[(n / 2 - frames) * 2];
+            let attack = attack_frames(rate);
+            // The gain falls 1/attack a frame: to the 0.5 needed in attack/2 frames.
+            let half_way = before(attack / 4);
+            assert!(half_way < 0.45 && half_way > 0.3, "{rate}: half-way down the ramp: {half_way}");
+            assert_eq!(before(attack / 2 + 2), 0.5, "{rate}: untouched before the ramp");
+        }
     }
 }

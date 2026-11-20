@@ -910,7 +910,7 @@ impl StartOpen {
     fn local(path: &std::path::Path, wake: Sender<()>) -> Self {
         let (tx, rx) = bounded(1);
         let path = path.to_path_buf();
-        let failed = wake.clone();
+        let failed = (tx.clone(), wake.clone());
         let spawned = thread::Builder::new().name("mp-play-open".into()).spawn(move || {
             let result = Source::open(&path).map_err(|e| e.to_string());
             if tx.send(result).is_ok() {
@@ -918,9 +918,10 @@ impl StartOpen {
             }
         });
         if let Err(e) = spawned {
-            // Said through `poll` (the channel is closed): wake the decode thread to take it.
+            // Said through `poll`: wake the decode thread to take it.
             log::warn!("no thread to open the track on ({e})");
-            let _ = failed.try_send(());
+            let _ = failed.0.send(Err("it could not be opened (no thread to open it on)".into()));
+            let _ = failed.1.try_send(());
         }
         StartOpen::Local(rx)
     }
@@ -932,7 +933,9 @@ impl StartOpen {
             StartOpen::Local(rx) => match rx.try_recv() {
                 Ok(r) => Some(r.map(Stream::Local)),
                 Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(Err("it could not be opened (no thread to open it on)".into())),
+                // The thread ended without a word: it panicked outside the decoder's own
+                // guard (`Source::open` turns a panic in the decoder into an error).
+                Err(TryRecvError::Disconnected) => Some(Err("it could not be opened (opening it failed unexpectedly)".into())),
             },
         }
     }
@@ -1800,6 +1803,28 @@ mod tests {
             b.extend_from_slice(&x.to_le_bytes());
         }
         std::fs::write(path, b).unwrap();
+    }
+
+    /// An open thread that ended without a result (a panic outside the decoder's guard) is
+    /// said as that, not as there being no thread to open on.
+    #[test]
+    fn an_open_thread_that_dies_is_not_said_to_be_missing() {
+        let (tx, rx) = bounded::<Result<Source, String>>(1);
+        let mut open = StartOpen::Local(rx);
+        assert!(open.poll().is_none(), "still opening");
+        drop(tx);
+        let Some(Err(why)) = open.poll() else { panic!("an error") };
+        assert_eq!(why, "it could not be opened (opening it failed unexpectedly)");
+        // A file opened: its stream.
+        let d = std::env::temp_dir().join(format!("mp-engine-open-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("a.wav");
+        wav(&f, 48_000, 4800);
+        let (wake_tx, wake_rx) = bounded(1);
+        let mut open = StartOpen::local(&f, wake_tx);
+        wake_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(matches!(open.poll(), Some(Ok(Stream::Local(_)))));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// A seek in a converted track while its converter holds the first frames of the next
