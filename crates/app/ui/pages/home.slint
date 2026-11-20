@@ -162,6 +162,7 @@ component HeroThumb inherits Rectangle {
     in property <bool> cursor;
     in property <length> size: 52px;
     callback clicked();
+    callback double-clicked();
     width: size;
     height: size;
     accessible-role: list-item;
@@ -180,7 +181,11 @@ component HeroThumb inherits Rectangle {
         border-width: root.current ? 2px : 0px;
         border-color: Theme.text;
     }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        double-clicked => { root.double-clicked(); }
+    }
     FocusRing { shown: root.cursor; radius: Theme.radius-cover; }
 }
 
@@ -218,7 +223,23 @@ component HeroShelf inherits Rectangle {
                 label: root.album.title;
                 drop-shadow-blur: 24px;
                 drop-shadow-color: #000000a0;
-                TouchArea { mouse-cursor: pointer; clicked => { Actions.open-album(root.album.id); } }
+                cover-ta := TouchArea { mouse-cursor: pointer; clicked => { Actions.open-album(root.album.id); } }
+                // Play, over the jacket while the pointer is on it (as on an album's tile).
+                Rectangle {
+                    x: parent.width - self.width - 14px;
+                    y: parent.height - self.height - 14px;
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 28px;
+                    background: cover-play.has-hover ? Theme.accent.brighter(10%) : Theme.accent;
+                    opacity: cover-ta.has-hover || cover-play.has-hover ? 1 : 0;
+                    animate opacity { duration: Theme.dur-hover; }
+                    drop-shadow-blur: 10px;
+                    drop-shadow-color: #00000080;
+                    accessible-role: none;
+                    cover-play := TouchArea { mouse-cursor: pointer; clicked => { Actions.play-album(root.album.id); } }
+                    Icon { glyph: Icons.play; width: 30px; height: 30px; color: Theme.accent-text; }
+                }
             }
             VerticalLayout {
                 alignment: center;
@@ -295,6 +316,8 @@ component HeroShelf inherits Rectangle {
                             current: i == root.shelf.hero;
                             cursor: strip-fs.has-focus && i == root.cursor;
                             clicked => { Actions.hero-select(root.shelf.index, i); }
+                            // The first click featured it; the second plays it.
+                            double-clicked => { Actions.play-album(a.id); }
                         }
                     }
                 }
@@ -431,6 +454,7 @@ export component HomePage inherits Rectangle {
                     y: 48px;
                     visible: shelf.layout == ShelfLayout.grid;
                     label: shelf.title;
+                    max-rows: shelf.rows;
                     albums: shelf.layout == ShelfLayout.grid ? shelf.albums : [];
                 }
                 h := HeroShelf {

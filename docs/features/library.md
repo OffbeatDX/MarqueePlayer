@@ -278,8 +278,11 @@ scanner's own date is still in `albums.first_seen`.
 The built-in shelves use the sorts of Navidrome's album lists (0.64,
 `persistence/album_repository.go`, `sql_base_repository.go`), so a library shared with a
 Navidrome server orders its shelves the same way. All are album shelves; compilations, singles
-and EPs are treated alike. A shelf shows its first `limit` albums (20 by default). A shelf's
-title, or "See all" beside it, opens the whole list on its own page (the album grid, same
+and EPs are treated alike. A row or hero shelf shows its first `limit` albums (20 by default).
+A grid shelf is set by its rows instead (`rows`, 1 to 6, 2 by default; the shelf editor's
+arrows): each row is filled to the window's width at the current cover size, so no row ends
+short whatever the zoom (with fewer albums than one row holds, that one row is all there is).
+A shelf's title, or "See all" beside it, opens the whole list on its own page (the album grid, same
 order; Back and Forward, scroll and the pill work as on any page). A random shelf's page starts
 with the shelf's albums and can be reshuffled; a playlist shelf opens the playlist.
 
@@ -307,7 +310,9 @@ A hero shelf (any query, chosen in the shelf editor) is one card: its first albu
 blurred art, labelled with the shelf's title (which opens the whole shelf), and a strip of the
 shelf's other albums (as many as its limit and the width allow) inside the card. Choosing one
 (a click, or the arrow keys on the strip, which is one Tab stop) features it in the card; the
-strip rings the one shown. Nothing under the card needs a title of its own.
+strip rings the one shown. A double click on a strip cover plays that album, and the big
+cover shows a play button while the pointer is on it (a click elsewhere on the cover opens
+the album). Nothing under the card needs a title of its own.
 
 ## Formats
 

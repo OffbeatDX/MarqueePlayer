@@ -1748,6 +1748,14 @@ fn wire(app: &AppWindow) {
             views::shelves_changed(st);
         });
     });
+    a.on_shelf_rows(|i, rows| {
+        state::with(|st| {
+            if let Some(s) = st.settings.borrow_mut().shelves.get_mut(i as usize) {
+                s.rows = rows.clamp(1, settings::GRID_ROWS_MAX as i32) as usize;
+            }
+            views::shelves_changed(st);
+        });
+    });
     a.on_shelf_title(|i, title| {
         state::with(|st| {
             if let Some(s) = st.settings.borrow_mut().shelves.get_mut(i as usize) {

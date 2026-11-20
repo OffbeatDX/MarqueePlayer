@@ -89,16 +89,22 @@ export component CoverGrid inherits Rectangle {
     in property <length> gap: 24px;
     // What a screen reader calls the list.
     in property <string> label: "Albums";
+    // A shelf's grid: at most this many rows, each one full (0: every album, as the album pages).
+    in property <int> max-rows: 0;
     private property <int> cols: max(1, floor((self.width + gap) / (size + gap)));
     private property <length> step: (self.width + gap) / cols;
     private property <length> row-h: size + 50px + gap;
+    // The albums shown: all of them, or whole rows only (one short row when there are fewer
+    // albums than a row holds).
+    private property <int> shown: root.max-rows <= 0 || root.albums.length <= root.cols ? root.albums.length
+        : min(root.max-rows, floor(root.albums.length / root.cols)) * root.cols;
     private property <int> cursor;
-    private property <int> at: min(root.cursor, root.albums.length - 1);
-    height: ceil(albums.length / cols) * row-h;
+    private property <int> at: min(root.cursor, root.shown - 1);
+    height: ceil(shown / cols) * row-h;
     accessible-role: AccessibleRole.list;
     accessible-label: root.label;
     accessible-delegate-focus: root.at;
-    accessible-item-count: root.albums.length;
+    accessible-item-count: root.shown;
     function reveal() {
         Actions.reveal(self.absolute-position.y + floor(root.at / root.cols) * root.row-h - 4px, root.size + 50px);
     }
@@ -119,7 +125,7 @@ export component CoverGrid inherits Rectangle {
                 return accept;
             }
             if ev.modifiers.control || ev.modifiers.alt { return reject; }
-            let n = Actions.list-key(ev.text, root.at, root.albums.length, 2, root.cols, 2);
+            let n = Actions.list-key(ev.text, root.at, root.shown, 2, root.cols, 2);
             if n >= 0 { root.cursor = n; root.reveal(); return accept; }
             reject
         }
@@ -132,6 +138,7 @@ export component CoverGrid inherits Rectangle {
     for album[i] in albums: AlbumTile {
         x: mod(i, root.cols) * root.step;
         y: floor(i / root.cols) * root.row-h;
+        visible: i < root.shown;
         size: root.size;
         album: album;
         index: i;

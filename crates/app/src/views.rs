@@ -362,7 +362,7 @@ fn home_shelves(st: &Rc<State>) -> Vec<(usize, crate::settings::ShelfConfig, Vec
     for s in shelves.iter().filter(|s| s.visible) {
         if let ShelfQuery::Playlist { id } = s.query {
             let l = smart_limit.entry(id).or_default();
-            *l = (*l).max(s.limit);
+            *l = (*l).max(s.fetch_limit());
         }
     }
     let mut out = Vec::new();
@@ -378,12 +378,12 @@ fn home_shelves(st: &Rc<State>) -> Vec<(usize, crate::settings::ShelfConfig, Vec
         // worked out shows, and the shelf comes in when it is first ready.
         let smart_shelf = match &s.query {
             ShelfQuery::Playlist { id } if crate::playlists::smart::is_smart(st, *id) => {
-                let limit = smart_limit.get(id).copied().unwrap_or(s.limit);
-                Some(crate::playlists::smart::shelf_albums(st, *id, limit).unwrap_or_default().into_iter().take(s.limit).collect())
+                let limit = smart_limit.get(id).copied().unwrap_or(s.fetch_limit());
+                Some(crate::playlists::smart::shelf_albums(st, *id, limit).unwrap_or_default().into_iter().take(s.fetch_limit()).collect())
             }
             _ => None,
         };
-        match smart_shelf.map_or_else(|| query::shelf_with(&st.db, &s.query, s.limit, opts), Ok) {
+        match smart_shelf.map_or_else(|| query::shelf_with(&st.db, &s.query, s.fetch_limit(), opts), Ok) {
             Ok(a) if !a.is_empty() => out.push((index, s, a)),
             Ok(_) => {}
             Err(e) => log::warn!("shelf {:?}: {e}", s.query),
@@ -409,6 +409,7 @@ fn shelf_view(st: &Rc<State>, index: usize, s: &crate::settings::ShelfConfig, al
         hero_blur: Default::default(),
         index: index as i32,
         random: s.query == ShelfQuery::Random,
+        rows: s.rows.clamp(1, crate::settings::GRID_ROWS_MAX) as i32,
     };
     (view, m, stem)
 }
@@ -465,7 +466,7 @@ fn refresh_home_live(st: &Rc<State>, grow: bool) {
         }
         if vm.row_data(row).is_some_and(|v| v.index as usize == *index) {
             let m = &models[row];
-            let next = if grow || s.query == ShelfQuery::Random { m.grown(albums.clone(), s.limit, |id| query::album(&st.db, id).ok().flatten()) } else { albums.clone() };
+            let next = if grow || s.query == ShelfQuery::Random { m.grown(albums.clone(), s.fetch_limit(), |id| query::album(&st.db, id).ok().flatten()) } else { albums.clone() };
             m.update(next);
         } else {
             let (view, m, stem) = shelf_view(st, *index, s, albums.clone());
@@ -1380,6 +1381,7 @@ pub fn refresh_shelf_editor(st: &Rc<State>) {
             description: describe(&s.query, st).into(),
             layout: slint_layout(s.layout),
             limit: s.limit as i32,
+            rows: s.rows.clamp(1, crate::settings::GRID_ROWS_MAX) as i32,
             visible: s.visible,
         })
         .collect();

@@ -93,6 +93,8 @@ export struct ShelfView {
     index: int,
     // A random shelf: it can be reshuffled.
     random: bool,
+    // The grid layout: the rows of covers it shows.
+    rows: int,
 }
 
 export struct QueueRow {
@@ -163,6 +165,8 @@ export struct ShelfEdit {
     description: string,
     layout: ShelfLayout,
     limit: int,
+    // The grid layout: its rows of covers (in place of the limit).
+    rows: int,
     visible: bool,
 }
 

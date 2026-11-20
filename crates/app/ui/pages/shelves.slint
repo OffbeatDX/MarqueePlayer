@@ -53,9 +53,32 @@ export component ShelvesPage inherits Rectangle {
                             Actions.shelf-layout(i, s.layout == ShelfLayout.row ? ShelfLayout.grid : s.layout == ShelfLayout.grid ? ShelfLayout.hero : ShelfLayout.row);
                         }
                     }
-                    IconButton { y: 12px; glyph: Icons.down; size: 36px; label: "Fewer albums"; clicked => { Actions.shelf-limit(i, s.limit - 6); } }
-                    Text { width: 30px; text: s.limit; vertical-alignment: center; horizontal-alignment: center; color: Theme.text; }
-                    IconButton { y: 12px; glyph: Icons.up; size: 36px; label: "More albums"; clicked => { Actions.shelf-limit(i, s.limit + 6); } }
+                    // A grid is sized by its rows (each filled to the width); the others by their albums.
+                    IconButton {
+                        y: 12px;
+                        glyph: Icons.down;
+                        size: 36px;
+                        label: s.layout == ShelfLayout.grid ? "Fewer rows" : "Fewer albums";
+                        clicked => {
+                            if s.layout == ShelfLayout.grid { Actions.shelf-rows(i, s.rows - 1); } else { Actions.shelf-limit(i, s.limit - 6); }
+                        }
+                    }
+                    Text {
+                        width: 56px;
+                        text: s.layout == ShelfLayout.grid ? (s.rows == 1 ? "1 row" : s.rows + " rows") : s.limit;
+                        vertical-alignment: center;
+                        horizontal-alignment: center;
+                        color: Theme.text;
+                    }
+                    IconButton {
+                        y: 12px;
+                        glyph: Icons.up;
+                        size: 36px;
+                        label: s.layout == ShelfLayout.grid ? "More rows" : "More albums";
+                        clicked => {
+                            if s.layout == ShelfLayout.grid { Actions.shelf-rows(i, s.rows + 1); } else { Actions.shelf-limit(i, s.limit + 6); }
+                        }
+                    }
                     IconButton { y: 12px; glyph: s.visible ? Icons.eye : Icons.eye-off; size: 36px; label: s.visible ? "Hide " + s.title : "Show " + s.title; clicked => { Actions.shelf-toggle(i); } }
                     IconButton { y: 12px; glyph: Icons.close; size: 36px; icon-size: 16px; label: "Remove " + s.title; clicked => { Actions.shelf-remove(i); } }
                 }

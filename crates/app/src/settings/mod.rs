@@ -32,6 +32,10 @@ pub struct ShelfConfig {
     pub layout: ShelfLayout,
     #[serde(default = "default_limit")]
     pub limit: usize,
+    /// The grid layout: how many rows of covers it shows. Each row is filled to the width, so
+    /// the number of albums follows from the window and the zoom, and no row ends short.
+    #[serde(default = "default_rows")]
+    pub rows: usize,
     #[serde(default = "yes")]
     pub visible: bool,
 }
@@ -40,17 +44,35 @@ fn default_limit() -> usize {
     18
 }
 
+fn default_rows() -> usize {
+    2
+}
+
+/// The most rows a grid shelf shows.
+pub const GRID_ROWS_MAX: usize = 6;
+/// The albums a grid shelf asks for per row: more than a row holds on a wide window at the
+/// smallest covers, so that every row it shows is full.
+const GRID_ROW_ALBUMS: usize = 20;
+
 fn yes() -> bool {
     true
 }
 
 impl ShelfConfig {
     pub fn new(query: ShelfQuery, layout: ShelfLayout, limit: usize) -> Self {
-        Self { query, title: None, layout, limit, visible: true }
+        Self { query, title: None, layout, limit, rows: default_rows(), visible: true }
     }
 
     pub fn title(&self) -> String {
         self.title.clone().unwrap_or_else(|| self.query.default_title())
+    }
+
+    /// The albums to ask for: the limit, or for a grid enough to fill its rows at any width.
+    pub fn fetch_limit(&self) -> usize {
+        match self.layout {
+            ShelfLayout::Grid => self.rows.clamp(1, GRID_ROWS_MAX) * GRID_ROW_ALBUMS,
+            _ => self.limit,
+        }
     }
 }
 
@@ -732,6 +754,23 @@ mod tests {
         let mut unique = titles.clone();
         unique.dedup();
         assert_eq!(unique, titles);
+    }
+
+    #[test]
+    fn a_grid_shelf_asks_for_enough_albums_to_fill_its_rows() {
+        let mut s = ShelfConfig::new(ShelfQuery::RecentlyAdded, ShelfLayout::Row, 18);
+        assert_eq!((s.rows, s.fetch_limit()), (2, 18), "a row shelf: its limit");
+        s.layout = ShelfLayout::Grid;
+        assert_eq!(s.fetch_limit(), 2 * GRID_ROW_ALBUMS);
+        s.rows = 99;
+        assert_eq!(s.fetch_limit(), GRID_ROWS_MAX * GRID_ROW_ALBUMS, "never more than the most rows");
+        s.rows = 0;
+        assert_eq!(s.fetch_limit(), GRID_ROW_ALBUMS, "never less than one row");
+        // A settings file from before has no `rows`: two.
+        let mut json = serde_json::to_value(ShelfConfig { rows: 5, ..s.clone() }).unwrap();
+        json.as_object_mut().unwrap().remove("rows");
+        let old: ShelfConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(old.rows, 2);
     }
 
     #[test]
