@@ -52,7 +52,6 @@ const SERVER_AGAIN: Duration = Duration::from_secs(14 * 24 * 3600);
 
 struct Online {
     worker: lrclib::Worker,
-    cache: lrclib::Cache,
     enabled: Arc<AtomicBool>,
 }
 
@@ -90,11 +89,11 @@ pub fn install(st: &Rc<State>) {
     let worker = lrclib::Worker::spawn(
         // The client name sent with lookups (LRCLIB asks clients to name themselves).
         lrclib::Client::new(root, crate::about::lyrics_agent()),
-        cache.clone(),
+        cache,
         enabled.clone(),
         Box::new(|g, d| state::post(move |st| delivered(st, g, d))),
     );
-    ONLINE.with(|o| *o.borrow_mut() = Some(Online { worker, cache, enabled }));
+    ONLINE.with(|o| *o.borrow_mut() = Some(Online { worker, enabled }));
     let offsets = Offsets::open(st.paths.data.join(OFFSETS_FILE));
     OFFSETS.with(|o| *o.borrow_mut() = Some(offsets));
 }
@@ -217,10 +216,17 @@ fn delivered(st: &Rc<State>, g: u64, d: Delivery) {
 /// again by itself.
 pub fn reject(st: &Rc<State>) {
     let Some(info) = LOOKABLE.with(|c| c.borrow().clone()) else { return };
-    let Some(cache) = ONLINE.with(|o| o.borrow().as_ref().map(|o| o.cache.clone())) else { return };
+    let sent = ONLINE.with(|o| {
+        let o = o.borrow();
+        let Some(o) = o.as_ref() else { return false };
+        o.worker.reject(info);
+        true
+    });
+    if !sent {
+        return;
+    }
     show(st, None);
     set_state(st, "rejected", REJECTED);
-    std::thread::spawn(move || cache.reject(&info));
 }
 
 /// "Try again".

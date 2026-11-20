@@ -4,11 +4,15 @@
 //! never shows another song's words).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{Answer, TrackInfo, fold};
+
+/// Per-write counter so concurrent writers never share a temp file name.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A "not found" is asked again after this long: lyrics added to the service later are
 /// found then.
@@ -96,10 +100,11 @@ impl Cache {
         (e.artist, e.title, e.album, e.duration) = (a, ti, al, d);
         let _ = std::fs::create_dir_all(&self.dir);
         let path = self.path(t);
-        let tmp = path.with_extension("tmp");
+        let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}.{seq}.tmp", std::process::id()));
         match serde_json::to_string(&e) {
             Ok(text) => {
-                if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+                if std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &path)).is_err() {
                     let _ = std::fs::remove_file(&tmp);
                 }
             }
@@ -246,6 +251,70 @@ mod tests {
         assert_eq!(c.get(&t()).answer, None);
         c.put(&t(), &Answer::NotFound);
         assert_eq!(c.get(&t()).rejected, vec![42]);
+        let _ = std::fs::remove_dir_all(c.dir());
+    }
+
+    #[test]
+    fn concurrent_put_and_reject_leave_a_valid_cache_file() {
+        let c = Cache::new(dir("race"));
+        let track = t();
+        let long_text: String = (0..120).map(|i| format!("[{:02}:{:02}.00]Line {i} with enough words to span writes", i / 60, i % 60)).collect::<Vec<_>>().join("\n");
+        let lyrics = library::lyrics::parse(&long_text, "lrclib");
+        // Seed the file so readers always see a file on disk.
+        c.put(&track, &Answer::Found { id: 1, lyrics: lyrics.clone() });
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let iters = 150;
+
+        let c1 = c.clone();
+        let t1 = track.clone();
+        let b1 = barrier.clone();
+        let putter = std::thread::spawn(move || {
+            b1.wait();
+            for i in 1..=iters {
+                c1.put(&t1, &Answer::Found { id: i, lyrics: lyrics.clone() });
+            }
+        });
+
+        let c2 = c.clone();
+        let t2 = track.clone();
+        let b2 = barrier.clone();
+        let rejecter = std::thread::spawn(move || {
+            b2.wait();
+            for _ in 0..iters {
+                c2.reject(&t2);
+            }
+        });
+
+        let path = c.path(&track);
+        let d3 = done.clone();
+        let b3 = barrier.clone();
+        let reader = std::thread::spawn(move || {
+            b3.wait();
+            while !d3.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    let parsed: Result<Entry, _> = serde_json::from_str(&raw);
+                    assert!(parsed.is_ok(), "corrupt cache file read during concurrent writes: {raw:?}");
+                }
+            }
+        });
+
+        putter.join().unwrap();
+        rejecter.join().unwrap();
+        done.store(true, std::sync::atomic::Ordering::Release);
+        reader.join().unwrap();
+
+        let raw = std::fs::read_to_string(c.path(&track)).expect("cache file must exist");
+        let _: Entry = serde_json::from_str(&raw).expect("final cache file must be valid JSON");
+        let got = c.get(&track);
+        assert!(matches!(got.answer, Some(Answer::Found { .. } | Answer::Rejected)), "unexpected final entry: {got:?}");
+        let leftover: Vec<_> = std::fs::read_dir(c.dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("tmp"))
+            .collect();
+        assert!(leftover.is_empty(), "leftover temp files: {leftover:?}");
         let _ = std::fs::remove_dir_all(c.dir());
     }
 }

@@ -5,6 +5,7 @@
 //! `Retry-After`. The thread ends when the `Worker` is dropped (or with the process: no
 //! one ever waits for it, so a request in flight never holds up an exit).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -33,8 +34,13 @@ struct Job {
     retry: bool,
 }
 
+enum Msg {
+    Lookup(Job),
+    Reject(TrackInfo),
+}
+
 pub struct Worker {
-    tx: Sender<Job>,
+    tx: Sender<Msg>,
     current: Arc<AtomicU64>,
 }
 
@@ -45,41 +51,64 @@ impl Worker {
     /// Start the thread. `deliver` is called on it with each answer for the newest
     /// generation; `enabled` is read before every request (off: nothing is sent).
     pub fn spawn(client: Client, cache: Cache, enabled: Arc<AtomicBool>, deliver: Deliver) -> Self {
-        let (tx, rx) = unbounded::<Job>();
+        let (tx, rx) = unbounded::<Msg>();
         let current = Arc::new(AtomicU64::new(0));
         let cur = current.clone();
         let spawned = std::thread::Builder::new().name("mp-lrclib".into()).spawn(move || {
-            let mut pending: Option<Job> = None;
+            let mut pending: VecDeque<Msg> = VecDeque::new();
             let mut backoff: Option<Instant> = None;
             loop {
-                let job = match pending.take() {
-                    Some(j) => j,
+                let msg = match pending.pop_front() {
+                    Some(m) => m,
                     None => match rx.recv() {
-                        Ok(j) => j,
+                        Ok(m) => m,
                         Err(_) => return,
                     },
                 };
+                let job = match msg {
+                    Msg::Reject(t) => {
+                        cache.reject(&t);
+                        continue;
+                    }
+                    Msg::Lookup(j) => j,
+                };
+                if cur.load(Ordering::Acquire) != job.generation {
+                    continue;
+                }
                 // A cached answer needs no wait (and sends nothing).
-                if !job.retry && cur.load(Ordering::Acquire) == job.generation
+                if !job.retry
                     && let Some(a) = cache.get(&job.track).answer
                 {
                     deliver(job.generation, Delivery::Answer(a));
                     continue;
                 }
-                // Wait out the delay; a newer request replaces this one.
-                if Instant::now() < job.not_before {
+                // Wait out the delay; a newer request replaces this one, while rejections
+                // still take effect in order.
+                let mut superseded = false;
+                while Instant::now() < job.not_before {
                     match rx.recv_deadline(job.not_before) {
-                        Ok(newer) => {
-                            pending = Some(newer);
-                            continue;
+                        Ok(Msg::Lookup(newer)) => {
+                            pending.push_back(Msg::Lookup(newer));
+                            superseded = true;
+                            break;
                         }
-                        Err(RecvTimeoutError::Timeout) => {}
+                        Ok(Msg::Reject(t)) => cache.reject(&t),
+                        Err(RecvTimeoutError::Timeout) => break,
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
-                // Anything queued behind it is newer.
-                if let Some(newer) = rx.try_iter().last() {
-                    pending = Some(newer);
+                if superseded {
+                    continue;
+                }
+                // Anything queued behind it: a newer lookup supersedes this one; rejections stay
+                // in FIFO order so a reject sent after this lookup still runs after its put.
+                for m in rx.try_iter() {
+                    if matches!(m, Msg::Lookup(_)) {
+                        superseded = true;
+                    }
+                    pending.push_back(m);
+                }
+                if superseded {
                     continue;
                 }
                 let g = job.generation;
@@ -157,6 +186,12 @@ impl Worker {
         self.send(generation, track, Duration::ZERO, true);
     }
 
+    /// Mark `track`'s cached lyrics as wrong on the worker thread, serialized with any
+    /// in-flight lookup or later retry so a reject after a put always wins.
+    pub fn reject(&self, track: TrackInfo) {
+        let _ = self.tx.send(Msg::Reject(track));
+    }
+
     /// The track changed to one that is not looked up: drop any request and any answer
     /// still on its way.
     pub fn cancel(&self, generation: u64) {
@@ -165,6 +200,6 @@ impl Worker {
 
     fn send(&self, generation: u64, track: TrackInfo, delay: Duration, retry: bool) {
         self.current.store(generation, Ordering::Release);
-        let _ = self.tx.send(Job { generation, track, not_before: Instant::now() + delay, retry });
+        let _ = self.tx.send(Msg::Lookup(Job { generation, track, not_before: Instant::now() + delay, retry }));
     }
 }

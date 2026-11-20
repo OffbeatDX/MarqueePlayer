@@ -273,7 +273,7 @@ fn rejection_and_retry() {
     w.lookup(1, track(), Duration::ZERO);
     assert!(matches!(next(&rx).1, Delivery::Answer(Answer::Found { id: 51, .. })));
     // The user says they are wrong: gone from the cache, and never looked up again by itself.
-    cache.reject(&track());
+    w.reject(track());
     let n = m.requests().len();
     w.lookup(2, track(), Duration::ZERO);
     assert_eq!(next(&rx), (2, Delivery::Answer(Answer::Rejected)));
@@ -283,6 +283,29 @@ fn rejection_and_retry() {
     assert_eq!(next(&rx), (3, Delivery::Answer(Answer::NotFound)));
     let paths: Vec<_> = m.requests()[n..].iter().map(|r| r.path.clone()).collect();
     assert_eq!(paths, ["/api/get", "/api/search"]);
+    let _ = std::fs::remove_dir_all(cache.dir());
+}
+
+#[test]
+fn worker_reject_after_an_in_flight_put_wins() {
+    let m = mock(Box::new(|path, _| match path {
+        "/api/get" => (
+            200,
+            vec![],
+            record(Rec { id: 61, artist: "Hikaru Test", title: "First Love", album: "First Love", duration: 257.0, plain: Some("slow wrong words"), synced: None, instrumental: false }),
+            Duration::from_millis(80),
+        ),
+        _ => not_found(),
+    }));
+    let cache = Cache::new(temp("reject-order"));
+    let (w, rx) = worker(&m, &cache, true);
+    w.lookup(1, track(), Duration::ZERO);
+    // Reject sent right after lookup: must run after the lookup's cache.put and win.
+    w.reject(track());
+    assert!(matches!(next(&rx).1, Delivery::Answer(Answer::Found { id: 61, .. })));
+    w.lookup(2, track(), Duration::ZERO);
+    assert_eq!(next(&rx), (2, Delivery::Answer(Answer::Rejected)));
+    assert_eq!(cache.get(&track()).rejected, vec![61]);
     let _ = std::fs::remove_dir_all(cache.dir());
 }
 
