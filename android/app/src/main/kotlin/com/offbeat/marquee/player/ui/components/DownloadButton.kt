@@ -1,5 +1,6 @@
 package com.offbeat.marquee.player.ui.components
 
+import com.offbeat.marquee.player.AppScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -18,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,7 +56,8 @@ fun DownloadButton(item: Item, kind: PinKind, id: String, name: String) {
     val pins by Downloads.pins.collectAsStateWithLifecycle()
     val pin = pins[Pin.keyOf(kind, id)]
     val progress = pinProgress(pin)
-    val scope = rememberCoroutineScope()
+    // Not the screen's scope: leaving the page must not stop a pin, a removal or a heart half way.
+    val scope = AppScope
     var confirm by remember { mutableStateOf(false) }
     val description = when {
         pin == null -> "Download"

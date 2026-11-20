@@ -1,5 +1,6 @@
 package com.offbeat.marquee.player.ui.downloads
 
+import com.offbeat.marquee.player.AppScope
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,7 +28,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +62,8 @@ fun DownloadsScreen(onBack: () -> Unit, onOpenAlbum: (String) -> Unit, onOpenPla
     val stored by Downloads.stored.collectAsStateWithLifecycle()
     val wifiOnly by Downloads.wifiOnly.collectAsStateWithLifecycle()
     val quality by Downloads.quality.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
+    // Not the screen's scope: leaving the page must not stop a pin, a removal or a heart half way.
+    val scope = AppScope
     var confirmAll by remember { mutableStateOf(false) }
     val list = remember(pins) { pins.pins.sortedByDescending { it.pinnedAtMs } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = LocalScreenTop.current + 4.dp, bottom = 24.dp)) {

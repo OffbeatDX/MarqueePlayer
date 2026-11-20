@@ -1,5 +1,6 @@
 package com.offbeat.marquee.player.ui.album
 
+import com.offbeat.marquee.player.AppScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.clickable
@@ -25,7 +26,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -106,7 +106,8 @@ fun AlbumScreen(id: String, onBack: () -> Unit, onOpenArtist: (String) -> Unit) 
     val album = state.album
     val player = LocalPlayer.current
     val favourites by Library.favourites.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
+    // Not the screen's scope: leaving the page must not stop a pin, a removal or a heart half way.
+    val scope = AppScope
     if (album == null) {
         Box(Modifier.fillMaxSize()) {
             LoadingOrError(state.error, vm::load)

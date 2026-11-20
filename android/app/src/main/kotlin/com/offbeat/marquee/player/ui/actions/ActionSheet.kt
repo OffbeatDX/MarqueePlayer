@@ -85,6 +85,7 @@ import com.offbeat.marquee.player.ui.components.DarkSheetBars
 import com.offbeat.marquee.player.ui.theme.Palette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import com.offbeat.marquee.player.AppScope
 import kotlinx.serialization.json.Json
 
 /**
@@ -282,14 +283,15 @@ fun ActionSheet(
                         FavouriteResult.Done -> Unit
                     }
                 } else {
-                    Library.setFavourite(item, !favourite)
+                    // In the app's scope: the sheet's goes with the screen, and the heart must still be sent or queued.
+                    AppScope.launch { Library.setFavourite(item, !favourite) }
                 }
             }
             ItemAction.AddToPlaylist -> {
                 picking = true
                 return
             }
-            ItemAction.Download -> scope.launch {
+            ItemAction.Download -> AppScope.launch {
                 val key = pinKey(item)
                 if (key != null && pins[key] != null) Downloads.unpin(key) else Downloads.pin(item)
             }
