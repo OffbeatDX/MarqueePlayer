@@ -120,7 +120,7 @@ The owner's decisions for the port, and how the code carries them out:
   (`platform/macos/window.rs`). The title bar is transparent and the content runs under it,
   so the page reaches the top edge as on Windows and Linux, while close, minimize and zoom are
   the system's buttons at the top left; the app hides its own caption buttons and keeps that
-  corner free. Dragging the caption strip moves the window (AppKit's own drag), a double click
+  corner free (the sidebar shows no "Marquee" title there). Dragging the caption strip moves the window (AppKit's own drag), a double click
   does what System Settings > Desktop & Dock says (zoom, minimize or nothing); resizing, the
   shadow and the rounded corners are the system frame's. There is no window menu.
 - **Command in the role of Ctrl** for every shortcut (as Slint makes it), the remappable pin

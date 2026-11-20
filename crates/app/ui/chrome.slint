@@ -154,6 +154,9 @@ export component Sidebar inherits Rectangle {
                     height: 48px;
                     Text {
                         text: "Marquee";
+                        // Not on macOS, where the traffic lights take that corner; its space
+                        // is kept, so the pin stays at the right.
+                        visible: !Chrome.native-caption;
                         font-size: Theme.font-heading;
                         font-weight: 800;
                         color: Theme.text;
