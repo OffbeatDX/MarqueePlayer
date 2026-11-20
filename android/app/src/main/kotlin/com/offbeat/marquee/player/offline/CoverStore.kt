@@ -32,14 +32,22 @@ object CoverStore {
     /** Cover id to the sizes stored, read from the folder once (a directory listing). */
     private val index = ConcurrentHashMap<String, Set<Int>>()
     private val mutex = Mutex()
-    /** Covers the server would not give this run (no art): not asked again until the app restarts. */
+    /**
+     * Covers the server would not give (no art): not asked again, across restarts (kept in the
+     * `downloads` preferences), until the downloads are all removed or the user signs out.
+     */
     private val refused = ConcurrentHashMap.newKeySet<CoverFile>()
+    private var prefs: android.content.SharedPreferences? = null
+    private const val REFUSED = "covers_refused"
 
     @Synchronized
     fun init(context: Context) {
         if (dir != null) return
         val d = File(context.applicationContext.filesDir, "downloads/covers")
         dir = d
+        val p = context.applicationContext.getSharedPreferences("downloads", Context.MODE_PRIVATE)
+        prefs = p
+        p.getStringSet(REFUSED, null)?.forEach { name -> PinnedCovers.parse(name)?.let { refused += it } }
         d.listFiles()?.forEach { f -> PinnedCovers.parse(f.name)?.let { add(it) } ?: f.delete() }
     }
 
@@ -85,6 +93,7 @@ object CoverStore {
                     return@withContext todo.size - i
                 } catch (e: NotAnImage) {
                     refused += f
+                    saveRefused()
                 }
             }
             AppLog.i(TAG, "covers: $got stored ($bytes bytes), ${todo.size - got} without art")
@@ -98,7 +107,12 @@ object CoverStore {
             dir?.deleteRecursively()
             index.clear()
             refused.clear()
+            saveRefused()
         }
+    }
+
+    private fun saveRefused() {
+        prefs?.edit()?.putStringSet(REFUSED, refused.mapTo(HashSet()) { PinnedCovers.fileName(it) })?.apply()
     }
 
     private class NotAnImage : Exception()

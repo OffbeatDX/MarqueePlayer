@@ -177,7 +177,7 @@ fun SignedInApp(session: SessionState.SignedIn, player: PlayerConnection, onSign
     LaunchedEffect(Unit) {
         if (NetworkMonitor.online) {
             Sync.flushIfDue("app opened")
-            Downloads.syncPlaylists()
+            Downloads.syncPlaylistsIfDue()
         }
     }
 

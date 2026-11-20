@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.offbeat.marquee.core.library.SafeFile
+import com.offbeat.marquee.core.library.Throttle
 import com.offbeat.marquee.core.offline.HeldDeletes
 import com.offbeat.marquee.core.offline.ListDiff
 import com.offbeat.marquee.core.offline.Pin
@@ -96,6 +97,8 @@ object Downloads {
     private const val TAG = "MarqueeDownloads"
     const val WORK = "downloads"
     const val SYNC_WORK = "downloads-playlist-sync"
+    private const val PLAYLISTS_SYNCED_AT = "playlists_synced_at"
+    private const val COVERS_SYNCED_AT = "covers_synced_at"
 
     /** The qualities a download can be in (Settings > Downloads): the same five as streaming. */
     val QUALITIES: List<StreamQuality> = com.offbeat.marquee.core.settings.QualityChoices.OFFERED
@@ -145,8 +148,12 @@ object Downloads {
             reconcile()
             if (_pins.value.wanted().any { it !in _stored.value.complete }) schedule()
             // Covers missing from the store (pinned before it existed, or fetched while offline): a
-            // one-off burst now if the network is up, else the download worker's next run.
-            CoverStore.sync(_pins.value, fetch = true)
+            // burst at most once a day, not at every cold start (the widget, a media button, a job);
+            // the download worker's runs and a new pin fetch theirs anyway.
+            val now = System.currentTimeMillis()
+            val due = Throttle.isDue(prefs().getLong(COVERS_SYNCED_AT, 0), now, Throttle.COVER_SYNC_MS)
+            if (due && NetworkMonitor.online) prefs().edit().putLong(COVERS_SYNCED_AT, now).apply()
+            CoverStore.sync(_pins.value, fetch = due)
         }
     }
 
@@ -308,6 +315,18 @@ object Downloads {
         AppLog.i(TAG, "playlist ${p.id} changed on the server: +${diff.added.size} -${diff.removed.size}; ${change.fetch.size} to fetch, ${change.release.size} deleted")
         refresh()
         if (change.fetch.isNotEmpty()) schedule()
+    }
+
+    /**
+     * [syncPlaylists] when the app opens, at most once per [Throttle.PLAYLIST_SYNC_MS]: an activity
+     * is created again for every rotation, and each sync costs one request per pinned playlist.
+     */
+    suspend fun syncPlaylistsIfDue(): Int {
+        if (_pins.value.pins.none { it.kind == PinKind.Playlist }) return 0
+        val now = System.currentTimeMillis()
+        if (!Throttle.isDue(prefs().getLong(PLAYLISTS_SYNCED_AT, 0), now, Throttle.PLAYLIST_SYNC_MS)) return 0
+        prefs().edit().putLong(PLAYLISTS_SYNCED_AT, now).apply()
+        return syncPlaylists()
     }
 
     /** Every pinned playlist, fetched and followed (app start, the network back, the daily job). */

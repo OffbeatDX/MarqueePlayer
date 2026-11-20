@@ -130,7 +130,7 @@ waiting to be sent belong to the account that made them: they are never sent for
   it is drawn at, its songs' covers at two), outside the cover cache, so clearing that cache or the
   system trimming it never leaves a downloaded album without art offline. Removing the download
   removes them.
-- Downloaded playlists follow the server: checked when the app opens, when the playlist is opened,
+- Downloaded playlists follow the server: checked when the app opens (at most once an hour), when the playlist is opened,
   and once a day while charging on Wi-Fi. A playlist the server suddenly lists as empty (or with under
   a quarter of its songs) keeps its downloads until a check at least 10 minutes later says the same.
 - Offline, Library's **Downloaded** chip and the Downloads list show what plays; anything not on the

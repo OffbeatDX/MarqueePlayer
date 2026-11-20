@@ -226,6 +226,11 @@ The README describes the result.
 - **A pinned playlist that empties**: an answer listing none, or under a quarter, of a pinned
   playlist's songs (8 or more) is held, not followed: its downloads stay until an answer at least
   10 minutes later says the same (`PlaylistShrink`); one that comes back as before clears it.
+- **Start-up work, throttled** (`Throttle`): opening the app checks pinned playlists at most once an
+  hour (an activity is created again for every rotation; one request per playlist), and a process
+  start looks for missing download covers at most once a day (the widget, a media button or a job can
+  start the process); the download worker and a new pin fetch their covers anyway. Covers the server
+  has no art for are remembered across restarts until the downloads are removed or the user signs out.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL
