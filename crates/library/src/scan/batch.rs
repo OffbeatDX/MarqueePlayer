@@ -135,7 +135,7 @@ struct Pipe {
     last_read: Option<Instant>,
     art: VecDeque<ArtJob>,
     art_busy: usize,
-    arts: Vec<(i64, Option<String>, String)>,
+    arts: Vec<(i64, Cover, String)>,
     art_errors: Vec<(PathBuf, String)>,
     art_total: usize,
     art_done: usize,
@@ -249,7 +249,7 @@ fn reader(pipe: &Mutex<Pipe>, wake: &Condvar, disk: &Disk, art: &ArtCache, me: u
                     Ok(stem) => p.arts.push((j.album, stem, j.stamp)),
                     Err(e) => {
                         p.art_errors.push((j.track.clone(), e));
-                        p.arts.push((j.album, None, j.stamp));
+                        p.arts.push((j.album, Cover::Missing, j.stamp));
                     }
                 }
                 p.art_busy -= 1;
@@ -389,6 +389,7 @@ fn run_inner(
         albums: 0,
         last_tell: None,
         last_arts: None,
+        upgrade_failed: false,
         phase: Phase::Walking,
         unsettled: Default::default(),
         last_settle: None,
@@ -636,7 +637,7 @@ fn run_inner(
                 }
             }
             w.write_arts(&pipe, true, art, &upgrade)?;
-            if upgrading && !art_cut {
+            if upgrading && !art_cut && !w.upgrade_failed {
                 art.mark_upgraded();
             }
             // Not finished: the covers cut are for the next scan (Resume), as the report says.
@@ -1096,6 +1097,9 @@ struct Writer<'a> {
     albums: usize,
     last_tell: Option<Instant>,
     last_arts: Option<Instant>,
+    /// An album's art could not be re-cached for the new cache format: the cache is not
+    /// marked upgraded, so the next scan tries again.
+    upgrade_failed: bool,
     phase: Phase,
     /// Artists and genres whose names are to be worked out again (`settle`).
     unsettled: (HashSet<i64>, HashSet<i64>),
@@ -1258,13 +1262,16 @@ impl Writer<'_> {
                 match (stem, upgrade.get(&id)) {
                     // Only re-caching, and the source is gone or unreadable now: keep the art as
                     // cached (lower quality beats none), and do not try it again.
-                    (None, Some(old)) => art.mark_current(old),
+                    (Cover::Missing, Some(old)) => art.mark_current(old),
+                    // Only re-caching, and the new files could not be written: the art stays as
+                    // cached, not marked current, and the next scan tries again.
+                    (Cover::Failed, Some(_)) => self.upgrade_failed = true,
                     // No art: remember the folders as they were before looking, to look again
                     // only when they change.
-                    (None, None) => {
+                    (Cover::Missing | Cover::Failed, None) => {
                         set_art.execute(params![id, Option::<String>::None, stamp])?;
                     }
-                    (Some(stem), _) => {
+                    (Cover::Cached(stem), _) => {
                         set_art.execute(params![id, stem, Option::<String>::None])?;
                     }
                 }

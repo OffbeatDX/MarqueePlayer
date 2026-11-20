@@ -40,7 +40,8 @@
 //! the album's files, or (for an album without art) the contents of its folder, by the
 //! folders' modification times (`albums.art_checked`). And once after the art cache's
 //! format changes (`ArtCache::needs_upgrade`), every album's art is re-cached from its
-//! source.
+//! source; an album whose new files could not be written keeps its old ones, and the
+//! next scan tries it again.
 //!
 //! Technical details (format, bit depth, sample rate, bitrate, channels; `audio.rs`) are
 //! read with the tags of every file the scan reads. Tracks from before they were kept
@@ -513,7 +514,7 @@ fn make_art(
     let total = jobs.len();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
-    let arts: Mutex<Vec<(i64, Option<String>)>> = Mutex::new(Vec::new());
+    let arts: Mutex<Vec<(i64, Cover)>> = Mutex::new(Vec::new());
     let art_errors: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -531,7 +532,7 @@ fn make_art(
                         Ok(stem) => stem,
                         Err(e) => {
                             art_errors.lock().unwrap_or_else(|e| e.into_inner()).push((track.clone(), e));
-                            None
+                            Cover::Missing
                         }
                     };
                     arts.lock().unwrap_or_else(|e| e.into_inner()).push((*id, stem));
@@ -552,13 +553,16 @@ fn make_art(
             match (stem, upgrade.get(&id)) {
                 // Only re-caching, and the source is gone or unreadable now: keep the
                 // art as cached (lower quality beats none), and do not try it again.
-                (None, Some(old)) => art.mark_current(old),
+                (Cover::Missing, Some(old)) => art.mark_current(old),
+                // Only re-caching, and the new files could not be written: the art stays
+                // as cached, not marked current, for the next scan to try again.
+                (Cover::Failed, Some(_)) => {}
                 // No art: remember the folders as they were, to look again only when
                 // they change.
-                (None, None) => {
+                (Cover::Missing | Cover::Failed, None) => {
                     set_art.execute(params![id, Option::<String>::None, stamps.get(&id)])?;
                 }
-                (Some(stem), _) => {
+                (Cover::Cached(stem), _) => {
                     set_art.execute(params![id, stem, Option::<String>::None])?;
                 }
             }
@@ -1527,14 +1531,30 @@ pub fn forget_root(conn: &mut Connection, root: &Path, keep: &[PathBuf]) -> rusq
     Ok(n)
 }
 
+/// What looking for an album's art came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Cover {
+    /// Cached, by this stem.
+    Cached(String),
+    /// None there: no picture in the first track, no cover file.
+    Missing,
+    /// There, but caching it failed (it would not decode, or its files could not be
+    /// written: on Windows a cached image open elsewhere cannot be replaced). Logged.
+    Failed,
+}
+
 /// Embedded picture of the album's first track, else a cover file in the folder
 /// (the disc subfolder first, then the album folder).
-fn album_art_on(cache: &ArtCache, folder: &Path, first_track: &Path, disk: &walk::Disk) -> Option<String> {
+fn album_art_on(cache: &ArtCache, folder: &Path, first_track: &Path, disk: &walk::Disk) -> Cover {
     disk.wait();
+    let mut failed = false;
     if let Ok((_, Some(bytes))) = tags::read(first_track, true) {
         match cache.store(&bytes) {
-            Ok(stem) => return Some(stem),
-            Err(e) => log::warn!("embedded art in {}: {e}", first_track.display()),
+            Ok(stem) => return Cover::Cached(stem),
+            Err(e) => {
+                log::warn!("embedded art in {}: {e}", first_track.display());
+                failed = true;
+            }
         }
     }
     let track_dir = first_track.parent().unwrap_or(folder);
@@ -1542,13 +1562,14 @@ fn album_art_on(cache: &ArtCache, folder: &Path, first_track: &Path, disk: &walk
     let cover = art::find_folder_cover(track_dir).or_else(|| {
         disk.wait();
         art::find_folder_cover(folder)
-    })?;
+    });
+    let Some(cover) = cover else { return if failed { Cover::Failed } else { Cover::Missing } };
     disk.wait();
     match cache.store_file(&cover) {
-        Ok(stem) => Some(stem),
+        Ok(stem) => Cover::Cached(stem),
         Err(e) => {
             log::warn!("cover {}: {e}", cover.display());
-            None
+            Cover::Failed
         }
     }
 }
@@ -2525,6 +2546,67 @@ mod tests {
             assert_eq!(r.albums_changed, 1, "{r:?}");
             let art: Option<String> = lib.conn.query_row("SELECT art FROM albums", [], |r| r.get(0)).unwrap();
             assert!(art.is_some(), "the new cover is found");
+        }
+
+        /// A cache-format upgrade that cannot write an album's new files (on Windows, a cached
+        /// image open elsewhere) leaves it not current, and the cache not marked upgraded, so
+        /// the next scan tries again; a cover that is gone is kept as cached and marked.
+        #[test]
+        fn a_failed_art_upgrade_is_tried_again() {
+            let mut lib = Lib::new("art-upgrade-retry");
+            lib.file("A/Kept/01.wav", "A", "Kept", "one", None);
+            lib.file("A/Gone/01.wav", "A", "Gone", "one", None);
+            for (album, c) in [("Kept", 10u8), ("Gone", 200)] {
+                let img = image::RgbImage::from_fn(64, 64, |x, y| image::Rgb([x as u8 * 4, y as u8 * 4, c]));
+                img.save(lib.music().join(format!("A/{album}/cover.png"))).unwrap();
+            }
+            lib.scan();
+            let stem = |lib: &Lib, album: &str| lib.conn.query_row("SELECT art FROM albums WHERE title = ?1", [album], |r| r.get::<_, String>(0)).unwrap();
+            let (kept, gone) = (stem(&lib, "Kept"), stem(&lib, "Gone"));
+            assert!(!lib.art.needs_upgrade());
+            // Pretend both were cached by the previous format: the accent file without its
+            // format line, and the cache's version behind.
+            let art_dir = lib.dir.join("art");
+            let old_format = |s: &str| {
+                let accent = art_dir.join(format!("{s}_a.txt"));
+                let first = std::fs::read_to_string(&accent).unwrap().lines().next().unwrap().to_owned();
+                std::fs::write(&accent, first).unwrap();
+            };
+            old_format(&kept);
+            old_format(&gone);
+            std::fs::remove_file(art_dir.join("version.txt")).unwrap();
+            std::fs::remove_file(lib.music().join("A/Gone/cover.png")).unwrap();
+            assert!(lib.art.needs_upgrade() && !lib.art.is_current(&kept) && !lib.art.is_current(&gone));
+
+            let full = art_dir.join(format!("{kept}_f.jpg"));
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                // FILE_SHARE_READ only: the rename over it is refused, as under a viewer's lock.
+                let _lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&full).unwrap();
+                lib.scan();
+            }
+            #[cfg(not(windows))]
+            {
+                // A folder in its place: the rename over it is refused.
+                let saved = std::fs::read(&full).unwrap();
+                std::fs::remove_file(&full).unwrap();
+                std::fs::create_dir(&full).unwrap();
+                std::fs::write(full.join("keep"), b"x").unwrap();
+                lib.scan();
+                std::fs::remove_dir_all(&full).unwrap();
+                std::fs::write(&full, saved).unwrap();
+            }
+            assert!(!lib.art.is_current(&kept), "not written: not stamped current");
+            assert!(lib.art.is_current(&gone), "its source gone: kept as cached, and marked");
+            assert!(lib.art.needs_upgrade(), "so the next scan upgrades again");
+            assert_eq!(stem(&lib, "Kept"), kept, "the album keeps its art meanwhile");
+
+            lib.scan();
+            assert!(lib.art.is_current(&kept), "tried again, and written");
+            assert!(!lib.art.needs_upgrade());
+            assert_eq!(stem(&lib, "Kept"), kept);
+            assert_eq!(stem(&lib, "Gone"), gone);
         }
 
         // ---- schema 8: several artists, grouping by all of a folder's tracks ----------------
