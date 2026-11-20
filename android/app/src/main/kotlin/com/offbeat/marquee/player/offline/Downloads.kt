@@ -365,9 +365,19 @@ object Downloads {
         }
     }
 
-    /** Leftovers (not wanted) are deleted; then [stored] is read from the folder. */
+    @Volatile private var healed = false
+
+    /**
+     * Leftovers (not wanted) are deleted; then [stored] is read from the folder. Once per process,
+     * downloads that are a server's error answer stored by an older version go first
+     * ([MediaStores.dropErrorReplies]): they are fetched again.
+     */
     suspend fun reconcile() = withContext(Dispatchers.IO) {
         val d = MediaStores.downloads(app)
+        if (!healed) {
+            healed = true
+            MediaStores.dropErrorReplies(d, "downloads")
+        }
         val r = Reconcile.of(_pins.value.wanted(), MediaStores.songIds(d), emptySet())
         if (r.delete.isNotEmpty()) {
             r.delete.forEach { MediaStores.removeSong(d, it) }

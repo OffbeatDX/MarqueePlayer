@@ -211,6 +211,7 @@ class PlaybackService : MediaLibraryService() {
         scope.launch {
             val saved = withContext(Dispatchers.IO) {
                 AppSession.ensureLoaded(this@PlaybackService)
+                MediaStores.healCacheOnce(this@PlaybackService)
                 queueStore.load()
             }
             restoreIfEmpty(saved)
@@ -370,8 +371,10 @@ class PlaybackService : MediaLibraryService() {
         return null
     }
 
-    private fun classifyError(e: PlaybackException): PlaybackRecovery.FailureKind =
-        PlaybackRecovery.classify(httpStatusOf(e), e.errorCode in NETWORK_IO_ERRORS)
+    private fun classifyError(e: PlaybackException): PlaybackRecovery.FailureKind {
+        val reply = ErrorReplyException.findIn(e)
+        return PlaybackRecovery.classify(httpStatusOf(e), e.errorCode in NETWORK_IO_ERRORS, errorReply = reply != null, subsonicCode = reply?.code)
+    }
 
     private fun pauseNotice(kind: PlaybackRecovery.FailureKind): String = getString(
         when (kind) {
@@ -717,7 +720,9 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onPlayerError(error: PlaybackException) {
             // The error's cause can carry a request; log only its kind or HTTP status.
-            val detail = httpStatusOf(error)?.let { "HTTP $it" } ?: error.cause?.javaClass?.simpleName
+            val detail = httpStatusOf(error)?.let { "HTTP $it" }
+                ?: ErrorReplyException.findIn(error)?.let { "a Subsonic error answer, code ${it.code ?: "none"}" }
+                ?: error.cause?.javaClass?.simpleName
             AppLog.w(TAG, "playback error: ${error.errorCodeName} ($detail)")
             onError(error)
         }

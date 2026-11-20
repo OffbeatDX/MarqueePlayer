@@ -94,9 +94,12 @@ class PlaybackRecovery(
     companion object {
         /**
          * Classifies a playback error from the HTTP status code in its cause chain (when present)
-         * and whether the player error code is a network IO error.
+         * and whether the player error code is a network IO error. [errorReply]: the server answered
+         * with a Subsonic error in place of the song (HTTP 200, a JSON or XML body), whose
+         * [subsonicCode] says why ([StreamReply.kindOf]: a wrong password pauses as Auth).
          */
-        fun classify(httpStatus: Int?, networkIo: Boolean): FailureKind = when {
+        fun classify(httpStatus: Int?, networkIo: Boolean, errorReply: Boolean = false, subsonicCode: Int? = null): FailureKind = when {
+            errorReply -> StreamReply.kindOf(subsonicCode)
             httpStatus != null -> when (httpStatus) {
                 in 500..599, 408, 429 -> FailureKind.Retryable
                 401, 403 -> FailureKind.Auth

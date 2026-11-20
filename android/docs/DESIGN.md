@@ -183,6 +183,13 @@ The README describes the result.
   very slow link (the player sat in BUFFERING for over a minute after Wi-Fi came back, though the
   prefetch had finished) was a read left hanging on a network that had gone; streams are now
   cancelled on a network change and time out after 12 s.
+- **A server error is never stored as a song**: Subsonic servers answer an error on `stream` (a
+  wrong password, a song gone) with HTTP 200 and a small JSON or XML body. The stream client refuses
+  any 2xx answer whose content type names JSON, XML or text (the desktop client's rule) before Media3
+  reads it, so nothing reaches the cache or the downloads; its Subsonic code decides what follows (40
+  to 44 pause as a sign-in problem, 70 counts as missing, the rest as unplayable; the download worker
+  sets the song aside, or stops on a sign-in error). Entries an older version stored that way (under
+  2 KB, or beginning with `{` or `<`) are dropped once per start and fetched again.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

@@ -12,9 +12,11 @@ import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.offbeat.marquee.core.playback.CacheKeys
 import com.offbeat.marquee.core.playback.StreamQuality
+import com.offbeat.marquee.core.playback.StreamReply
 import com.offbeat.marquee.core.subsonic.SubsonicClient
 import com.offbeat.marquee.player.session.AppSession
 import okhttp3.Call
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import java.io.File
 import java.io.IOException
@@ -89,6 +91,43 @@ object MediaStores {
         for (q in StreamQuality.CHOICES) cache.removeResource(CacheKeys.song(songId, q))
     }
 
+    /**
+     * Drops the "songs" that are a server's error answer ([StreamReply.looksLikeErrorReply]): an
+     * older version stored a 200 with a JSON error body as a complete song, which then never played
+     * and was never fetched again. Only entries under [StreamReply.CHECK_FIRST_BYTE_BELOW] have a
+     * byte read, so a store of real songs costs no file reads. Blocking (disk). Returns the songs dropped.
+     */
+    @Volatile private var cacheHealed = false
+
+    /** [dropErrorReplies] on the LRU cache, once per process (the service's start, off the main thread). */
+    fun healCacheOnce(context: Context) {
+        if (cacheHealed) return
+        cacheHealed = true
+        dropErrorReplies(cache(context), "cache")
+    }
+
+    fun dropErrorReplies(cache: SimpleCache, what: String): Set<String> {
+        val dropped = HashSet<String>()
+        for (key in cache.keys.toList()) {
+            val id = CacheKeys.songId(key) ?: continue
+            val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+            if (length <= 0 || !cache.isCached(key, 0, length)) continue
+            val first = if (StreamReply.needsFirstByte(length)) firstByte(cache, key) else null
+            if (StreamReply.looksLikeErrorReply(length, first)) {
+                cache.removeResource(key)
+                dropped += id
+            }
+        }
+        if (dropped.isNotEmpty()) AppLog.w(TAG, "$what: dropped ${dropped.size} stored server error answers (fetched again when wanted)")
+        return dropped
+    }
+
+    private fun firstByte(cache: SimpleCache, key: String): Int? {
+        val span = cache.getCachedSpans(key).firstOrNull { it.position == 0L && it.isCached } ?: return null
+        val file = span.file ?: return null
+        return runCatching { file.inputStream().use { it.read() } }.getOrNull()?.takeIf { it >= 0 }
+    }
+
     /** Empties the LRU cache (Settings, "Clear cache"). Downloads are not touched. */
     fun clearCache(context: Context): Long {
         val c = cache(context)
@@ -121,22 +160,45 @@ object StreamHttp {
 
     private var base: OkHttpClient? = null
     private var derived: OkHttpClient? = null
+    private var derivedLong: OkHttpClient? = null
     private val calls = ConcurrentLinkedQueue<WeakReference<Call>>()
 
+    /**
+     * The session's client for streams: the short read timeout (unless [short] is false), and
+     * [refuseErrorReplies], so an error answer never reaches a cache or the downloads.
+     */
     @Synchronized
-    internal fun clientFor(c: SubsonicClient): OkHttpClient {
-        if (base !== c.httpClient || derived == null) {
+    internal fun clientFor(c: SubsonicClient, short: Boolean = true): OkHttpClient {
+        if (base !== c.httpClient || derived == null || derivedLong == null) {
             base = c.httpClient
-            derived = c.httpClient.newBuilder().readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build()
+            val b = c.httpClient.newBuilder().addInterceptor(refuseErrorReplies)
+            derivedLong = b.build()
+            derived = b.readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build()
         }
-        return derived!!
+        return if (short) derived!! else derivedLong!!
+    }
+
+    /**
+     * A 2xx answer whose content type is JSON, XML or text is the server's error, not the song
+     * ([StreamReply]): it fails the request with [ErrorReplyException] before Media3 reads a byte of
+     * it, so nothing of it is stored.
+     */
+    internal val refuseErrorReplies = Interceptor { chain ->
+        val response = chain.proceed(chain.request())
+        val type = response.header("Content-Type")
+        if (response.isSuccessful && StreamReply.isNotAudio(type)) {
+            val body = runCatching { response.peekBody(8 * 1024).string() }.getOrDefault("")
+            response.close()
+            throw ErrorReplyException(StreamReply.subsonicCode(body), type)
+        }
+        response
     }
 
     val callFactory = Call.Factory { request ->
         // An IOException, as SongSource.dataSpecFor has it: the player and the prefetcher take it for
         // an interrupted read (a sign-out while a track is fetched), not a crash.
         val client = AppSession.current ?: throw IOException("Not signed in")
-        val call = (if (shortReadTimeout) clientFor(client) else client.httpClient).newCall(request)
+        val call = clientFor(client, short = shortReadTimeout).newCall(request)
         calls.add(WeakReference(call))
         while (calls.size > REMEMBERED) calls.poll()
         call
@@ -174,4 +236,26 @@ object StreamHttp {
         .setUpstreamDataSourceFactory(upstream)
         .setCacheWriteDataSinkFactory(null)
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+}
+
+/**
+ * The server answered a stream with an error ([code]: its Subsonic error code, when the body had one)
+ * instead of the song. An IOException, so Media3 reports it as a failed open and writes nothing.
+ */
+class ErrorReplyException(val code: Int?, contentType: String?) :
+    IOException("The server answered with an error (code ${code ?: "none"}, $contentType), not audio") {
+    val kind get() = StreamReply.kindOf(code)
+
+    companion object {
+        /** The error answer in [e]'s cause chain, if that is why it failed. */
+        fun findIn(e: Throwable): ErrorReplyException? {
+            var cur: Throwable? = e
+            val seen = HashSet<Throwable>()
+            while (cur != null && seen.add(cur)) {
+                if (cur is ErrorReplyException) return cur
+                cur = cur.cause
+            }
+            return null
+        }
+    }
 }

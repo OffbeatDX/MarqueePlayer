@@ -25,6 +25,8 @@ import com.offbeat.marquee.player.MainActivity
 import com.offbeat.marquee.player.net.NetworkMonitor
 import com.offbeat.marquee.player.playback.MediaStores
 import com.offbeat.marquee.player.playback.StreamHttp
+import com.offbeat.marquee.player.playback.ErrorReplyException
+import com.offbeat.marquee.core.playback.PlaybackRecovery
 import com.offbeat.marquee.player.session.AppSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +81,17 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     throw e
                 } catch (e: IOException) {
                     if (isStopped) throw CancellationException("stopped")
+                    val reply = ErrorReplyException.findIn(e)
+                    if (reply != null) {
+                        // A Subsonic error in place of the song: nothing of it was stored.
+                        if (reply.kind == PlaybackRecovery.FailureKind.Auth) {
+                            AppLog.w(TAG, "song $id: the server refused the sign-in (code ${reply.code}); downloads stop until the next start")
+                            return Result.failure()
+                        }
+                        AppLog.w(TAG, "song $id: the server answered an error (code ${reply.code ?: "none"}), set aside")
+                        Downloads.markFailed(id)
+                        continue
+                    }
                     val status = (e as? HttpDataSource.InvalidResponseCodeException)?.responseCode
                     if (status != null && status in 400..499) {
                         AppLog.w(TAG, "song $id: the server refused it (HTTP $status), set aside")
