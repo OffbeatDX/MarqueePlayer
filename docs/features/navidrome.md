@@ -83,7 +83,10 @@ the server software and those counts, never its address or the user.
 
 **Signing out** asks nothing: the server's music leaves the library (tracks only it had go,
 with their plays; the folders' tracks only forget the server), the sign-in is forgotten, and the
-folders' music is as it was.
+folders' music is as it was. Nothing of the sign-in is kept: `navidrome.json` is deleted (with any
+`.tmp` or `.bad` copy beside it), the address and user name leave their fields, the plays not yet
+reported and the stream cache go. Only a sign-in the server stopped accepting, or one that
+cannot be opened here, keeps the address and user in the fields, to sign in again with.
 
 **Signing in under another name** (after a lost sign-in, say: the server's other address, a LAN
 address for a domain, http for https, another port, the user name spelt otherwise, or another

@@ -18,6 +18,14 @@ when read; a secret or session that does not open here (the portable edition on 
 another Windows account, damage) is cleared: the API key stays, and re-entering the secret
 and pressing Connect signs in again.
 
+**Disconnect** forgets all of it: the key and secret leave their fields, and `lastfm.json` is
+deleted (with any `.tmp` or `.bad` copy beside it), so they do not come back after a restart.
+The scrobbles not yet sent are dropped with `scrobbles.json`: they belonged to the account
+disconnected from, and a key connected later may sign in as someone else. While not connected,
+a key and secret still kept (entered, Last.fm no longer accepting the session, or left by an
+older version, whose Disconnect kept them) are removed with **Remove key and secret** beside
+Connect, which does the same.
+
 "Now playing" goes out when a track starts. A track longer than 30 s is scrobbled once it
 has played half its length or four minutes, whichever comes first (Last.fm's rule; the
 app's own play count keeps its 75% rule), with the time it started, its artist (as tagged;
@@ -41,7 +49,10 @@ Settings > Connections > ListenBrainz sends what you play to a ListenBrainz prof
 Last.fm and independent of it: either, both or neither may be connected. Paste the user token
 from your ListenBrainz settings page ("Open the token page" opens it in the browser, through the
 app's own way of opening a link) and press Connect: the token is checked (`GET
-/1/validate-token`) and the card shows the user it belongs to; Disconnect forgets it. The field is
+/1/validate-token`) and the card shows the user it belongs to. Disconnect forgets it and the user
+name, and drops the listens not yet sent (`listens.json` deleted: a token pasted later may be
+another user's); only the server address stays, in its field, and `listenbrainz.json` is deleted
+when that is ListenBrainz's own. A token no longer accepted offers Disconnect too. The field is
 emptied once connected and the token is never shown again, logged, or put in Copy diagnostics: it
 is kept in `listenbrainz.json` in the data folder, sealed as Last.fm's session key and the
 server's token are (DPAPI for the Windows user; on Linux the file is the user's alone, mode
@@ -73,7 +84,8 @@ second); `X-RateLimit-Remaining` and `X-RateLimit-Reset-In` are honoured, and a 
 as it says, then sends again. A 400 for a batch halves it until the listen it refuses is alone;
 that one is dropped and logged, as is a listen that can never be sent (no artist or title, a time
 before ListenBrainz's minimum, over 10 KB). A token no longer accepted (401) stops sending and asks
-to connect again (the section is marked); the queue stays and goes once connected again.
+to connect again (the section is marked); the queue stays and goes once connected again, unless
+Disconnect drops it.
 
 **No duplicates.** A listen leaves the queue only once ListenBrainz answered 200 for it. Its ids are
 read in and written to the queue before it is first sent, so a listen sent again because its
