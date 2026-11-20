@@ -482,15 +482,19 @@ fn from_server(dir: &std::path::Path, client: Option<&subsonic::Client>, song_id
     }
 }
 
+/// The largest server offset taken, either way (a day), as for a file's `[offset:]`.
+const SERVER_OFFSET_MAX_MS: i64 = 86_400_000;
+
 /// The entry to show of the server's: synced lyrics with lines first, else the first with any;
-/// the offset applied as LRC's is (a positive one shows the lines sooner).
+/// the offset applied as LRC's is (a positive one shows the lines sooner), within a day either
+/// way; a line timed before the start shows at 0.
 fn pick_server(list: &[subsonic::StructuredLyrics]) -> Option<lyrics::Lyrics> {
     let has = |l: &&subsonic::StructuredLyrics| l.line.iter().any(|x| !x.value.trim().is_empty());
     let timed = |l: &subsonic::StructuredLyrics| l.synced && l.line.iter().all(|x| x.start.is_some());
     let e = list.iter().filter(has).find(|l| timed(l)).or_else(|| list.iter().find(has))?;
     let synced = timed(e);
-    let offset = e.offset.unwrap_or(0);
-    let lines = e.line.iter().map(|x| Line { time_ms: if synced { x.start.map(|t| (t - offset).max(0) as u64) } else { None }, text: x.value.clone() }).collect();
+    let offset = e.offset.unwrap_or(0).clamp(-SERVER_OFFSET_MAX_MS, SERVER_OFFSET_MAX_MS);
+    let lines = e.line.iter().map(|x| Line { time_ms: if synced { x.start.map(|t| t.saturating_sub(offset).max(0) as u64) } else { None }, text: x.value.clone() }).collect();
     Some(lyrics::Lyrics { synced, lines, source: "server" })
 }
 
@@ -518,6 +522,18 @@ mod tests {
         assert!(!l.synced && l.lines[0].time_ms.is_none());
         assert!(pick_server(&[entry(true, None, &[(Some(0), " ")])]).is_none(), "nothing to show");
         assert!(pick_server(&[]).is_none());
+    }
+
+    #[test]
+    fn extreme_server_times_and_offsets_never_overflow() {
+        let times = |offset, starts: &[i64]| {
+            let lines: Vec<_> = starts.iter().map(|t| (Some(*t), "La")).collect();
+            pick_server(&[entry(true, offset, &lines)]).unwrap().lines.iter().map(|l| l.time_ms).collect::<Vec<_>>()
+        };
+        assert_eq!(times(Some(-1), &[i64::MAX]), vec![Some(i64::MAX as u64)], "the latest time stays the latest");
+        assert_eq!(times(Some(1), &[i64::MIN]), vec![Some(0)], "the earliest stays at 0");
+        assert_eq!(times(Some(i64::MIN), &[0]), vec![Some(SERVER_OFFSET_MAX_MS as u64)], "an offset within a day");
+        assert_eq!(times(Some(i64::MAX), &[1000, i64::MAX]), vec![Some(0), Some((i64::MAX - SERVER_OFFSET_MAX_MS) as u64)]);
     }
 
     #[test]
