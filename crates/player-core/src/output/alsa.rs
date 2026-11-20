@@ -125,17 +125,23 @@ impl Device for AlsaDevice {
         self.stopped_queued = None;
         let pcm = self.pcm()?;
         let io = pcm.io_f32().map_err(err)?;
-        let mut done = 0;
-        while done < samples.len() {
-            match io.writei(&samples[done..]) {
-                Ok(frames) => done += frames * 2,
-                Err(e) if e.errno() == libc_eagain() => break,
-                Err(e) => {
-                    self.recover(e)?;
+        write_all(
+            samples.len() / 2,
+            WRITE_TIMEOUT,
+            |done| match io.writei(&samples[done * 2..]) {
+                Ok(frames) => Ok(Some(frames)),
+                Err(e) if e.errno() == libc_eagain() => Ok(None),
+                Err(e) => pcm.try_recover(e, true).map(|()| Some(0)).map_err(err),
+            },
+            |left| {
+                // A PCM that is not running yet (its start waits for `start`) frees no room.
+                if pcm.state() != State::Running {
+                    return Err("ALSA buffer full before the device started".to_owned());
                 }
-            }
-        }
-        Ok(())
+                let _ = pcm.wait(Some(left.as_millis().clamp(1, 100) as u32));
+                Ok(())
+            },
+        )
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -169,7 +175,98 @@ impl Device for AlsaDevice {
     }
 }
 
+/// How long one `write` may wait for room before it gives up: far longer than the 80 ms
+/// buffer takes to drain, so only a stalled device reaches it.
+const WRITE_TIMEOUT: Duration = Duration::from_millis(1_000);
+
+/// Write `frames` frames through `write` (given the frames already written; `None` when
+/// the buffer is full, else the frames it took, 0 after a recovered error), waiting with
+/// `wait` (given the time left) whenever the buffer has no room. The caller has already
+/// taken these frames from the ring, so the rest is never dropped: every frame is written,
+/// or the call fails once `timeout` has passed with frames still left.
+fn write_all(
+    frames: usize,
+    timeout: Duration,
+    mut write: impl FnMut(usize) -> Result<Option<usize>, String>,
+    mut wait: impl FnMut(Duration) -> Result<(), String>,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut done = 0;
+    let mut stuck = 0u32;
+    while done < frames {
+        match write(done)? {
+            Some(n) if n > 0 => {
+                done += n.min(frames - done);
+                stuck = 0;
+                continue;
+            }
+            // `Some(0)` is a recovered error: write again straight away, once.
+            Some(_) if stuck == 0 => {
+                stuck += 1;
+                continue;
+            }
+            _ => {}
+        }
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err(format!("ALSA took no audio for {} ms ({} of {frames} frames written)", timeout.as_millis(), done));
+        }
+        wait(deadline - now)?;
+    }
+    Ok(())
+}
+
 /// EAGAIN: a non-blocking write found the buffer full.
 fn libc_eagain() -> i32 {
     11
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_buffer_is_waited_out_and_every_frame_written() {
+        // Takes 3 frames, then is full twice, then takes the rest.
+        let mut calls = Vec::new();
+        let mut script = vec![Some(3), None, Some(0), Some(7)].into_iter();
+        let mut waits = 0;
+        let r = write_all(
+            10,
+            Duration::from_secs(5),
+            |done| {
+                calls.push(done);
+                Ok(script.next().unwrap())
+            },
+            |_| {
+                waits += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(calls, [0, 3, 3, 3]);
+        assert!(waits >= 1);
+    }
+
+    #[test]
+    fn a_device_that_never_takes_audio_fails_after_the_timeout() {
+        let t = std::time::Instant::now();
+        let r = write_all(
+            10,
+            Duration::from_millis(30),
+            |_| Ok(Some(0)),
+            |left| {
+                std::thread::sleep(left.min(Duration::from_millis(5)));
+                Ok(())
+            },
+        );
+        assert!(r.is_err(), "{r:?}");
+        assert!(t.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_wait_that_cannot_help_ends_the_write() {
+        let r = write_all(4, Duration::from_secs(5), |_| Ok(None), |_| Err("not started".into()));
+        assert_eq!(r, Err("not started".to_owned()));
+    }
 }
