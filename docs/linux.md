@@ -49,8 +49,9 @@ modules.
 - **Sound: PipeWire, natively** (`player-core/src/output/pipewire.rs`), a second
   implementation of the engine's `Device`. One thread owns every PipeWire object; the stream is
   pulled by the graph (a real-time callback copying from a lock-free ring: no allocation or
-  locking in it), 50 ms or three graph cycles kept queued, positions and the visualizer's tap
-  counting what the graph has not played yet. Gapless across tracks of a rate; a rate change
+  locking in it), the ring itself kept filled to 50 ms or three graph cycles whatever the graph
+  holds beyond it (`output/ring.rs`), positions and the visualizer's tap counting what the graph
+  has not played yet. Underruns are logged as on macOS. Gapless across tracks of a rate; a rate change
   reopens the stream (PipeWire switches the graph to the track's rate when its configuration
   allows and nothing else holds it, else resamples). Pause deactivates the stream (the graph
   stops calling it: nothing runs while paused); a seek, play-now or stop is a cut the callback

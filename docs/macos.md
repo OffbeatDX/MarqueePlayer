@@ -128,7 +128,16 @@ The owner's decisions for the port, and how the code carries them out:
   as Windows' session end does).
 - **Sound: Core Audio, shared mode only** (`player-core/src/output/coreaudio.rs`): an output
   audio unit (AUHAL) on the chosen device or the system default, fed from a lock-free ring by
-  Core Audio's real-time callback (no allocation, locking or blocking call in it). The stream
+  Core Audio's real-time callback (no allocation, locking or blocking call in it). The ring
+  itself is kept filled to 100 ms or four callbacks, whatever the device holds beyond it
+  (`output/ring.rs`): a high-latency output (Bluetooth, AirPlay, HDMI) no longer leaves it a
+  sliver per callback, which crackled for the rest of the stream. Seeks and stops cut in the
+  callback, so the depth does not delay them; a pause, the volume and the equalizer act after
+  it. Whether the device is still there is asked after a device notification, not on every
+  write. The log says the output's transport (built-in, Bluetooth, USB...) and the parts of
+  its delay at every open, each underrun with where it fell in the track, and a summary at
+  most every 10 s when it changed (underruns, the ring's lowest, the device's delay and
+  quantum); Copy diagnostics' "Sound:" line has the underruns and the delay. The stream
   is the track's own rate; the unit converts it to the device's rate (set in Audio MIDI
   Setup), which the technical details show, so the app never resamples. Gapless within a
   rate; seek, play-now and stop are click-free cuts (5 ms fades), as with PipeWire. Devices are

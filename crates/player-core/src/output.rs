@@ -25,9 +25,10 @@
 //! it), the equalizer (`eq.rs`), the peak limiter for what the decode thread has not
 //! limited (`Chunk::limited`: with the equalizer on, and for a manual skip's mix), the
 //! visualizer's tap, the volume, the fades. The equalizer is here and not on the decode
-//! thread, which runs a second ahead, so a slider acts within the device buffer (~40 ms);
-//! it costs a bounded amount per frame and allocates nothing. With the equalizer off and
-//! no mix, nothing of it runs and the samples are exactly as before.
+//! thread, which runs a second ahead, so a slider acts within the device buffer (~40 ms;
+//! Core Audio's ring, 100 ms); it costs a bounded amount per frame and allocates nothing.
+//! With the equalizer off and no mix, nothing of it runs and the samples are exactly as
+//! before.
 //!
 //! A manual skip with crossfade (`Player::play_crossfade`) is mixed here too: instead of
 //! the cut, what was playing carries on from the device buffer's end out of the chunks
@@ -59,6 +60,11 @@ use crate::limiter::Limiter;
 // Exclusive mode's format negotiation and sample conversion: platform-neutral and
 // unit-tested everywhere; only the WASAPI device uses it.
 pub mod exclusive;
+
+// The ring between the output thread and a pull-driven device's callback (Core Audio,
+// PipeWire), and its accounting: platform-neutral and unit-tested everywhere.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+mod ring;
 
 // The platform's own output behind `Device`: one module per system, chosen here and
 // nowhere else (`system_device`, `devices`).
@@ -149,6 +155,26 @@ pub fn devices() -> Result<Vec<DeviceInfo>, String> {
     }
 }
 
+/// How a pull-driven device's ring is faring (`Device::health`), for the log and Diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutputHealth {
+    /// Callbacks that came short of audio while it was due, since the engine started, and the
+    /// frames padded with silence in them.
+    pub underruns: u64,
+    pub lost_frames: u64,
+    /// The stream's rate, and in frames at it: the ring's target, what it holds now, the
+    /// fewest it held at a callback since the last look (`None`: no callback since), what the
+    /// device holds and has not played, its delay (latency, safety offset, buffer), and the
+    /// frames it asked for last callback.
+    pub rate: u32,
+    pub target: u64,
+    pub ring: u64,
+    pub ring_low: Option<u64>,
+    pub pipe: u64,
+    pub delay: u64,
+    pub quantum: u32,
+}
+
 /// A system without an output of its own here: every open fails, so nothing plays.
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 struct NoDevice;
@@ -185,6 +211,8 @@ const CUT_HOLD: Duration = Duration::from_millis(100);
 /// Audio kept of what was last written, to fade out on a cut. More than the device
 /// buffer holds (40 ms requested; shared mode may round up).
 const HISTORY_SECS: f64 = 0.25;
+/// The ring's summary in the log comes at most this often, and only when it changed.
+const HEALTH_EVERY: Duration = Duration::from_secs(10);
 /// A device held exclusively is let go after a pause this long, so other applications
 /// get their sound back; the resume reopens it.
 pub const RELEASE_AFTER: Duration = Duration::from_secs(3);
@@ -237,6 +265,11 @@ pub trait Device {
     /// device itself). Cheap enough to call every loop.
     fn info_changed(&mut self) -> bool {
         false
+    }
+    /// How its ring is faring (pull-driven devices: Core Audio, PipeWire). Cheap enough to
+    /// call every loop; reading it resets `ring_low`.
+    fn health(&mut self) -> Option<OutputHealth> {
+        None
     }
     /// Let go of the device if it is held exclusively (paused a while, or stopped).
     /// True when it was: it must be opened again before the next write.
@@ -358,6 +391,36 @@ struct Output {
     cmd: Sender<Cmd>,
     /// The token said buffering (`Event::Buffering` on), until it is said off.
     buffering: Option<u64>,
+    /// The ring's health as last looked at (`Device::health`), for the log.
+    health: HealthLog,
+    /// Since when the device has been fed silence because nothing decoded was there in time
+    /// (not a wait for a growing file's bytes): said once.
+    late: Option<Instant>,
+}
+
+/// What the log said of the ring's health (`Output::note_health`).
+#[derive(Default)]
+struct HealthLog {
+    /// Underruns already said.
+    underruns: u64,
+    /// When an underrun was last said (at most one line a second; the summary counts all).
+    said_at: Option<Instant>,
+    /// The last summary: when, and what it said (underruns, delay, quantum).
+    summary_at: Option<Instant>,
+    summary: Option<(u64, u64, u32)>,
+    /// Underruns at the last summary, and the ring's lowest since.
+    at_summary: u64,
+    low: Option<u64>,
+}
+
+/// Frames at `rate` as "m:ss.s".
+fn clock(frames: u64, rate: u32) -> String {
+    let tenths = frames * 10 / u64::from(rate.max(1));
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+fn ms(frames: u64, rate: u32) -> f64 {
+    frames as f64 * 1000.0 / f64::from(rate.max(1))
 }
 
 pub(crate) fn run(
@@ -404,6 +467,8 @@ pub(crate) fn run(
         failing: None,
         cmd,
         buffering: None,
+        health: HealthLog::default(),
+        late: None,
     };
     o.run();
 }
@@ -896,7 +961,9 @@ impl Output {
             self.fade = Some(Fade { pos: 0, len, out: true });
             self.fade_in_next = false;
             let mut left = len;
-            let deadline = Instant::now() + Duration::from_millis(300);
+            // What is queued plays out first: the ring, then the device's own delay (Bluetooth
+            // and AirPlay hold a lot of it).
+            let deadline = Instant::now() + Duration::from_millis(300) + self.dev.latency();
             while left > 0 && Instant::now() < deadline {
                 let room = self.dev.available().unwrap_or(0);
                 if room == 0 {
@@ -1130,6 +1197,9 @@ impl Output {
             self.fade_in_next = true;
         }
         self.dev.write(&self.scratch)?;
+        if let Some(since) = self.late.take() {
+            log::info!("output: audio again after {:.0} ms of silence", since.elapsed().as_secs_f64() * 1000.0);
+        }
         let written = std::mem::take(&mut self.scratch);
         self.remember(&written);
         self.scratch = written;
@@ -1225,6 +1295,10 @@ impl Output {
         } else if self.running {
             // Underrun: keep the device fed with silence rather than stopping, so a slow
             // disk doesn't turn into a device restart.
+            if self.late.is_none() && self.starved().is_none() && self.ending.is_none() {
+                self.late = Some(Instant::now());
+                log::warn!("output: nothing decoded to play in time; the device plays silence until it comes");
+            }
             if let Ok(n) = self.dev.available() {
                 self.scratch.clear();
                 self.scratch.resize(n * 2, 0.0);
@@ -1234,6 +1308,70 @@ impl Output {
                 self.scratch = silence;
             }
             self.dev.wait(Duration::from_millis(50));
+        }
+    }
+
+    /// The ring's health, from a device that says (`Device::health`): an underrun is said
+    /// with where it fell in the track playing (at most one line a second), and a summary at
+    /// most every `HEALTH_EVERY`, when it changed. Both go to `Shared::output_health` too.
+    fn note_health(&mut self) {
+        let Some(h) = self.dev.health() else { return };
+        let now = Instant::now();
+        let log = &mut self.health;
+        log.low = match (log.low, h.ring_low) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut publish = false;
+        if h.underruns > log.underruns {
+            let new = h.underruns - log.underruns;
+            log.underruns = h.underruns;
+            publish = true;
+            if log.said_at.is_none_or(|t| now - t >= Duration::from_secs(1)) {
+                log.said_at = Some(now);
+                // Where the gap fell: the frame the device was taking, the ring's start.
+                let at = match &self.cur {
+                    Some(c) => format!("at {} into the track", clock((c.chunk.start + c.offset as u64).saturating_sub(h.ring), c.chunk.rate)),
+                    None => "between chunks".into(),
+                };
+                log::warn!(
+                    "output: underrun {at} ({new} since the last look, {} in all, {} frames lost); ring {:.1} of {:.1} ms, device delay {:.1} ms, quantum {}",
+                    h.underruns,
+                    h.lost_frames,
+                    ms(h.ring, h.rate),
+                    ms(h.target, h.rate),
+                    ms(h.delay, h.rate),
+                    h.quantum
+                );
+            }
+        }
+        publish |= log.summary_at.is_none();
+        let since = *log.summary_at.get_or_insert(now);
+        if now - since >= HEALTH_EVERY {
+            let key = (h.underruns, h.delay, h.quantum);
+            if log.summary != Some(key) {
+                log::info!(
+                    "output: ring health: {} underruns in the last {:.0} s, {} in all ({} frames lost); ring low {} of {:.1} ms, pipe {:.1} ms, device delay {:.1} ms, quantum {} at {} Hz",
+                    h.underruns - log.at_summary,
+                    (now - since).as_secs_f64(),
+                    h.underruns,
+                    h.lost_frames,
+                    log.low.map_or("-".into(), |l| format!("{:.1}", ms(l, h.rate))),
+                    ms(h.target, h.rate),
+                    ms(h.pipe, h.rate),
+                    ms(h.delay, h.rate),
+                    h.quantum,
+                    h.rate
+                );
+                log.summary = Some(key);
+            }
+            log.summary_at = Some(now);
+            log.at_summary = h.underruns;
+            log.low = None;
+            publish = true;
+        }
+        if publish {
+            *self.shared.output_health.lock().unwrap() = Some(h);
         }
     }
 
@@ -1258,6 +1396,7 @@ impl Output {
         }
         let queued = self.dev.queued() as u64;
         self.shared.spectrum.publish(queued + self.latency_frames);
+        self.note_health();
         let mut st = self.shared.status.lock().unwrap();
         if self.stopped() {
             return;

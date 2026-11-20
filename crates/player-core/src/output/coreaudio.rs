@@ -5,13 +5,16 @@
 //! real-time I/O thread. The stream format is the track's own rate, f32 interleaved stereo;
 //! the unit's converter turns it into what the device runs at (its nominal rate, shown as
 //! `OutputInfo::mix_rate`), as Windows' shared mode does, so the app never resamples. The
-//! output thread (`output.rs`) writes into a single-producer single-consumer ring (`Ring`,
-//! atomics only); the callback copies what the unit asks for out of it, pads an underrun with
-//! silence, notes how much is still unheard (the device's latency, safety offset and buffer)
-//! and unparks the output thread, whose `wait` parks until then. The callback does not
-//! allocate, lock, log or make a call that can block. The ring is kept filled to 50 ms or
-//! three callback periods, whichever is more, the same view the output thread has of WASAPI's
-//! 40 ms device buffer: `queued` is the ring plus what the device has not played yet.
+//! output thread (`output.rs`) writes into a single-producer single-consumer ring
+//! (`ring.rs`, atomics only); the callback copies what the unit asks for out of it, pads an
+//! underrun with silence, notes how much is still unheard (the device's latency, safety
+//! offset and buffer) and unparks the output thread, whose `wait` parks until then. The
+//! callback does not allocate, lock, log or make a call that can block. The ring itself is
+//! kept filled to 100 ms or four callbacks, whichever is more, whatever the device holds
+//! beyond it (Bluetooth and AirPlay hold a lot): that is the slack against a late output
+//! thread. `queued` is the ring plus what the device has not played yet. Seeks and stops
+//! cut in the callback, so the depth does not delay them; a pause, the volume and the
+//! equalizer act after it.
 //!
 //! **Pause, seek, stop.** `stop` stops the unit (`AudioOutputUnitStop`), `start` starts it.
 //! A seek, play-now or stop is a `cut`: the callback fades out the very next frames it hands
@@ -32,9 +35,9 @@
 
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use objc2_audio_toolbox::{
     AURenderCallbackStruct, AudioComponentDescription, AudioComponentFindNext, AudioComponentInstanceDispose,
@@ -48,7 +51,7 @@ use objc2_core_audio::{
     AudioObjectAddPropertyListener, AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID,
     AudioObjectPropertyAddress, kAudioDevicePropertyBufferFrameSize, kAudioDevicePropertyDeviceIsAlive,
     kAudioDevicePropertyDeviceUID, kAudioDevicePropertyLatency, kAudioDevicePropertyNominalSampleRate,
-    kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyStreams,
+    kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreamConfiguration, kAudioDevicePropertyStreams, kAudioDevicePropertyTransportType,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices, kAudioObjectPropertyElementMain,
     kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeOutput,
     kAudioObjectSystemObject, kAudioObjectUnknown, kAudioStreamPropertyLatency,
@@ -59,199 +62,21 @@ use objc2_core_audio_types::{
 };
 use objc2_core_foundation::{CFRetained, CFString};
 
-use super::{Device, DeviceInfo};
+use super::ring::{Ring, Underruns};
+use super::{Device, DeviceInfo, OutputHealth};
 use crate::engine::{OutputConfig, OutputInfo};
 
-/// The ring's capacity in frames (a power of two): 0.68 s at 48 kHz, 85 ms at 384 kHz,
+/// The ring's capacity in frames (a power of two): 1.4 s at 48 kHz, 170 ms at 384 kHz,
 /// always more than `available` offers.
-const RING_FRAMES: usize = 1 << 15;
-/// What the ring is kept filled to, at least.
-const TARGET_MS: u32 = 50;
+const RING_FRAMES: usize = 1 << 16;
+/// What the ring itself is kept filled to, at least, and in callbacks.
+const TARGET_MS: u32 = 100;
+const TARGET_PERIODS: u64 = 4;
 /// The most frames the unit asks for in one callback (`kAudioUnitProperty_MaximumFramesPerSlice`):
 /// a device buffer of 4096 at a high rate, converted up from a low one, stays within it.
 const MAX_SLICE: u32 = 8192;
 const SERVER: &str = "Core Audio";
 const SYSTEM: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
-
-// ---------------------------------------------------------------------------------------
-// The ring between the output thread and the render callback.
-
-/// Single producer (the output thread), single consumer (Core Audio's I/O thread).
-struct Ring {
-    /// Interleaved stereo f32 as bits: written relaxed, published by `write`'s release.
-    buf: Box<[AtomicU32]>,
-    /// Frames written in all (producer).
-    write: AtomicU64,
-    /// Frames taken in all (consumer).
-    read: AtomicU64,
-    /// A cut (`cut`, `flush`): what was written before it is dropped (after a fade-out of
-    /// `cut_len` frames from the next one taken); `cut_seq` says there is a new one.
-    skip: AtomicU64,
-    cut_len: AtomicU32,
-    cut_seq: AtomicU64,
-    /// The consumer's own: the cut it last took, its fade (done, length) and its end.
-    cut_seen: AtomicU64,
-    fade_pos: AtomicU32,
-    fade_len: AtomicU32,
-    fade_end: AtomicU64,
-    /// The stream's sample rate.
-    rate: u32,
-    /// Frames handed to the device and not heard yet, as of `pipe_ns` (the consumer's view).
-    pipe: AtomicU64,
-    pipe_ns: AtomicU64,
-    /// Frames (stream rate) between the callback and what is heard: set at open.
-    delay: AtomicU64,
-    /// The frames the unit asked for last callback.
-    quantum: AtomicU32,
-    underruns: AtomicU64,
-    base: Instant,
-    /// The output thread, unparked every callback (`Device::wait` parks).
-    waiter: std::thread::Thread,
-}
-
-impl Ring {
-    fn new(rate: u32) -> Self {
-        Ring {
-            buf: (0..RING_FRAMES * 2).map(|_| AtomicU32::new(0)).collect(),
-            write: AtomicU64::new(0),
-            read: AtomicU64::new(0),
-            skip: AtomicU64::new(0),
-            cut_len: AtomicU32::new(0),
-            cut_seq: AtomicU64::new(0),
-            cut_seen: AtomicU64::new(0),
-            fade_pos: AtomicU32::new(0),
-            fade_len: AtomicU32::new(0),
-            fade_end: AtomicU64::new(0),
-            rate,
-            pipe: AtomicU64::new(0),
-            pipe_ns: AtomicU64::new(0),
-            delay: AtomicU64::new(0),
-            quantum: AtomicU32::new(0),
-            underruns: AtomicU64::new(0),
-            base: Instant::now(),
-            waiter: std::thread::current(),
-        }
-    }
-
-    fn now_ns(&self) -> u64 {
-        self.base.elapsed().as_nanos() as u64
-    }
-
-    /// Frames in the ring the consumer will still play.
-    fn in_ring(&self) -> u64 {
-        let w = self.write.load(Ordering::Acquire);
-        let r = self.read.load(Ordering::Acquire).max(self.skip.load(Ordering::Acquire));
-        w.saturating_sub(r)
-    }
-
-    /// Frames handed to the device and not heard yet, now.
-    fn in_pipe(&self) -> u64 {
-        let pipe = self.pipe.load(Ordering::Acquire);
-        let at = self.pipe_ns.load(Ordering::Acquire);
-        let played = self.now_ns().saturating_sub(at) as u128 * u128::from(self.rate) / 1_000_000_000;
-        pipe.saturating_sub(played as u64)
-    }
-
-    /// Room the producer may use without overwriting what the consumer has not taken.
-    fn room(&self) -> u64 {
-        let w = self.write.load(Ordering::Relaxed);
-        RING_FRAMES as u64 - w.saturating_sub(self.read.load(Ordering::Acquire))
-    }
-
-    /// Producer: append interleaved stereo samples.
-    fn push(&self, samples: &[f32]) -> Result<(), String> {
-        let frames = samples.len() / 2;
-        if frames as u64 > self.room() {
-            return Err("Core Audio buffer full".into());
-        }
-        let w = self.write.load(Ordering::Relaxed);
-        let mask = RING_FRAMES as u64 - 1;
-        for (i, f) in samples.as_chunks::<2>().0.iter().enumerate() {
-            let at = (((w + i as u64) & mask) * 2) as usize;
-            self.buf[at].store(f[0].to_bits(), Ordering::Relaxed);
-            self.buf[at + 1].store(f[1].to_bits(), Ordering::Relaxed);
-        }
-        self.write.store(w + frames as u64, Ordering::Release);
-        Ok(())
-    }
-
-    /// Producer: drop everything not taken yet, the first `fade` frames of it faded out
-    /// (they follow what the device has, so the cut is continuous).
-    fn cut(&self, fade: usize) {
-        self.cut_len.store(fade as u32, Ordering::Relaxed);
-        self.skip.store(self.write.load(Ordering::Relaxed), Ordering::Release);
-        self.cut_seq.fetch_add(1, Ordering::Release);
-    }
-
-    /// Producer: drop everything not taken yet, at once (the unit is stopped and reset).
-    fn flush(&self) {
-        self.cut(0);
-        self.pipe.store(0, Ordering::Release);
-    }
-
-    /// Consumer (real-time): fill `out` (interleaved stereo) with up to `out.len() / 2`
-    /// frames of the ring, silence after it. Returns the frames of real audio.
-    fn take(&self, out: &mut [f32]) -> usize {
-        let w = self.write.load(Ordering::Acquire);
-        let mut r = self.read.load(Ordering::Relaxed);
-        // A new cut: its fade starts at the next frame taken, then the rest is dropped.
-        let seq = self.cut_seq.load(Ordering::Acquire);
-        if seq != self.cut_seen.load(Ordering::Relaxed) {
-            self.cut_seen.store(seq, Ordering::Relaxed);
-            self.fade_len.store(self.cut_len.load(Ordering::Relaxed), Ordering::Relaxed);
-            self.fade_pos.store(0, Ordering::Relaxed);
-            self.fade_end.store(self.skip.load(Ordering::Acquire), Ordering::Relaxed);
-        }
-        let (fade_len, end) = (self.fade_len.load(Ordering::Relaxed), self.fade_end.load(Ordering::Relaxed));
-        let mut fade_pos = self.fade_pos.load(Ordering::Relaxed);
-        let mask = RING_FRAMES as u64 - 1;
-        let frames = out.len() / 2;
-        let mut n = 0;
-        for frame in out.as_chunks_mut::<2>().0 {
-            let gain = if fade_pos < fade_len && r < end {
-                fade_pos += 1;
-                // Raised cosine, 1 to 0, as the output thread's own fades.
-                0.5 + 0.5 * (std::f32::consts::PI * fade_pos as f32 / fade_len as f32).cos()
-            } else {
-                if r < end {
-                    r = end;
-                    fade_pos = fade_len;
-                }
-                if r >= w {
-                    break;
-                }
-                1.0
-            };
-            let at = ((r & mask) * 2) as usize;
-            frame[0] = f32::from_bits(self.buf[at].load(Ordering::Relaxed)) * gain;
-            frame[1] = f32::from_bits(self.buf[at + 1].load(Ordering::Relaxed)) * gain;
-            r += 1;
-            n += 1;
-        }
-        if fade_pos >= fade_len && r < end {
-            r = end;
-        }
-        self.fade_pos.store(fade_pos, Ordering::Relaxed);
-        out[n * 2..frames * 2].fill(0.0);
-        self.read.store(r, Ordering::Release);
-        n
-    }
-
-    /// Consumer (real-time): after a callback that handed `real` frames of audio (of `want`).
-    fn after_cycle(&self, real: usize, want: usize) {
-        let now = self.now_ns();
-        let left = self.in_pipe();
-        let delay = self.delay.load(Ordering::Relaxed);
-        let pipe = (left + real as u64).min(delay + want as u64);
-        self.pipe.store(pipe, Ordering::Release);
-        self.pipe_ns.store(now, Ordering::Release);
-        self.quantum.store(want as u32, Ordering::Relaxed);
-        if real < want && self.in_ring() == 0 && real > 0 {
-            self.underruns.fetch_add(1, Ordering::Relaxed);
-        }
-        self.waiter.unpark();
-    }
-}
 
 /// The render callback: Core Audio's I/O thread asks for `frames` frames. `refcon` is the
 /// `Ring` (kept alive by the device until the unit is disposed).
@@ -277,8 +102,12 @@ unsafe extern "C-unwind" fn render(
     let len = (buffer.mDataByteSize as usize / 4).min(frames as usize * 2);
     // SAFETY: the unit hands a buffer of `mDataByteSize` bytes of f32 samples.
     let out = unsafe { std::slice::from_raw_parts_mut(buffer.mData.cast::<f32>(), len) };
-    let real = ring.take(out);
-    ring.after_cycle(real, len / 2);
+    let real = ring.take(len / 2, |i, l, r| {
+        out[i * 2] = l;
+        out[i * 2 + 1] = r;
+    });
+    out[real * 2..].fill(0.0);
+    ring.after_cycle(real, len / 2, ring.delay.load(Ordering::Relaxed));
     0
 }
 
@@ -529,6 +358,47 @@ pub struct CoreAudioDevice {
     info: Option<OutputInfo>,
     /// `SEQ` when the devices were last looked at.
     seq: u64,
+    /// `SEQ` when the device was last asked whether it is alive (asked again only after a
+    /// notification, never on every write).
+    alive_seq: u64,
+    underruns: Underruns,
+}
+
+/// What `delay` is made of, for the log.
+struct Delay {
+    /// Device frames at its nominal rate.
+    latency: u32,
+    safety: u32,
+    buffer: u32,
+    stream: u32,
+    /// The unit's own (its converter), in seconds.
+    unit: f64,
+    /// All of it, in frames at the stream's rate.
+    frames: u64,
+}
+
+/// What the device is connected by, for the log.
+fn transport(device: AudioObjectID) -> String {
+    let t = get::<u32>(device, kAudioDevicePropertyTransportType, kAudioObjectPropertyScopeGlobal).unwrap_or(0);
+    let name = match &t.to_be_bytes() {
+        _ if t == 0 => "unknown",
+        b"bltn" => "built-in",
+        b"blue" => "Bluetooth",
+        b"blea" => "Bluetooth LE",
+        b"usb " => "USB",
+        b"hdmi" => "HDMI",
+        b"dprt" => "DisplayPort",
+        b"airp" => "AirPlay",
+        b"thun" => "Thunderbolt",
+        b"pci " => "PCI",
+        b"1394" => "FireWire",
+        b"eavb" => "AVB",
+        b"virt" => "virtual",
+        b"grup" => "aggregate",
+        b"fgrp" => "aggregate (automatic)",
+        b => return format!("{:?}", String::from_utf8_lossy(b)),
+    };
+    name.into()
 }
 
 impl CoreAudioDevice {
@@ -548,21 +418,22 @@ impl CoreAudioDevice {
     /// What is between the render callback and what is heard, in frames at the stream's
     /// rate: the device's latency, safety offset and buffer, its stream's latency (all in
     /// device frames at its nominal rate), and the unit's own (its converter).
-    fn delay(unit: &Unit, device: AudioObjectID, rate: u32, nominal: f64) -> u64 {
+    fn delay(unit: &Unit, device: AudioObjectID, rate: u32, nominal: f64) -> Delay {
         let out = kAudioObjectPropertyScopeOutput;
-        let mut frames = 0u64;
-        for selector in [kAudioDevicePropertyLatency, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyBufferFrameSize] {
-            frames += u64::from(get::<u32>(device, selector, out).unwrap_or(0));
-        }
+        let part = |selector| get::<u32>(device, selector, out).unwrap_or(0);
+        let (latency, safety, buffer) = (part(kAudioDevicePropertyLatency), part(kAudioDevicePropertySafetyOffset), part(kAudioDevicePropertyBufferFrameSize));
+        let mut stream = 0;
         if let Some(buf) = get_bytes(device, kAudioDevicePropertyStreams, out)
             && let Some(first) = as_bytes(&buf).as_chunks::<4>().0.first()
         {
-            let stream = AudioObjectID::from_ne_bytes(*first);
-            frames += u64::from(get::<u32>(stream, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal).unwrap_or(0));
+            let id = AudioObjectID::from_ne_bytes(*first);
+            stream = get::<u32>(id, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal).unwrap_or(0);
         }
-        let device_secs = if nominal > 0.0 { frames as f64 / nominal } else { 0.0 };
+        let device_frames = u64::from(latency) + u64::from(safety) + u64::from(buffer) + u64::from(stream);
+        let device_secs = if nominal > 0.0 { device_frames as f64 / nominal } else { 0.0 };
         let unit_secs = unit.get_f64(kAudioUnitProperty_Latency, kAudioUnitScope_Global).unwrap_or(0.0).max(0.0);
-        ((device_secs + unit_secs) * f64::from(rate)).round() as u64
+        let frames = ((device_secs + unit_secs) * f64::from(rate)).round() as u64;
+        Delay { latency, safety, buffer, stream, unit: unit_secs, frames }
     }
 
     fn open_unit(device: AudioObjectID, rate: u32, ring: &Arc<Ring>) -> Result<Unit, String> {
@@ -609,16 +480,20 @@ impl Device for CoreAudioDevice {
     }
 
     fn open(&mut self, rate: u32) -> Result<(), String> {
+        if let Some(s) = &self.stream {
+            self.underruns.stopped(&s.ring);
+        }
         self.stream = None;
         self.device = None;
         listen();
         // Anything reported before this open is already followed by it.
         self.seq = SEQ.load(Ordering::Acquire);
         let (found, missing) = self.resolve()?;
-        let ring = Arc::new(Ring::new(rate));
+        let ring = Arc::new(Ring::new(rate, RING_FRAMES));
         let unit = Self::open_unit(found.object, rate, &ring)?;
         let nominal = get::<f64>(found.object, kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal).unwrap_or(0.0);
-        ring.delay.store(Self::delay(&unit, found.object, rate, nominal), Ordering::Relaxed);
+        let delay = Self::delay(&unit, found.object, rate, nominal);
+        ring.delay.store(delay.frames, Ordering::Relaxed);
         let mix_rate = (nominal > 0.0).then(|| nominal.round() as u32);
         let mut info = OutputInfo { device: found.name.clone(), id: found.uid, missing, rate, mix_rate, server: Some(SERVER), ..OutputInfo::default() };
         if self.cfg.exclusive {
@@ -630,6 +505,20 @@ impl Device for CoreAudioDevice {
             mix_rate.unwrap_or(0),
             if missing { " (the chosen device is not connected: system default)" } else { "" }
         );
+        log::info!(
+            "coreaudio: {} output; device delay {:.1} ms: latency {} + safety offset {} + buffer {} + stream {} frames at {} Hz, converter {:.1} ms; ring {} ms",
+            transport(found.object),
+            delay.frames as f64 * 1000.0 / f64::from(rate),
+            delay.latency,
+            delay.safety,
+            delay.buffer,
+            delay.stream,
+            mix_rate.unwrap_or(0),
+            delay.unit * 1000.0,
+            TARGET_MS
+        );
+        self.underruns.opened();
+        self.alive_seq = self.seq;
         self.stream = Some(Stream { unit, ring, running: false });
         self.device = Some(found.object);
         self.rate = rate;
@@ -646,11 +535,8 @@ impl Device for CoreAudioDevice {
 
     fn available(&mut self) -> Result<usize, String> {
         let s = self.stream.as_ref().ok_or("not open")?;
-        let r = &s.ring;
-        let quantum = u64::from(r.quantum.load(Ordering::Relaxed));
-        let target = (u64::from(self.rate) * u64::from(TARGET_MS) / 1000).max(quantum * 3).min(RING_FRAMES as u64 / 2);
-        let queued = r.in_ring() + r.in_pipe();
-        Ok(target.saturating_sub(queued).min(r.room()) as usize)
+        self.underruns.poll(&s.ring);
+        Ok(s.ring.wanted(s.ring.target(TARGET_MS, TARGET_PERIODS)) as usize)
     }
 
     fn queued(&mut self) -> usize {
@@ -659,12 +545,22 @@ impl Device for CoreAudioDevice {
 
     fn write(&mut self, samples: &[f32]) -> Result<(), String> {
         let s = self.stream.as_ref().ok_or("not open")?;
-        if let Some(d) = self.device
-            && !is_alive(d)
-        {
-            return Err("the output device is gone".into());
+        // Whether the device is still there is asked only after a device notification: a
+        // property read can wait on Core Audio's server, and this thread feeds the ring.
+        let seq = SEQ.load(Ordering::Acquire);
+        if seq != self.alive_seq {
+            self.alive_seq = seq;
+            if let Some(d) = self.device
+                && !is_alive(d)
+            {
+                return Err("the output device is gone".into());
+            }
         }
-        s.ring.push(samples)
+        if !s.ring.push(samples) {
+            return Err("Core Audio buffer full".into());
+        }
+        self.underruns.wrote(&s.ring);
+        Ok(())
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -684,6 +580,7 @@ impl Device for CoreAudioDevice {
             // SAFETY: a live unit.
             unsafe { AudioOutputUnitStop(s.unit.0) };
             s.running = false;
+            self.underruns.stopped(&s.ring);
         }
     }
 
@@ -691,6 +588,7 @@ impl Device for CoreAudioDevice {
         match &self.stream {
             Some(s) => {
                 s.ring.cut(fade);
+                self.underruns.excuse(&s.ring);
                 true
             }
             None => false,
@@ -729,63 +627,28 @@ impl Device for CoreAudioDevice {
     fn info(&mut self) -> Option<OutputInfo> {
         self.info.clone()
     }
+
+    fn health(&mut self) -> Option<OutputHealth> {
+        let s = self.stream.as_ref()?;
+        let r = &s.ring;
+        self.underruns.poll(r);
+        Some(OutputHealth {
+            underruns: self.underruns.count,
+            lost_frames: self.underruns.lost,
+            rate: r.rate,
+            target: r.target(TARGET_MS, TARGET_PERIODS),
+            ring: r.in_ring(),
+            ring_low: r.take_low(),
+            pipe: r.in_pipe(),
+            delay: r.delay.load(Ordering::Relaxed),
+            quantum: r.quantum.load(Ordering::Relaxed),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ring_hands_over_in_order_and_pads_with_silence() {
-        let r = Ring::new(48_000);
-        let samples: Vec<f32> = (0..20).map(|i| i as f32).collect();
-        r.push(&samples).unwrap();
-        assert_eq!(r.in_ring(), 10);
-        let mut out = vec![9.0f32; 32];
-        assert_eq!(r.take(&mut out), 10);
-        assert_eq!(&out[..20], &samples[..]);
-        assert!(out[20..].iter().all(|&s| s == 0.0), "an underrun is silence");
-        assert_eq!(r.in_ring(), 0);
-    }
-
-    #[test]
-    fn a_cut_fades_out_from_the_next_frame_then_drops_the_rest() {
-        let r = Ring::new(48_000);
-        r.push(&vec![1.0f32; 2 * 100]).unwrap();
-        let mut out = vec![0f32; 20];
-        assert_eq!(r.take(&mut out), 10);
-        r.cut(4);
-        r.push(&[0.5, 0.5, 0.5, 0.5]).unwrap();
-        let mut out = vec![0f32; 16];
-        assert_eq!(r.take(&mut out), 6);
-        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
-        assert!(left[0] < 1.0 && left[0] > left[1] && left[1] > left[2] && left[2] > left[3], "{left:?}");
-        assert!(left[3].abs() < 1e-6, "faded to silence: {left:?}");
-        assert_eq!(&left[4..], [0.5, 0.5, 0.0, 0.0], "then the new audio, then silence");
-    }
-
-    #[test]
-    fn a_flush_skips_what_was_not_taken() {
-        let r = Ring::new(48_000);
-        r.push(&[1.0, 1.0, 2.0, 2.0]).unwrap();
-        r.flush();
-        assert_eq!(r.in_ring(), 0);
-        r.push(&[3.0, -3.0]).unwrap();
-        let mut out = vec![0f32; 8];
-        assert_eq!(r.take(&mut out), 1);
-        assert_eq!(&out[..2], [3.0, -3.0]);
-    }
-
-    #[test]
-    fn what_was_handed_over_drains_as_time_passes() {
-        let r = Ring::new(48_000);
-        r.delay.store(960, Ordering::Relaxed);
-        r.after_cycle(960, 960);
-        let pipe = r.in_pipe();
-        assert!(pipe > 900 && pipe <= 960, "{pipe}");
-        std::thread::sleep(Duration::from_millis(30));
-        assert_eq!(r.in_pipe(), 0, "20 ms of audio is heard within 30 ms");
-    }
 
     /// Lists the devices of the machine the tests run on; passes with none.
     #[test]

@@ -10,14 +10,14 @@
 //!
 //! **Audio.** The stream is driven by PipeWire (`RT_PROCESS`: the process callback runs on
 //! PipeWire's real-time data thread once per graph cycle). The output thread writes into a
-//! single-producer single-consumer ring (`Ring`, atomics only); the callback copies what
+//! single-producer single-consumer ring (`ring.rs`, atomics only); the callback copies what
 //! the graph asks for out of it, pads an underrun with silence, publishes how much is
 //! still unheard (the graph's delay and the stream's converter, from `pw_stream_get_time_n`)
 //! and unparks the output thread, whose `wait` parks until then. The callback does not
-//! allocate, lock, log or make a call that can block. The ring holds what `available`
-//! offers, 50 ms or three graph cycles, whichever is more, so the output thread's view is
-//! the same as with WASAPI's 40 ms device buffer: `queued` is the ring plus what the graph
-//! has not played yet, so positions, the visualizer's tap and lyrics follow what is heard.
+//! allocate, lock, log or make a call that can block. The ring itself is kept filled to
+//! 50 ms or three graph cycles, whichever is more, whatever the graph holds beyond it:
+//! `queued` is the ring plus what the graph has not played yet, so positions, the
+//! visualizer's tap and lyrics follow what is heard.
 //!
 //! **Pause, seek, stop.** `stop` deactivates the stream (the graph stops calling it, and
 //! the sink suspends when nothing else plays: paused costs nothing), `start` activates it.
@@ -57,7 +57,8 @@ use std::time::{Duration, Instant};
 use pipewire as pw;
 use pw::spa;
 
-use super::{Device, DeviceInfo};
+use super::ring::{Ring, Underruns};
+use super::{Device, DeviceInfo, OutputHealth};
 use crate::engine::{OutputConfig, OutputInfo};
 
 /// Interleaved stereo f32.
@@ -65,8 +66,9 @@ const FRAME_BYTES: usize = 8;
 /// The ring's capacity in frames (a power of two): 0.68 s at 48 kHz, 85 ms at 384 kHz,
 /// always more than `available` offers.
 const RING_FRAMES: usize = 1 << 15;
-/// What the ring is kept filled to, at least.
+/// What the ring itself is kept filled to, at least, and in graph cycles.
 const TARGET_MS: u32 = 50;
+const TARGET_PERIODS: u64 = 3;
 /// The graph cycle the stream asks for (`node.latency`): 20 ms.
 const LATENCY_MS: u32 = 20;
 const SERVER: &str = "PipeWire";
@@ -83,192 +85,33 @@ pub fn set_identity(name: &'static str, id: &'static str) {
 // ---------------------------------------------------------------------------------------
 // The ring between the output thread and the process callback.
 
-/// Single producer (the output thread), single consumer (PipeWire's data thread).
-struct Ring {
-    /// Interleaved stereo f32 as bits: written relaxed, published by `write`'s release.
-    buf: Box<[AtomicU32]>,
-    /// Frames written in all (producer).
-    write: AtomicU64,
-    /// Frames taken in all (consumer).
-    read: AtomicU64,
-    /// A cut (`cut`, `flush`): what was written before it is dropped (after a fade-out of
-    /// `cut_len` frames from the next one taken); `cut_seq` says there is a new one.
-    skip: AtomicU64,
-    cut_len: AtomicU32,
-    cut_seq: AtomicU64,
-    /// The consumer's own: the cut it last took, its fade (done, length) and its end.
-    cut_seen: AtomicU64,
-    fade_pos: AtomicU32,
-    fade_len: AtomicU32,
-    fade_end: AtomicU64,
-    /// The stream's sample rate.
-    rate: u32,
-    /// Frames handed to PipeWire and not heard yet, as of `pipe_ns` (the consumer's view).
-    pipe: AtomicU64,
-    pipe_ns: AtomicU64,
+/// The ring (`ring.rs`) and what the stream's callbacks say besides.
+struct PwRing {
+    ring: Ring,
     /// The rate the graph runs at (0 until the stream has run).
     graph_rate: AtomicU32,
-    /// The frames the graph asked for last cycle.
-    quantum: AtomicU32,
     /// The stream is gone (an error, or the server went away): nothing will drain it.
     dead: AtomicBool,
     /// The stream's node in the graph (`NO_NODE` until it is connected), to see which sink
     /// the session manager linked it to.
     node: AtomicU32,
-    underruns: AtomicU64,
-    base: Instant,
-    /// The output thread, unparked every cycle (`Device::wait` parks).
-    waiter: std::thread::Thread,
 }
 
-impl Ring {
+impl PwRing {
     fn new(rate: u32) -> Self {
-        Ring {
-            buf: (0..RING_FRAMES * 2).map(|_| AtomicU32::new(0)).collect(),
-            write: AtomicU64::new(0),
-            read: AtomicU64::new(0),
-            skip: AtomicU64::new(0),
-            cut_len: AtomicU32::new(0),
-            cut_seq: AtomicU64::new(0),
-            cut_seen: AtomicU64::new(0),
-            fade_pos: AtomicU32::new(0),
-            fade_len: AtomicU32::new(0),
-            fade_end: AtomicU64::new(0),
-            rate,
-            pipe: AtomicU64::new(0),
-            pipe_ns: AtomicU64::new(0),
-            graph_rate: AtomicU32::new(0),
-            quantum: AtomicU32::new(0),
-            dead: AtomicBool::new(false),
-            node: AtomicU32::new(NO_NODE),
-            underruns: AtomicU64::new(0),
-            base: Instant::now(),
-            waiter: std::thread::current(),
-        }
+        PwRing { ring: Ring::new(rate, RING_FRAMES), graph_rate: AtomicU32::new(0), dead: AtomicBool::new(false), node: AtomicU32::new(NO_NODE) }
     }
+}
 
-    fn now_ns(&self) -> u64 {
-        self.base.elapsed().as_nanos() as u64
-    }
-
-    /// Frames in the ring the consumer will still play.
-    fn in_ring(&self) -> u64 {
-        let w = self.write.load(Ordering::Acquire);
-        let r = self.read.load(Ordering::Acquire).max(self.skip.load(Ordering::Acquire));
-        w.saturating_sub(r)
-    }
-
-    /// Frames handed to PipeWire and not heard yet, now.
-    fn in_pipe(&self) -> u64 {
-        let pipe = self.pipe.load(Ordering::Acquire);
-        let at = self.pipe_ns.load(Ordering::Acquire);
-        let played = self.now_ns().saturating_sub(at) as u128 * u128::from(self.rate) / 1_000_000_000;
-        pipe.saturating_sub(played as u64)
-    }
-
-    /// Room the producer may use without overwriting what the consumer has not taken.
-    fn room(&self) -> u64 {
-        let w = self.write.load(Ordering::Relaxed);
-        RING_FRAMES as u64 - w.saturating_sub(self.read.load(Ordering::Acquire))
-    }
-
-    /// Producer: append interleaved stereo samples.
-    fn push(&self, samples: &[f32]) -> Result<(), String> {
-        let frames = samples.len() / 2;
-        if frames as u64 > self.room() {
-            return Err("PipeWire buffer full".into());
-        }
-        let w = self.write.load(Ordering::Relaxed);
-        let mask = RING_FRAMES as u64 - 1;
-        for (i, f) in samples.as_chunks::<2>().0.iter().enumerate() {
-            let at = (((w + i as u64) & mask) * 2) as usize;
-            self.buf[at].store(f[0].to_bits(), Ordering::Relaxed);
-            self.buf[at + 1].store(f[1].to_bits(), Ordering::Relaxed);
-        }
-        self.write.store(w + frames as u64, Ordering::Release);
-        Ok(())
-    }
-
-    /// Producer: drop everything not taken yet, the first `fade` frames of it faded out
-    /// (they follow what the graph has, so the cut is continuous).
-    fn cut(&self, fade: usize) {
-        self.cut_len.store(fade as u32, Ordering::Relaxed);
-        self.skip.store(self.write.load(Ordering::Relaxed), Ordering::Release);
-        self.cut_seq.fetch_add(1, Ordering::Release);
-    }
-
-    /// Producer: drop everything not taken yet, at once (the stream is stopped and PipeWire
-    /// drops what it holds too).
-    fn flush(&self) {
-        self.cut(0);
-        self.pipe.store(0, Ordering::Release);
-    }
-
-    /// Consumer (real-time): fill `out` (little-endian f32 frames) with up to `frames` of
-    /// the ring, silence after it. Returns the frames of real audio.
-    fn take(&self, out: &mut [u8], frames: usize) -> usize {
-        let w = self.write.load(Ordering::Acquire);
-        let mut r = self.read.load(Ordering::Relaxed);
-        // A new cut: its fade starts at the next frame taken, then the rest is dropped.
-        let seq = self.cut_seq.load(Ordering::Acquire);
-        if seq != self.cut_seen.load(Ordering::Relaxed) {
-            self.cut_seen.store(seq, Ordering::Relaxed);
-            self.fade_len.store(self.cut_len.load(Ordering::Relaxed), Ordering::Relaxed);
-            self.fade_pos.store(0, Ordering::Relaxed);
-            self.fade_end.store(self.skip.load(Ordering::Acquire), Ordering::Relaxed);
-        }
-        let (fade_len, end) = (self.fade_len.load(Ordering::Relaxed), self.fade_end.load(Ordering::Relaxed));
-        let mut fade_pos = self.fade_pos.load(Ordering::Relaxed);
-        let mask = RING_FRAMES as u64 - 1;
-        let mut n = 0;
-        for frame in out[..frames * FRAME_BYTES].as_chunks_mut::<FRAME_BYTES>().0 {
-            let gain = if fade_pos < fade_len && r < end {
-                fade_pos += 1;
-                // Raised cosine, 1 to 0, as the output thread's own fades.
-                0.5 + 0.5 * (std::f32::consts::PI * fade_pos as f32 / fade_len as f32).cos()
-            } else {
-                if r < end {
-                    r = end;
-                    fade_pos = fade_len;
-                }
-                if r >= w {
-                    break;
-                }
-                1.0
-            };
-            let at = ((r & mask) * 2) as usize;
-            frame[..4].copy_from_slice(&(f32::from_bits(self.buf[at].load(Ordering::Relaxed)) * gain).to_le_bytes());
-            frame[4..].copy_from_slice(&(f32::from_bits(self.buf[at + 1].load(Ordering::Relaxed)) * gain).to_le_bytes());
-            r += 1;
-            n += 1;
-        }
-        if fade_pos >= fade_len && r < end {
-            r = end;
-        }
-        self.fade_pos.store(fade_pos, Ordering::Relaxed);
-        out[n * FRAME_BYTES..frames * FRAME_BYTES].fill(0);
-        self.read.store(r, Ordering::Release);
-        n
-    }
-
-    /// Consumer (real-time): after a cycle that handed `real` frames of audio (of `want`),
-    /// with `delay` frames (stream rate) between the stream and what is heard.
-    fn after_cycle(&self, real: usize, want: usize, delay: u64) {
-        let now = self.now_ns();
-        let left = self.in_pipe();
-        let pipe = (left + real as u64).min(delay + want as u64);
-        self.pipe.store(pipe, Ordering::Release);
-        self.pipe_ns.store(now, Ordering::Release);
-        self.quantum.store(want as u32, Ordering::Relaxed);
-        if real < want && self.in_ring() == 0 && real > 0 {
-            self.underruns.fetch_add(1, Ordering::Relaxed);
-        }
-        self.waiter.unpark();
+impl std::ops::Deref for PwRing {
+    type Target = Ring;
+    fn deref(&self) -> &Ring {
+        &self.ring
     }
 }
 
 /// The process callback: one graph cycle.
-fn process(stream: &pw::stream::Stream, ring: &Ring) {
+fn process(stream: &pw::stream::Stream, ring: &PwRing) {
     let Some(mut buffer) = stream.dequeue_buffer() else { return };
     let requested = buffer.requested() as usize;
     let datas = buffer.datas_mut();
@@ -277,7 +120,14 @@ fn process(stream: &pw::stream::Stream, ring: &Ring) {
         Some(slice) => {
             let max = slice.len() / FRAME_BYTES;
             let want = if requested > 0 { requested.min(max) } else { max };
-            (ring.take(slice, want), want)
+            let out = &mut slice[..want * FRAME_BYTES];
+            let real = ring.take(want, |i, l, r| {
+                let f = &mut out[i * FRAME_BYTES..(i + 1) * FRAME_BYTES];
+                f[..4].copy_from_slice(&l.to_le_bytes());
+                f[4..].copy_from_slice(&r.to_le_bytes());
+            });
+            out[real * FRAME_BYTES..].fill(0);
+            (real, want)
         }
         None => (0, 0),
     };
@@ -354,7 +204,7 @@ fn devices_changed() {
 const NO_NODE: u32 = u32::MAX;
 
 enum Cmd {
-    Open { rate: u32, target: Option<String>, force_rate: bool, ring: Arc<Ring>, reply: mpsc::Sender<Result<(), String>> },
+    Open { rate: u32, target: Option<String>, force_rate: bool, ring: Arc<PwRing>, reply: mpsc::Sender<Result<(), String>> },
     Active(bool),
     Flush,
     Close,
@@ -663,7 +513,7 @@ fn run(
     Ok(())
 }
 
-fn open_stream(core: &pw::core::CoreRc, rate: u32, target: Option<&str>, force_rate: bool, ring: Arc<Ring>) -> Result<Live, String> {
+fn open_stream(core: &pw::core::CoreRc, rate: u32, target: Option<&str>, force_rate: bool, ring: Arc<PwRing>) -> Result<Live, String> {
     let (name, id) = *IDENTITY.lock().unwrap();
     let latency = (rate * LATENCY_MS / 1000).max(64);
     let mut props = pw::properties::properties! {
@@ -694,7 +544,7 @@ fn open_stream(core: &pw::core::CoreRc, rate: u32, target: Option<&str>, force_r
             dead.node.store(stream.node_id(), Ordering::Release);
             if matches!(new, pw::stream::StreamState::Error(_) | pw::stream::StreamState::Unconnected) {
                 dead.dead.store(true, Ordering::Release);
-                dead.waiter.unpark();
+                dead.unpark();
             }
         })
         .process(move |stream, _| process(stream, &r))
@@ -741,25 +591,27 @@ fn open_stream(core: &pw::core::CoreRc, rate: u32, target: Option<&str>, force_r
 pub struct PipeWireDevice {
     cfg: OutputConfig,
     backend: Option<Arc<Backend>>,
-    ring: Option<Arc<Ring>>,
+    ring: Option<Arc<PwRing>>,
     rate: u32,
     info: Option<OutputInfo>,
     /// `Backend::seq` when the device list was last looked at.
     seq: u64,
     /// The graph rate `info` last said.
     graph_rate: u32,
+    underruns: Underruns,
 }
 
 impl PipeWireDevice {
     pub fn new() -> Self {
-        PipeWireDevice { cfg: OutputConfig::default(), backend: None, ring: None, rate: 0, info: None, seq: 0, graph_rate: 0 }
+        PipeWireDevice { cfg: OutputConfig::default(), backend: None, ring: None, rate: 0, info: None, seq: 0, graph_rate: 0, underruns: Underruns::default() }
     }
 
     fn close(&mut self) {
-        if self.ring.take().is_some()
-            && let Some(b) = &self.backend
-        {
-            b.send(Cmd::Close);
+        if let Some(r) = self.ring.take() {
+            self.underruns.stopped(&r);
+            if let Some(b) = &self.backend {
+                b.send(Cmd::Close);
+            }
         }
     }
 
@@ -835,7 +687,7 @@ impl Device for PipeWireDevice {
         let b = backend().ok_or("PipeWire is not running")?;
         self.seq = b.seq.load(Ordering::Acquire);
         let (target, id, device, missing) = self.resolve(&b);
-        let ring = Arc::new(Ring::new(rate));
+        let ring = Arc::new(PwRing::new(rate));
         let (reply, answer) = mpsc::channel();
         if !b.send(Cmd::Open { rate, target: target.clone(), force_rate: self.cfg.exclusive, ring: ring.clone(), reply }) {
             b.lost.store(true, Ordering::Release);
@@ -856,6 +708,7 @@ impl Device for PipeWireDevice {
         );
         self.ring = Some(ring);
         self.backend = Some(b);
+        self.underruns.opened();
         Ok(())
     }
 
@@ -871,10 +724,8 @@ impl Device for PipeWireDevice {
         if r.dead.load(Ordering::Acquire) {
             return Err("the PipeWire stream ended".into());
         }
-        let quantum = u64::from(r.quantum.load(Ordering::Relaxed));
-        let target = (u64::from(self.rate) * u64::from(TARGET_MS) / 1000).max(quantum * 3).min(RING_FRAMES as u64 / 2);
-        let queued = r.in_ring() + r.in_pipe();
-        Ok(target.saturating_sub(queued).min(r.room()) as usize)
+        self.underruns.poll(r);
+        Ok(r.wanted(r.target(TARGET_MS, TARGET_PERIODS)) as usize)
     }
 
     fn queued(&mut self) -> usize {
@@ -889,7 +740,11 @@ impl Device for PipeWireDevice {
         if r.dead.load(Ordering::Acquire) {
             return Err("the PipeWire stream ended".into());
         }
-        r.push(samples)
+        if !r.push(samples) {
+            return Err("PipeWire buffer full".into());
+        }
+        self.underruns.wrote(r);
+        Ok(())
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -901,8 +756,9 @@ impl Device for PipeWireDevice {
     }
 
     fn stop(&mut self) {
-        if let (Some(b), Some(_)) = (&self.backend, &self.ring) {
+        if let (Some(b), Some(r)) = (&self.backend, &self.ring) {
             b.send(Cmd::Active(false));
+            self.underruns.stopped(r);
         }
     }
 
@@ -910,6 +766,7 @@ impl Device for PipeWireDevice {
         match &self.ring {
             Some(r) if !r.dead.load(Ordering::Acquire) => {
                 r.cut(fade);
+                self.underruns.excuse(r);
                 true
             }
             _ => false,
@@ -919,6 +776,7 @@ impl Device for PipeWireDevice {
     fn flush(&mut self) {
         if let Some(r) = &self.ring {
             r.flush();
+            self.underruns.stopped(r);
             if let Some(b) = &self.backend {
                 b.send(Cmd::Flush);
             }
@@ -970,84 +828,27 @@ impl Device for PipeWireDevice {
     fn info(&mut self) -> Option<OutputInfo> {
         self.info.clone()
     }
+
+    fn health(&mut self) -> Option<OutputHealth> {
+        let r = self.ring.as_ref().filter(|r| !r.dead.load(Ordering::Acquire))?;
+        self.underruns.poll(r);
+        Some(OutputHealth {
+            underruns: self.underruns.count,
+            lost_frames: self.underruns.lost,
+            rate: r.rate,
+            target: r.target(TARGET_MS, TARGET_PERIODS),
+            ring: r.in_ring(),
+            ring_low: r.take_low(),
+            pipe: r.in_pipe(),
+            delay: r.delay.load(Ordering::Relaxed),
+            quantum: r.quantum.load(Ordering::Relaxed),
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ring_hands_over_in_order_and_pads_with_silence() {
-        let r = Ring::new(48_000);
-        let samples: Vec<f32> = (0..20).map(|i| i as f32).collect();
-        r.push(&samples).unwrap();
-        assert_eq!(r.in_ring(), 10);
-        let mut out = vec![0xffu8; 16 * FRAME_BYTES];
-        assert_eq!(r.take(&mut out, 16), 10);
-        let got: Vec<f32> = out.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-        assert_eq!(&got[..20], &samples[..]);
-        assert!(got[20..].iter().all(|&s| s == 0.0), "an underrun is silence");
-        assert_eq!(r.in_ring(), 0);
-    }
-
-    #[test]
-    fn a_flush_skips_what_was_not_taken_and_wraps() {
-        let r = Ring::new(48_000);
-        // Fill and drain past the end of the buffer, so indices wrap.
-        let block = vec![0.5f32; 2 * 10_000];
-        let mut out = vec![0u8; 10_000 * FRAME_BYTES];
-        for _ in 0..5 {
-            r.push(&block).unwrap();
-            assert_eq!(r.take(&mut out, 10_000), 10_000);
-        }
-        r.push(&[1.0, 1.0, 2.0, 2.0]).unwrap();
-        r.flush();
-        assert_eq!(r.in_ring(), 0);
-        r.push(&[3.0, -3.0]).unwrap();
-        let mut one = vec![0u8; 4 * FRAME_BYTES];
-        assert_eq!(r.take(&mut one, 4), 1, "only what came after the flush");
-        assert_eq!(f32::from_le_bytes(one[..4].try_into().unwrap()), 3.0);
-        assert_eq!(f32::from_le_bytes(one[4..8].try_into().unwrap()), -3.0);
-    }
-
-    #[test]
-    fn a_cut_fades_out_from_the_next_frame_then_drops_the_rest() {
-        let r = Ring::new(48_000);
-        r.push(&vec![1.0f32; 2 * 100]).unwrap();
-        let mut out = vec![0u8; 10 * FRAME_BYTES];
-        assert_eq!(r.take(&mut out, 10), 10);
-        // Cut with a fade of 4 frames: the next 4 fade out, the other 86 are dropped, and
-        // what is written after the cut follows.
-        r.cut(4);
-        r.push(&[0.5, 0.5, 0.5, 0.5]).unwrap();
-        let mut out = vec![0u8; 8 * FRAME_BYTES];
-        assert_eq!(r.take(&mut out, 8), 6);
-        let left: Vec<f32> = out.as_chunks::<8>().0.iter().map(|f| f32::from_le_bytes(f[..4].try_into().unwrap())).collect();
-        assert!(left[0] < 1.0 && left[0] > left[1] && left[1] > left[2] && left[2] > left[3], "{left:?}");
-        assert!(left[3].abs() < 1e-6, "faded to silence: {left:?}");
-        assert_eq!(&left[4..], [0.5, 0.5, 0.0, 0.0], "then the new audio, then silence");
-        assert_eq!(r.in_ring(), 0);
-    }
-
-    #[test]
-    fn the_ring_refuses_more_than_it_holds() {
-        let r = Ring::new(48_000);
-        assert!(r.push(&vec![0.0; RING_FRAMES * 2]).is_ok());
-        assert!(r.push(&[0.0, 0.0]).is_err());
-    }
-
-    #[test]
-    fn what_was_handed_over_drains_as_time_passes() {
-        let r = Ring::new(48_000);
-        r.after_cycle(960, 960, 960);
-        let pipe = r.in_pipe();
-        assert!(pipe > 900 && pipe <= 960, "{pipe}");
-        std::thread::sleep(Duration::from_millis(30));
-        assert_eq!(r.in_pipe(), 0, "20 ms of audio is heard within 30 ms");
-        // Silence after real audio adds nothing.
-        r.after_cycle(0, 960, 960);
-        assert_eq!(r.in_pipe(), 0);
-    }
 
     #[test]
     fn the_default_sink_is_read_from_its_metadata() {

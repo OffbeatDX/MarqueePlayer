@@ -447,7 +447,17 @@ pub fn diagnostics(st: &Rc<State>) -> String {
         ),
         None => "nothing opened yet".into(),
     };
-    t.push_str(&format!("Sound: {out}; device setting {}\n", s.output_device_name.as_deref().unwrap_or("system default")));
+    // Core Audio and PipeWire say how their ring is faring: underruns since the start, and
+    // the device's own delay.
+    let health = st.player.output_health().map(|h| {
+        let ms = |frames: u64| frames as f64 * 1000.0 / f64::from(h.rate.max(1));
+        format!("; {} underruns ({} frames lost), device delay {:.1} ms, ring {:.0} ms", h.underruns, h.lost_frames, ms(h.delay), ms(h.target))
+    });
+    t.push_str(&format!(
+        "Sound: {out}{}; device setting {}\n",
+        health.unwrap_or_default(),
+        s.output_device_name.as_deref().unwrap_or("system default")
+    ));
     let (albums, tracks) = library::query::counts(&st.db).unwrap_or((-1, -1));
     let schema: i64 = st.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(-1);
     let db_size = std::fs::metadata(st.paths.database()).map(|m| m.len()).unwrap_or(0);

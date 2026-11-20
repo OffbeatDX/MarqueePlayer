@@ -312,6 +312,9 @@ pub(crate) struct Shared {
     pub output: Mutex<(u64, OutputConfig)>,
     /// What the output last opened.
     pub output_info: Mutex<Option<OutputInfo>>,
+    /// How the output's ring is faring, when its device says (`Device::health`): updated at
+    /// an underrun and every 10 s while playing.
+    pub output_health: Mutex<Option<crate::output::OutputHealth>>,
     /// Wakes the output thread (it blocks while paused or idle). One pending wake is
     /// enough: the thread re-reads the shared state when it wakes.
     pub wake: Sender<()>,
@@ -395,6 +398,7 @@ impl Player {
             seek_trace: Mutex::new(SeekTrace::default()),
             output: Mutex::new((0, OutputConfig::default())),
             output_info: Mutex::new(None),
+            output_health: Mutex::new(None),
             wake: wake_tx,
             spectrum: crate::spectrum::Tap::new(),
             streams: Mutex::new(Vec::new()),
@@ -556,6 +560,12 @@ impl Player {
     /// What the output last opened (`None` before anything played).
     pub fn output_info(&self) -> Option<OutputInfo> {
         self.shared.output_info.lock().unwrap().clone()
+    }
+
+    /// How the output's ring is faring: underruns and the device's delay (`None` before
+    /// anything played, or with an output that does not say).
+    pub fn output_health(&self) -> Option<crate::output::OutputHealth> {
+        *self.shared.output_health.lock().unwrap()
     }
 
     pub fn status(&self) -> Status {
