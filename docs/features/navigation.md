@@ -49,7 +49,9 @@ an artist or featured) and their most played tracks. Genres, and Labels beside i
 genre's or label's albums (an album is under every genre its tracks carry). Artists, genres and labels sort by name in
 natural order: case ignored, numbers by value ("Genre 2" before "Genre 10"). Search folds accents both ways ("beyonce"
 finds "Beyoncé"), finds featured and track-only artists too, and each section with more
-than it shows has "See all", which opens it in full as its own page in the history.
+than it shows has "See all", which opens it in full as its own page in the history. Search runs
+on a thread of its own (`mp-search`), "See all" too: its page opens when the section is found (if
+the user is still where they clicked it), so a slow operator search never holds up the window.
 
 ## Search operators
 

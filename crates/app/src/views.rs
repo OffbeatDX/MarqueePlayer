@@ -984,7 +984,22 @@ pub fn open_group(st: &Rc<State>, name: &str) {
 
 // ---- search sections in full --------------------------------------------------------
 
-/// "See all" beside a search section: that section, all of it, on its own page.
+/// A section in full asked of the search thread (search.rs), and what it found once it has.
+struct SearchAll {
+    kind: SearchKind,
+    query: String,
+    /// Where "See all" was clicked: the page opens there only if the user is still there.
+    /// None: the page is already shown (back, forward, a refresh), and is filled in place.
+    from: Option<Route>,
+    results: Option<library::SearchResults>,
+}
+
+thread_local! {
+    static SEARCH_ALL: std::cell::RefCell<Option<SearchAll>> = const { std::cell::RefCell::new(None) };
+}
+
+/// "See all" beside a search section: that section, all of it, on its own page, opened when
+/// the search thread has it (an operator search can take a while: never on the UI thread).
 pub fn open_search_all(st: &Rc<State>, kind: &str) {
     let Some(app) = st.app.upgrade() else { return };
     let kind = match kind {
@@ -994,16 +1009,73 @@ pub fn open_search_all(st: &Rc<State>, kind: &str) {
     };
     let query = app.global::<Search>().get_query().trim().to_owned();
     if !query.is_empty() {
-        navigate(st, Route::SearchAll { kind, query });
+        st.searcher.request_section(&query, kind);
+        let from = Some(st.history.borrow().current.clone());
+        SEARCH_ALL.with(|p| *p.borrow_mut() = Some(SearchAll { kind, query, from, results: None }));
     }
 }
 
-/// Fill a search section's full page. On the UI thread: it is one section, asked for by
-/// a click (typing goes through the search thread).
+/// Section `kind` of `q` in full, from the search thread: its page is opened (or, already
+/// open, filled), unless a newer one was asked for or the user has gone elsewhere.
+pub fn show_search_all(st: &Rc<State>, id: u64, kind: SearchKind, q: String, results: library::SearchResults) {
+    if !st.searcher.is_latest_section(id) {
+        return;
+    }
+    let Some(mut p) = SEARCH_ALL.with(|p| p.borrow_mut().take()) else { return };
+    if p.kind != kind || p.query != q {
+        return;
+    }
+    let to = Route::SearchAll { kind, query: q };
+    let current = st.history.borrow().current.clone();
+    if !search_all_opens(p.from.as_ref(), &current, &to) {
+        return;
+    }
+    p.results = Some(results);
+    SEARCH_ALL.with(|s| *s.borrow_mut() = Some(p));
+    navigate(st, to);
+}
+
+/// Whether a section in full, arriving while the user is at `current`, is shown (`to`): where
+/// "See all" was clicked (`from`), or on its own page already; not once the user has gone
+/// somewhere else.
+fn search_all_opens(from: Option<&Route>, current: &Route, to: &Route) -> bool {
+    current == to || from == Some(current)
+}
+
+/// Fill a search section's full page: with what the search thread found for it, when that
+/// is what opens it; otherwise (back, forward, a refresh) it is asked for again, and the
+/// page filled when it comes (until then a page newly shown is empty, one already shown
+/// stays as it was).
 fn fill_search_all(st: &Rc<State>, kind: SearchKind, q: &str) -> Page {
-    let t = std::time::Instant::now();
-    let r = query::search_section(&st.db, q, kind, usize::MAX).unwrap_or_default();
-    log::debug!("search all {kind:?} {q:?}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    let found = SEARCH_ALL.with(|p| {
+        let mut p = p.borrow_mut();
+        match p.as_mut() {
+            Some(s) if s.kind == kind && s.query == q && s.results.is_some() => {
+                let r = s.results.take();
+                *p = None;
+                r
+            }
+            _ => None,
+        }
+    });
+    let page = match kind {
+        SearchKind::Albums => Page::Shelf,
+        SearchKind::Artists => Page::Artists,
+        SearchKind::Tracks => Page::Tracks,
+    };
+    let waiting = found.is_none();
+    let r = match found {
+        Some(r) => r,
+        None => {
+            st.searcher.request_section(q, kind);
+            SEARCH_ALL.with(|p| *p.borrow_mut() = Some(SearchAll { kind, query: q.to_owned(), from: None, results: None }));
+            let here = st.history.borrow().current == Route::SearchAll { kind, query: q.to_owned() };
+            if here {
+                return page;
+            }
+            library::SearchResults::default()
+        }
+    };
     let title = crate::nav::search_title(kind, q);
     let Some(app) = st.app.upgrade() else { return Page::Search };
     match kind {
@@ -1037,7 +1109,7 @@ fn fill_search_all(st: &Rc<State>, kind: SearchKind, q: &str) -> Page {
             st.lists.tracks.set_playing(playing_track_id(st));
             let p = app.global::<TrackPage>();
             p.set_title(title.into());
-            p.set_info(format!("{n} {} · {}", if n == 1 { "track" } else { "tracks" }, duration_text(total)).into());
+            p.set_info(if waiting { "Searching\u{2026}".to_owned() } else { format!("{n} {} · {}", if n == 1 { "track" } else { "tracks" }, duration_text(total)) }.into());
             p.set_tracks(ModelRc::from(st.lists.tracks.clone()));
             Page::Tracks
         }
@@ -1567,6 +1639,17 @@ fn refresh_open_list(st: &Rc<State>, page: Page) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "See all" opens its page when the search thread has it, unless the user has gone on.
+    #[test]
+    fn a_section_in_full_opens_only_where_it_was_asked_for() {
+        let search = Route::Page(Page::Search);
+        let to = Route::SearchAll { kind: SearchKind::Tracks, query: "year:1994".into() };
+        assert!(search_all_opens(Some(&search), &search, &to), "still on the search page");
+        assert!(!search_all_opens(Some(&search), &Route::Page(Page::Home), &to), "gone elsewhere meanwhile");
+        assert!(search_all_opens(None, &to, &to), "back to it, filled in place");
+        assert!(!search_all_opens(None, &search, &to), "left it again before it came");
+    }
 
     /// A shelf moved down past another, then the first removed: each keeps its own.
     #[test]
