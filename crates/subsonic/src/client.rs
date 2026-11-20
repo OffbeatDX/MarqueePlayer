@@ -171,6 +171,11 @@ pub struct StreamHead {
     /// that is the whole file.
     pub total: Option<u64>,
     pub content_type: Option<String>,
+    /// What tells this version of the file from another (`http_client::Head::validator`: its
+    /// strong `ETag`, else its `Last-Modified`), when the server sent one: given back to
+    /// [`Client::stream`] when it goes on from a range, so a range of a file changed since comes
+    /// as the whole new file instead (a 200, `range_honoured` false).
+    pub validator: Option<String>,
 }
 
 /// Where a stream goes; either call can stop it by returning `Break` (it then returns at
@@ -399,7 +404,11 @@ impl Client {
     /// it comes back as the call's error. A connection lost mid-body is [`Error::Network`]
     /// after the sink has had every byte that came. A `range_start` at or past the end of
     /// the file is an empty, finished stream.
-    pub fn stream(&self, id: &str, quality: &Quality, range_start: u64, sink: &mut dyn StreamSink) -> Result<Streamed, Error> {
+    ///
+    /// `if_range`: the validator an earlier answer gave ([`StreamHead::validator`]), sent as
+    /// `If-Range` with the `Range`, so the server sends the range only if the file is still that
+    /// one, and else the whole file from its start. Not sent without a range.
+    pub fn stream(&self, id: &str, quality: &Quality, range_start: u64, if_range: Option<&str>, sink: &mut dyn StreamSink) -> Result<Streamed, Error> {
         let endpoint = "stream";
         let mut p = vec![("id", id.to_owned())];
         match quality {
@@ -411,8 +420,14 @@ impl Client {
         }
         let url = self.url(endpoint, &p)?;
         let range = format!("Range: bytes={range_start}-");
-        let headers: &[&str] = if range_start > 0 { &[range.as_str()] } else { &[] };
-        let req = Request { method: "GET", url: &url, headers, body: &[], user_agent: &self.user_agent, timeout_ms: self.stream_timeout_ms };
+        // A validator with a line break in it would be another header: not sent.
+        let if_range = if_range.map(str::trim).filter(|v| !v.is_empty() && !v.contains(['\r', '\n'])).map(|v| format!("If-Range: {v}"));
+        let mut headers: Vec<&str> = Vec::new();
+        if range_start > 0 {
+            headers.push(&range);
+            headers.extend(if_range.as_deref());
+        }
+        let req = Request { method: "GET", url: &url, headers: &headers, body: &[], user_agent: &self.user_agent, timeout_ms: self.stream_timeout_ms };
 
         /// Sorts the head into audio (to the sink) or an error answer (kept, to read).
         struct Adapter<'a> {
@@ -429,7 +444,14 @@ impl Client {
                 let answer_not_audio = ct.contains("json") || ct.contains("xml") || ct.starts_with("text/");
                 if h.status == 416 && h.content_range.as_deref().and_then(total_of_unsatisfied) == Some(self.range_start) {
                     // Asked from the end of the file: nothing more to send.
-                    let head = StreamHead { start: self.range_start, range_honoured: true, length: Some(0), total: Some(self.range_start), content_type: h.content_type.clone() };
+                    let head = StreamHead {
+                        start: self.range_start,
+                        range_honoured: true,
+                        length: Some(0),
+                        total: Some(self.range_start),
+                        content_type: h.content_type.clone(),
+                        validator: h.validator().map(str::to_owned),
+                    };
                     self.empty_end = true;
                     // Whatever the sink says, there is no body to read.
                     let _ = self.sink.start(&head);
@@ -676,6 +698,7 @@ fn stream_head(h: &Head, range_start: u64) -> Result<StreamHead, Error> {
                 length: h.content_length.or(Some(range_len)),
                 total: r.total,
                 content_type: h.content_type.clone(),
+                validator: h.validator().map(str::to_owned),
             })
         }
         None => Ok(StreamHead {
@@ -684,6 +707,7 @@ fn stream_head(h: &Head, range_start: u64) -> Result<StreamHead, Error> {
             length: h.content_length,
             total: h.content_length,
             content_type: h.content_type.clone(),
+            validator: h.validator().map(str::to_owned),
         }),
     }
 }

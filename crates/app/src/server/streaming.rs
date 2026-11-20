@@ -652,7 +652,7 @@ impl Streamer {
             }
             let mut sink = Sink { s: self, d, disk: &mut disk, from, pos: from, limit, ended: None, io: None, wrote: 0, in_order };
             self.requests.fetch_add(1, Ordering::Relaxed);
-            let r = client.stream(&d.info.song_id, &Quality::Original, from, &mut sink);
+            let r = client.stream(&d.info.song_id, &Quality::Original, from, None, &mut sink);
             let (pos, ended, io_err, wrote) = (sink.pos, sink.ended.take(), sink.io.take(), sink.wrote);
             in_order |= sink.in_order;
             cursor = pos;

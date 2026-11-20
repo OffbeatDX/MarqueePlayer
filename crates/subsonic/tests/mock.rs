@@ -327,6 +327,11 @@ fn navidrome(r: &Req) -> Reply {
 
 /// Navidrome's stream: the original with ranges, a live transcode chunked from the start.
 fn stream(r: &Req) -> Reply {
+    stream_as_of(r, MODIFIED)
+}
+
+/// [`stream`] of the file as last changed at `modified`.
+fn stream_as_of(r: &Req, modified: &str) -> Reply {
     if r.param("id") == Some("gone") {
         return failed(70, "Song not found");
     }
@@ -336,10 +341,17 @@ fn stream(r: &Req) -> Reply {
         t.chunked = true;
         return t;
     }
-    let start: usize = r.headers.get("range").and_then(|v| v.strip_prefix("bytes=")?.strip_suffix('-')?.parse().ok()).unwrap_or(0);
+    let mut start: usize = r.headers.get("range").and_then(|v| v.strip_prefix("bytes=")?.strip_suffix('-')?.parse().ok()).unwrap_or(0);
+    // Navidrome serves the original through Go's `http.ServeContent`: a `Last-Modified` (the
+    // file's time), no `ETag`, and a range sent with an `If-Range` that does not match it
+    // answered with the whole file.
+    if r.headers.get("if-range").is_some_and(|v| v != modified) {
+        start = 0;
+    }
     if start == 0 {
         let mut f = raw(200, "audio/flac", &file);
         f.headers.push("Accept-Ranges: bytes".into());
+        f.headers.push(format!("Last-Modified: {modified}"));
         return f;
     }
     if start >= file.len() {
@@ -349,8 +361,12 @@ fn stream(r: &Req) -> Reply {
     }
     let mut f = raw(206, "audio/flac", &file[start..]);
     f.headers.push(format!("Content-Range: bytes {start}-{}/{}", file.len() - 1, file.len()));
+    f.headers.push(format!("Last-Modified: {modified}"));
     f
 }
+
+/// The time the mock's file says it was last changed.
+const MODIFIED: &str = "Wed, 21 Oct 2026 07:28:00 GMT";
 
 /// A sink that keeps what it is given.
 #[derive(Default)]
@@ -560,7 +576,7 @@ fn the_original_streams_whole_or_from_a_byte() {
     let file = file();
 
     let mut sink = Keep2::default();
-    let s = c.stream("s1", &Quality::Original, 0, &mut sink).unwrap();
+    let s = c.stream("s1", &Quality::Original, 0, None, &mut sink).unwrap();
     assert!(sink.body == file);
     assert_eq!((s.received, s.stopped), (file.len() as u64, false));
     let h = sink.head.unwrap();
@@ -570,7 +586,7 @@ fn the_original_streams_whole_or_from_a_byte() {
     assert_eq!((r.param("format"), r.param("id"), r.headers.get("range")), (Some("raw"), Some("s1"), None));
 
     let mut sink = Keep2::default();
-    let s = c.stream("s1", &Quality::Original, 150_000, &mut sink).unwrap();
+    let s = c.stream("s1", &Quality::Original, 150_000, None, &mut sink).unwrap();
     assert_eq!(m.last().headers.get("range").map(String::as_str), Some("bytes=150000-"));
     let h = s.head;
     assert_eq!((h.start, h.range_honoured, h.length, h.total), (150_000, true, Some(50_000), Some(file.len() as u64)));
@@ -578,15 +594,50 @@ fn the_original_streams_whole_or_from_a_byte() {
 
     // Asked from the very end: nothing more, and not an error.
     let mut sink = Keep2::default();
-    let s = c.stream("s1", &Quality::Original, file.len() as u64, &mut sink).unwrap();
+    let s = c.stream("s1", &Quality::Original, file.len() as u64, None, &mut sink).unwrap();
     assert_eq!((s.received, s.stopped, s.head.length, s.head.total), (0, false, Some(0), Some(file.len() as u64)));
     assert!(sink.head.is_some() && sink.body.is_empty());
 
     // The sink can stop it.
     let mut sink = Keep2 { stop_after: Some(10_000), ..Keep2::default() };
-    let s = c.stream("s1", &Quality::Original, 0, &mut sink).unwrap();
+    let s = c.stream("s1", &Quality::Original, 0, None, &mut sink).unwrap();
     assert!(s.stopped);
     assert!(sink.body.len() < file.len());
+}
+
+/// The validator of the first answer, sent back as `If-Range`: the same file goes on from the
+/// range (206); a file changed since comes whole from its start (200), as Navidrome answers.
+#[test]
+fn a_range_goes_on_only_from_the_same_file() {
+    let m = mock(navidrome);
+    let c = m.client(true);
+    let file = file();
+    let mut sink = Keep2::default();
+    let first = c.stream("s1", &Quality::Original, 0, None, &mut sink).unwrap();
+    assert_eq!(first.head.validator.as_deref(), Some(MODIFIED));
+    assert_eq!(m.last().headers.get("if-range"), None);
+
+    let mut sink = Keep2::default();
+    let s = c.stream("s1", &Quality::Original, 150_000, first.head.validator.as_deref(), &mut sink).unwrap();
+    let r = m.last();
+    assert_eq!((r.headers.get("range").map(String::as_str), r.headers.get("if-range").map(String::as_str)), (Some("bytes=150000-"), Some(MODIFIED)));
+    assert_eq!((s.head.start, s.head.range_honoured, s.head.validator.as_deref()), (150_000, true, Some(MODIFIED)));
+    assert!(sink.body == file[150_000..]);
+
+    // Not without a range: an If-Range alone means nothing.
+    c.stream("s1", &Quality::Original, 0, Some(MODIFIED), &mut Keep2::default()).unwrap();
+    assert_eq!(m.last().headers.get("if-range"), None);
+    // Nor one that would be another header.
+    c.stream("s1", &Quality::Original, 10, Some("x\r\nX-Evil: 1"), &mut Keep2::default()).unwrap();
+    assert_eq!((m.last().headers.get("if-range"), m.last().headers.get("x-evil")), (None, None));
+
+    let changed = "Thu, 22 Oct 2026 08:00:00 GMT";
+    let m = mock(move |r| stream_as_of(r, changed));
+    let mut sink = Keep2::default();
+    let s = m.client(true).stream("s1", &Quality::Original, 150_000, Some(MODIFIED), &mut sink).unwrap();
+    assert_eq!((s.head.start, s.head.range_honoured, s.head.total), (0, false, Some(file.len() as u64)));
+    assert_eq!(s.head.validator.as_deref(), Some(changed));
+    assert!(sink.body == file, "the whole file, from its start");
 }
 
 #[test]
@@ -594,7 +645,7 @@ fn a_transcode_has_no_length_and_ignores_the_range() {
     let m = mock(navidrome);
     let c = m.client(true);
     let mut sink = Keep2::default();
-    let s = c.stream("s1", &Quality::Transcode { format: "opus".into(), max_bit_rate: 128 }, 5000, &mut sink).unwrap();
+    let s = c.stream("s1", &Quality::Transcode { format: "opus".into(), max_bit_rate: 128 }, 5000, None, &mut sink).unwrap();
     let r = m.last();
     assert_eq!((r.param("format"), r.param("maxBitRate")), (Some("opus"), Some("128")));
     let h = s.head;
@@ -607,11 +658,11 @@ fn a_stream_error_answer_never_reaches_the_sink() {
     let m = mock(navidrome);
     let c = m.client(true);
     let mut sink = Keep2::default();
-    assert_eq!(c.stream("gone", &Quality::Original, 0, &mut sink), Err(Error::NotFound("Song not found".into())));
+    assert_eq!(c.stream("gone", &Quality::Original, 0, None, &mut sink), Err(Error::NotFound("Song not found".into())));
     assert!(sink.head.is_none() && sink.body.is_empty());
     let m = mock(|_| raw(200, "text/html", b"<html>Log in to the proxy</html>"));
     let mut sink = Keep2::default();
-    assert!(matches!(m.client(true).stream("s1", &Quality::Original, 0, &mut sink), Err(Error::NotSubsonic(_))));
+    assert!(matches!(m.client(true).stream("s1", &Quality::Original, 0, None, &mut sink), Err(Error::NotSubsonic(_))));
     assert!(sink.head.is_none());
 }
 
@@ -774,7 +825,7 @@ fn no_error_or_log_line_carries_a_secret() {
     keep(c.ping().unwrap_err());
     keep(c.album("x").unwrap_err());
     keep(c.cover_art("x", None).unwrap_err());
-    keep(c.stream("x", &Quality::Original, 0, &mut Keep2::default()).unwrap_err());
+    keep(c.stream("x", &Quality::Original, 0, None, &mut Keep2::default()).unwrap_err());
     keep(c.star(&["x"], &[], &[]).unwrap_err());
     let wrong = Client::new(Credentials::from_password(&mock(navidrome).url, USER, "nope").unwrap(), true).unwrap();
     let wrong_creds = wrong.credentials().clone();
@@ -782,7 +833,7 @@ fn no_error_or_log_line_carries_a_secret() {
     let off = Client::new(Credentials::from_password(&offline(), USER, PASSWORD).unwrap(), true).unwrap();
     let off_creds = off.credentials().clone();
     keep(off.ping().unwrap_err());
-    keep(off.stream("x", &Quality::Original, 10, &mut Keep2::default()).unwrap_err());
+    keep(off.stream("x", &Quality::Original, 10, None, &mut Keep2::default()).unwrap_err());
     texts.push(format!("{c:?} {creds:?}"));
     assert!(texts[0].contains("cannot handle"), "the server's message is kept: {}", texts[0]);
 
@@ -859,7 +910,7 @@ fn redirects_to_another_server_are_refused_and_same_server_redirects_are_followe
     check_refused(c.ping().unwrap_err());
     check_refused(c.cover_art("al-al0_0", Some(300)).unwrap_err());
     let mut sink = Keep2::default();
-    check_refused(c.stream("s1", &Quality::Original, 100, &mut sink).unwrap_err());
+    check_refused(c.stream("s1", &Quality::Original, 100, None, &mut sink).unwrap_err());
     assert!(sink.head.is_none() && sink.body.is_empty());
     assert!(other_seen.lock().unwrap().is_empty(), "query string leaked to other server: {:?}", other_seen.lock().unwrap());
 
@@ -927,7 +978,7 @@ fn redirects_to_another_server_are_refused_and_same_server_redirects_are_followe
     assert_eq!(c2.ping().unwrap().kind, "navidrome");
     assert_eq!(c2.cover_art("al-al0_0", None).unwrap().bytes, COVER);
     let mut sink = Keep2::default();
-    let s = c2.stream("s1", &Quality::Original, 0, &mut sink).unwrap();
+    let s = c2.stream("s1", &Quality::Original, 0, None, &mut sink).unwrap();
     assert_eq!(s.received, file().len() as u64);
     assert_eq!(same_seen.lock().unwrap().len(), 3);
 }
@@ -941,7 +992,7 @@ fn an_overflowing_content_range_is_a_bad_response() {
         r
     });
     let mut sink = Keep2::default();
-    let e = m.client(true).stream("s1", &Quality::Original, 0, &mut sink).unwrap_err();
+    let e = m.client(true).stream("s1", &Quality::Original, 0, None, &mut sink).unwrap_err();
     assert!(matches!(e, Error::BadResponse(_)), "{e:?}");
     assert!(sink.head.is_none() && sink.body.is_empty(), "a malformed head never reaches the sink");
 }
