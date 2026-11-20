@@ -367,6 +367,36 @@ fn a_rejected_batch_is_retried_one_by_one_and_only_the_bad_play_is_dropped() {
 }
 
 #[test]
+fn one_by_one_fallback_carries_musicbrainz_ids_and_clears_the_queue() {
+    let d = dir("fallback-mbid");
+    connected(&d);
+    let m = mock(Box::new(|f| {
+        if f.values().any(|v| v == "bad") {
+            (400, r#"{"error":6,"message":"Invalid parameters"}"#.into())
+        } else {
+            accept_all(f)
+        }
+    }));
+    // Queue while offline so both plays are sent together in one batch, then rejected and
+    // retried one by one. play(1, "A") has path M:/music/01.flac, which start() maps to an MBID.
+    let mut run = start(&d, &offline());
+    run.wait("connected", |s| matches!(s.state, State::Connected { .. }));
+    run.s.scrobble(play(1, "A"));
+    run.s.scrobble(play(2, "bad"));
+    run.wait("both queued offline", |s| s.note.contains("could not be reached") && s.queued == 2);
+    drop(run);
+
+    let mut run = start(&d, &m.url);
+    let st = run.wait("done", |s| s.queued == 0 && s.note.starts_with("Sent"));
+    assert_eq!(st.note, "Sent 1, 1 not accepted by Last.fm");
+    let log = m.log.lock().unwrap().clone();
+    assert_eq!(log[0].keys().filter(|k| k.starts_with("artist[")).count(), 2, "first try was the rejected batch");
+    let fallback = log.iter().find(|f| f.get("track[0]").map(String::as_str) == Some("A") && !f.contains_key("track[1]")).expect("one-by-one fallback for A");
+    assert_eq!(fallback.get("mbid[0]").map(String::as_str), Some("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae"), "fallback carries the MBID");
+    assert!(queue_file(&d).is_empty(), "original queued item removed");
+}
+
+#[test]
 fn an_invalid_session_asks_to_reconnect_and_keeps_the_queue() {
     let d = dir("session");
     connected(&d);

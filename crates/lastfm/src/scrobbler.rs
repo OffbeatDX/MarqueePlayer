@@ -630,10 +630,12 @@ impl Worker {
     /// Some(true): stopped at the daily limit; None: stopped on a failure.
     fn send_one_by_one(&mut self, n: usize, sent: &mut usize, dropped: &mut usize) -> Option<bool> {
         for _ in 0..n {
-            let one = self.queue.lock().unwrap_or_else(|e| e.into_inner()).oldest(1);
-            if one.is_empty() {
+            let taken = self.queue.lock().unwrap_or_else(|e| e.into_inner()).oldest(1);
+            if taken.is_empty() {
                 return Some(false);
             }
+            let mut one = taken.clone();
+            self.fill_mbid(&mut one);
             match self.client().scrobble(&self.creds.session_key, &one) {
                 Ok(o) if o.first() == Some(&Outcome::Limited) => return Some(true),
                 Ok(o) => {
@@ -652,7 +654,7 @@ impl Worker {
                     return None;
                 }
             }
-            self.queue.lock().unwrap_or_else(|e| e.into_inner()).remove(&one);
+            self.queue.lock().unwrap_or_else(|e| e.into_inner()).remove(&taken);
         }
         Some(false)
     }
