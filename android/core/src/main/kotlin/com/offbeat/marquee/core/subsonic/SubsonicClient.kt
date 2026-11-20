@@ -12,11 +12,13 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
 import java.io.InterruptedIOException
+import java.net.ProtocolException
 import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
@@ -39,9 +41,27 @@ class SubsonicClient(
 ) {
     private val base: HttpUrl = normalizeUrl(credentials.url) ?: throw SubsonicError.InvalidUrl()
 
-    /** The HTTP client every call goes through; read-only mode adds its guard here. */
-    val httpClient: OkHttpClient =
-        if (readOnly) httpClient.newBuilder().addInterceptor(ReadOnlyInterceptor()).build() else httpClient
+    /**
+     * The HTTP client every call goes through (API, streams, downloads, covers): automatic
+     * redirects are off and [SameOriginRedirectInterceptor] allows only same-origin redirects
+     * (same scheme, host and port, up to [SameOriginRedirectInterceptor.MAX_REDIRECTS] hops) so
+     * the signed query never leaves the server. Read-only mode adds [ReadOnlyInterceptor] right
+     * after it so a same-origin redirect cannot bypass the allowlist either.
+     */
+    val httpClient: OkHttpClient = httpClient.newBuilder().apply {
+        followRedirects(false)
+        followSslRedirects(false)
+        val redirectIndex = interceptors().indexOfFirst { it is SameOriginRedirectInterceptor }
+        val afterRedirect = if (redirectIndex >= 0) {
+            redirectIndex + 1
+        } else {
+            interceptors().add(0, SameOriginRedirectInterceptor())
+            1
+        }
+        if (readOnly && interceptors().none { it is ReadOnlyInterceptor }) {
+            interceptors().add(afterRedirect, ReadOnlyInterceptor())
+        }
+    }.build()
 
     // ---- Calls --------------------------------------------------------------
 
@@ -298,6 +318,9 @@ class SubsonicClient(
         fun defaultHttpClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .addInterceptor(SameOriginRedirectInterceptor())
             .build()
 
         /**
@@ -314,6 +337,61 @@ class SubsonicClient(
             if (url.host.isEmpty()) return null
             return url.newBuilder().query(null).fragment(null).build()
         }
+    }
+}
+
+/**
+ * Follows HTTP redirects only within the request's own origin (same scheme, host and port), up to
+ * [maxRedirects] hops. Any redirect to another host or port, a different scheme (such as https to
+ * http), a URL carrying credentials, or past the hop limit is refused so a signed query (`u`, `t`,
+ * `s`) never reaches another server or goes out over plain http.
+ *
+ * Used with `followRedirects(false)` and `followSslRedirects(false)` on the OkHttp client.
+ */
+class SameOriginRedirectInterceptor(private val maxRedirects: Int = MAX_REDIRECTS) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        var current = chain.request()
+        val origin = current.url
+        var response = chain.proceed(current)
+        var hops = 0
+        while (response.code in REDIRECT_CODES) {
+            val location = response.header("Location") ?: return response
+            val target = current.url.resolve(location)
+            if (target == null || !sameOrigin(origin, target) || target.username.isNotEmpty() || target.password.isNotEmpty()) {
+                response.close()
+                throw ProtocolException("Refused redirect to another server or scheme")
+            }
+            if (hops >= maxRedirects) {
+                response.close()
+                throw ProtocolException("Too many redirects")
+            }
+            val code = response.code
+            response.close()
+            hops++
+            current = followUp(current, code, target)
+            response = chain.proceed(current)
+        }
+        return response
+    }
+
+    private fun followUp(request: Request, statusCode: Int, target: HttpUrl): Request {
+        val builder = request.newBuilder().url(target)
+        val method = request.method
+        if (method != "GET" && method != "HEAD" && (statusCode == 303 || ((statusCode == 301 || statusCode == 302) && method == "POST"))) {
+            builder.method("GET", null)
+            builder.removeHeader("Transfer-Encoding")
+            builder.removeHeader("Content-Length")
+            builder.removeHeader("Content-Type")
+        }
+        return builder.build()
+    }
+
+    companion object {
+        const val MAX_REDIRECTS = 5
+        private val REDIRECT_CODES = setOf(300, 301, 302, 303, 307, 308)
+
+        internal fun sameOrigin(a: HttpUrl, b: HttpUrl): Boolean =
+            a.scheme == b.scheme && a.host == b.host && a.port == b.port
     }
 }
 

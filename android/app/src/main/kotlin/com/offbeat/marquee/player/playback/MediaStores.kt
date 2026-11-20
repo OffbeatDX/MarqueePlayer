@@ -101,7 +101,8 @@ object MediaStores {
 
 /**
  * The HTTP side of streaming and downloading, through the session's OkHttp client (one connection
- * pool, the read-only guard in test builds) with a shorter read timeout than the UI's: a stream
+ * pool, the same-origin redirect policy, and the read-only guard in test builds) with a shorter
+ * read timeout than the UI's: a stream
  * that sends nothing for [READ_TIMEOUT_S] seconds is dead (a connection left over from a network
  * that went away), and the player or downloader retries on a fresh one.
  *
@@ -123,7 +124,7 @@ object StreamHttp {
     private val calls = ConcurrentLinkedQueue<WeakReference<Call>>()
 
     @Synchronized
-    private fun clientFor(c: SubsonicClient): OkHttpClient {
+    internal fun clientFor(c: SubsonicClient): OkHttpClient {
         if (base !== c.httpClient || derived == null) {
             base = c.httpClient
             derived = c.httpClient.newBuilder().readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build()

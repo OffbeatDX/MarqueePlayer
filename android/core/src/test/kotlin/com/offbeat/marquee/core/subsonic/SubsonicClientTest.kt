@@ -2,8 +2,13 @@ package com.offbeat.marquee.core.subsonic
 
 import kotlinx.coroutines.test.runTest
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -14,6 +19,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
+import java.net.ProtocolException
 import java.util.concurrent.TimeUnit
 
 class SubsonicClientTest {
@@ -353,5 +359,99 @@ class SubsonicClientTest {
         } catch (e: SubsonicError.InvalidUrl) {
             // expected
         }
+    }
+
+    // ---- Redirects --------------------------------------------------------------
+
+    @Test
+    fun defaultHttpClientDisablesAutomaticRedirects() {
+        val http = SubsonicClient.defaultHttpClient()
+        assertFalse(http.followRedirects)
+        assertFalse(http.followSslRedirects)
+    }
+
+    @Test
+    fun redirectToAnotherHostOrPortIsRefusedWithoutSendingCredentials() = runTest {
+        val other = MockWebServer()
+        other.start()
+        try {
+            val target = other.url("/rest/ping.view?u=alice&t=26719a1196d2a940705a59634eb18eab&s=c19b2d")
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", target.toString()))
+            val c = client()
+            val err = assertThrows<SubsonicError.Network> { c.ping() }
+            assertTrue("expected ProtocolException, got ${err.cause}", err.cause is ProtocolException)
+            assertEquals("signed query must never reach another server", 0, other.requestCount)
+
+            // Same policy for direct client.httpClient callers (streams, downloads, cover art).
+            val streamTarget = other.url("/rest/stream.view?id=t1&u=alice&t=26719a1196d2a940705a59634eb18eab&s=c19b2d")
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", streamTarget.toString()))
+            try {
+                c.httpClient.newCall(Request.Builder().url(c.streamUrl("t1")).build()).execute().close()
+                fail("redirect to another server was followed")
+            } catch (e: ProtocolException) {
+                // expected
+            }
+            assertEquals(0, other.requestCount)
+        } finally {
+            other.shutdown()
+        }
+    }
+
+    @Test
+    fun redirectFromHttpsToHttpIsRefusedWithoutSendingCredentials() = runTest {
+        val seen = mutableListOf<String>()
+        val terminal = Interceptor { chain ->
+            val req = chain.request()
+            seen += req.url.toString()
+            val location = req.url.newBuilder().scheme("http").port(80).build().toString()
+            Response.Builder()
+                .request(req)
+                .protocol(Protocol.HTTP_1_1)
+                .code(302)
+                .message("Found")
+                .header("Location", location)
+                .body("".toResponseBody("text/plain".toMediaType()))
+                .build()
+        }
+        val c = SubsonicClient(
+            SubsonicCredentials("https://music.example.com", "alice", "c19b2d", "26719a1196d2a940705a59634eb18eab"),
+            readOnly = true,
+            httpClient = SubsonicClient.defaultHttpClient().newBuilder().addInterceptor(terminal).build(),
+        )
+        val err = assertThrows<SubsonicError.Network> { c.ping() }
+        assertTrue("expected ProtocolException, got ${err.cause}", err.cause is ProtocolException)
+        assertEquals(1, seen.size)
+        assertTrue(seen.single().startsWith("https://"))
+        assertTrue("signed query must never be sent over http", seen.none { it.startsWith("http://") })
+    }
+
+    @Test
+    fun redirectOnTheSameOriginIsFollowedUpToFiveHops() = runTest {
+        val c = client()
+        // Five hops on the same scheme + host + port succeed.
+        for (hop in 1..5) {
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/hop$hop/rest/ping.view?u=alice&t=26719a1196d2a940705a59634eb18eab&s=c19b2d"))
+        }
+        server.enqueue(ok())
+        val info = c.ping()
+        assertEquals("ok", info.status)
+        assertEquals(6, server.requestCount)
+        repeat(6) { server.takeRequest() }
+
+        // A sixth redirect hop is refused.
+        for (hop in 1..6) {
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/loop$hop/rest/ping.view?u=alice&t=26719a1196d2a940705a59634eb18eab&s=c19b2d"))
+        }
+        val err = assertThrows<SubsonicError.Network> { c.ping() }
+        assertTrue("expected ProtocolException, got ${err.cause}", err.cause is ProtocolException)
+        assertEquals(12, server.requestCount)
+    }
+
+    @Test
+    fun sameOriginRedirectCannotBypassReadOnlyGuard() = runTest {
+        server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/rest/scrobble.view?id=s1"))
+        val err = assertThrows<SubsonicError.RefusedReadOnly> { client(readOnly = true).ping() }
+        assertEquals("scrobble", err.endpoint)
+        assertEquals(1, server.requestCount)
     }
 }
