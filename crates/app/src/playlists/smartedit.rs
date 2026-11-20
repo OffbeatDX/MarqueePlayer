@@ -211,12 +211,16 @@ pub fn parse_number(field: Field, s: &str) -> Result<f64, String> {
             let nums: Option<Vec<u64>> = parts.iter().map(|p| p.trim().parse::<u64>().ok()).collect();
             let nums = nums.ok_or_else(|| format!("\u{201c}{s}\u{201d} is not a length: type it like 3:30"))?;
             let secs = match nums.as_slice() {
-                [m] => m * 60,
-                [m, sec] if *sec < 60 => m * 60 + sec,
-                [h, m, sec] if *m < 60 && *sec < 60 => h * 3600 + m * 60 + sec,
+                [m] => m.checked_mul(60),
+                [m, sec] if *sec < 60 => m.checked_mul(60).and_then(|v| v.checked_add(*sec)),
+                [h, m, sec] if *m < 60 && *sec < 60 => h.checked_mul(3600).and_then(|v| v.checked_add(m * 60 + sec)),
                 _ => return Err(format!("\u{201c}{s}\u{201d} is not a length: type it like 3:30")),
             };
-            Ok(secs as f64)
+            // No track is near this long; more would not fit (or lose its seconds).
+            match secs.filter(|v| *v < 1_000_000_000_000) {
+                Some(v) => Ok(v as f64),
+                None => Err(format!("\u{201c}{s}\u{201d} is longer than any track could be")),
+            }
         }
         Field::SampleRate => {
             let v: f64 = s.trim_end_matches("kHz").trim().replace(',', ".").parse().map_err(|_| format!("\u{201c}{s}\u{201d} is not a sample rate: type it in kHz, like 44.1"))?;
@@ -1063,6 +1067,11 @@ mod tests {
         assert_eq!(p(Field::Duration, "5"), Ok(300.0));
         assert_eq!(p(Field::Duration, "1:02:03"), Ok(3723.0));
         assert!(p(Field::Duration, "3:75").unwrap_err().contains("not a length"));
+        // Lengths too long to hold are refused, never wrapped round (or a panic).
+        for huge in ["999999999999999999:00", "18446744073709551615", "99999999999999999:00:00", "16666666666666667"] {
+            assert!(p(Field::Duration, huge).unwrap_err().contains("longer than any track"), "{huge}");
+        }
+        assert_eq!(p(Field::Duration, "16666666666"), Ok(999_999_999_960.0), "the longest kept");
         assert_eq!(p(Field::SampleRate, "44.1"), Ok(44_100.0));
         assert_eq!(p(Field::SampleRate, "96 kHz"), Ok(96_000.0));
         assert_eq!(p(Field::SampleRate, "48000"), Ok(48_000.0));

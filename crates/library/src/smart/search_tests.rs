@@ -92,7 +92,8 @@ fn lengths_read_as_the_editor_reads_them_and_more() {
     assert_eq!(one("duration:90s"), cond(Field::Duration, Op::Is, num(90.0)));
     assert_eq!(one("length:5m..8m"), cond(Field::Duration, Op::Between, Value::Range(300.0, 480.0)));
     assert_eq!(one("time:1h+"), cond(Field::Duration, Op::AtLeast, num(3600.0)));
-    for bad in ["length:3:75", "length:abc", "length:-3", "length:1:2:3:4"] {
+    // Too long to hold (they used to overflow): not a length, never wrapped round.
+    for bad in ["length:3:75", "length:abc", "length:-3", "length:1:2:3:4", "length:999999999999999999:00", "length:>18446744073709551615:59", "length:99999999999999999:00:00"] {
         let parsed = p(bad);
         assert!(!parsed.has_operators(), "{bad}: {parsed:?}");
         assert_eq!(parsed.notes.len(), 1, "{bad}");

@@ -589,11 +589,16 @@ fn number(f: Field, s: &str) -> Option<f64> {
         Field::Duration => {
             if s.contains(':') {
                 let parts: Option<Vec<u64>> = s.split(':').map(|p| p.trim().parse::<u64>().ok()).collect();
-                match parts?.as_slice() {
-                    [m, sec] if *sec < 60 => (m * 60 + sec) as f64,
-                    [h, m, sec] if *m < 60 && *sec < 60 => (h * 3600 + m * 60 + sec) as f64,
+                let secs = match parts?.as_slice() {
+                    [m, sec] if *sec < 60 => m.checked_mul(60)?.checked_add(*sec)?,
+                    [h, m, sec] if *m < 60 && *sec < 60 => h.checked_mul(3600)?.checked_add(m * 60 + sec)?,
                     _ => return None,
+                };
+                // As long as a plain number may be (no track is near it).
+                if secs >= 1_000_000_000_000 {
+                    return None;
                 }
+                secs as f64
             } else if let Some(x) = s.strip_suffix("sec").or_else(|| s.strip_suffix('s')) {
                 plain(x)?.round()
             } else if let Some(x) = s.strip_suffix("min").or_else(|| s.strip_suffix('m')) {
