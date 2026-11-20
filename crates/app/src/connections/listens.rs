@@ -198,7 +198,14 @@ pub fn connect(token: &str, server: &str) {
     with(|s| s.connect(token, server));
 }
 
+/// Disconnect: no listen is taken from now on, and the submitter forgets the token and the user
+/// and drops the listens waiting (the server address stays in its field and its file).
 pub fn disconnect() {
+    STATUS.with(|s| {
+        if let Some(s) = s.borrow_mut().as_mut() {
+            s.accepting = false;
+        }
+    });
     with(Submitter::disconnect);
 }
 

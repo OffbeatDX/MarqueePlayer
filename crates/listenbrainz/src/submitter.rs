@@ -11,6 +11,12 @@
 //!   lost; the thread sends them in batches (`import`, at most 1000 and 10 MB a request, as
 //!   documented; `single` for one).
 //!
+//! **Disconnect** forgets the token and the user, in the worker and on disk: `listenbrainz.json`
+//! keeps the server address alone (it shows in its field, to connect again to the same server),
+//! or is deleted when that is ListenBrainz's own; the copies written beside it (`.tmp`, `.bad`)
+//! go too. The listens waiting are dropped with `listens.json`: they were made for the account
+//! disconnected from, and a token pasted later may be another user's.
+//!
 //! **No duplicates.** A listen leaves the queue only once ListenBrainz answered 200 for it. Its
 //! MusicBrainz ids are read from the file and written into the queue before it is first sent,
 //! so a listen sent again (its answer lost to a timeout or a dropped connection) is the same
@@ -148,7 +154,12 @@ impl Account {
         (Self { server: s.server, user, token }, plain)
     }
 
+    /// Write the file; with neither a token nor a server address, delete it instead.
     pub fn save(&self, path: &Path, sealer: &Sealer) {
+        if self.token.is_empty() && self.server.is_empty() {
+            remove_with_copies(path);
+            return;
+        }
         let mut s = Stored { server: self.server.clone(), user: self.user.clone(), ..Stored::default() };
         if !self.token.is_empty() {
             let Some(sealed) = (sealer.seal)(self.token.as_bytes()) else {
@@ -180,6 +191,26 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
             let _ = std::fs::copy(path, path.with_file_name(bad));
             log::error!("{} cannot be read ({e}); kept as .bad and started afresh", path.display());
             None
+        }
+    }
+}
+
+/// Delete a file of ours and the copies made beside it: `<name>.tmp` (a save cut short) and
+/// `<name>.bad` (a damaged file kept aside by `read_json`).
+fn remove_with_copies(path: &Path) {
+    remove_copies(path, &["", ".tmp", ".bad"]);
+}
+
+fn remove_copies(path: &Path, suffixes: &[&str]) {
+    let name = path.file_name().unwrap_or_default();
+    for suffix in suffixes {
+        let mut n = name.to_owned();
+        n.push(suffix);
+        let p = path.with_file_name(n);
+        if let Err(e) = std::fs::remove_file(&p)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("{} cannot be deleted: {e}", p.display());
         }
     }
 }
@@ -254,6 +285,12 @@ impl Queue {
             }
         }
         self.save();
+    }
+
+    /// Drop every listen waiting, and the file (with its copies).
+    pub fn clear(&mut self) {
+        self.items.clear();
+        remove_with_copies(&self.path);
     }
 
     /// Drop these (they were accepted, or will never be), wherever they are now.
@@ -369,7 +406,7 @@ impl Submitter {
         let _ = self.tx.send(Cmd::Connect { token: token.trim().into(), server: server.into() });
     }
 
-    /// Forget the token (the server address and the queue stay).
+    /// Forget the token and the user, and drop the listens waiting (the server address stays).
     pub fn disconnect(&self) {
         let _ = self.tx.send(Cmd::Disconnect);
     }
@@ -521,9 +558,21 @@ impl Worker {
                 }
                 Some(Cmd::Connect { token, server }) => self.connect(token, &server),
                 Some(Cmd::Disconnect) => {
+                    let dropped = {
+                        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                        let n = q.len();
+                        q.clear();
+                        n
+                    };
                     self.account.token.clear();
                     self.account.user.clear();
                     self.account.save(&self.account_path, &self.opts.sealer);
+                    // A save cut short or a damaged file kept aside may hold the token.
+                    remove_copies(&self.account_path, &[".tmp", ".bad"]);
+                    self.refused.clear();
+                    self.dropped_in_row = 0;
+                    self.backoff = self.opts.retry_min;
+                    log::info!("listenbrainz: {dropped} listens waiting dropped");
                     self.held = false;
                     self.retry_at = None;
                     self.feedback.clear();

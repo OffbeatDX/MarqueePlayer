@@ -75,6 +75,8 @@ export component ConnectionsSection inherits VerticalLayout {
         text: ListenBrainz.status;
         if ListenBrainz.connected: TextButton { text: "Send now"; glyph: Icons.refresh; label: "Send waiting listens now"; clicked => { Actions.listenbrainz-retry(); } }
         if ListenBrainz.connected: TextButton { text: "Disconnect"; label: "Disconnect from ListenBrainz"; clicked => { Actions.listenbrainz-disconnect(); } }
+        // The token refused, listens kept for when it connects again: also given up here.
+        if !ListenBrainz.connected && ListenBrainz.attention: TextButton { text: "Disconnect"; label: "Disconnect from ListenBrainz and drop the listens waiting"; clicked => { Actions.listenbrainz-disconnect(); } }
     }
     if !ListenBrainz.connected: SettingCard {
         title: "Connect";

@@ -184,6 +184,68 @@ fn a_token_connects_as_its_user_and_is_kept_sealed() {
     no_violations(&m);
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|c| format!("{c:02x}")).collect()
+}
+
+/// Every file left in the folder, with its bytes.
+fn files(d: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    std::fs::read_dir(d).unwrap().flatten().map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default())).collect()
+}
+
+fn holds(bytes: &[u8], needle: &str) -> bool {
+    bytes.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+/// Connected, with listens waiting (the server down) and the copies the app writes beside its
+/// files: Disconnect leaves nothing of the token or the user in the worker, in what it reports
+/// or on disk (nor the token's sealed hex), and drops the listens waiting. ListenBrainz's own
+/// server: `listenbrainz.json` goes; a server of one's own: only its address is kept. Started
+/// again, it is not connected.
+#[test]
+fn disconnect_forgets_the_token_and_the_listens_waiting() {
+    for own in [false, true] {
+        let d = dir(if own { "forget-own" } else { "forget" });
+        let m = Mock::start(TOKEN, USER);
+        let server = if own { m.url.clone() } else { String::new() };
+        Account { server: server.clone(), user: USER.into(), token: TOKEN.into() }.save(&d.join("listenbrainz.json"), &XOR);
+        let sealed = hex(&(XOR.seal)(TOKEN.as_bytes()).unwrap());
+        assert!(holds(&std::fs::read(d.join("listenbrainz.json")).unwrap(), &sealed), "the test looks for what is really written");
+        for (name, text) in [("listenbrainz.json.bad", format!("{{\"sealed_token\":\"{sealed}\"")), ("listenbrainz.json.tmp", TOKEN.to_owned()), ("listens.json.bad", "[".into())] {
+            std::fs::write(d.join(name), text).unwrap();
+        }
+        let mut run = start(&d, &m.url);
+        run.wait("connected", is_connected);
+        m.set_trouble(Trouble::Down);
+        run.s.submit(play(1, "Waiting"));
+        run.s.submit(play(2, "Also waiting"));
+        run.wait("kept for later", |s| s.queued == 2 && s.note.contains("again"));
+        run.s.disconnect();
+        let st = run.wait("disconnected", |s| s.state == State::Disconnected);
+        assert!(!st.accepting && st.queued == 0 && run.s.queued() == 0, "{st:?}");
+        assert!(!format!("{st:?}").contains(USER));
+        let left = files(&d);
+        for (name, bytes) in &left {
+            for needle in [TOKEN, USER, sealed.as_str()] {
+                assert!(!holds(bytes, needle), "{name} still holds {needle}");
+            }
+        }
+        let names: Vec<&str> = left.iter().map(|f| f.0.as_str()).collect();
+        if own {
+            assert_eq!(names, ["listenbrainz.json"], "the address of one's own server alone");
+            assert_eq!(Account::read(&d.join("listenbrainz.json"), &XOR).0, Account { server, user: String::new(), token: String::new() });
+        } else {
+            assert!(names.is_empty(), "{names:?}");
+        }
+        drop(run);
+        m.set_trouble(Trouble::None);
+        let mut run = start(&d, &m.url);
+        let st = run.wait("not connected after a restart", |s| s.state == State::Disconnected);
+        assert!(!st.accepting && st.queued == 0);
+        assert!(m.tracks().is_empty(), "the listens dropped were never sent");
+    }
+}
+
 #[test]
 fn a_server_address_of_ones_own_is_used_and_kept() {
     let d = dir("server");
