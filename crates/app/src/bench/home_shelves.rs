@@ -409,7 +409,8 @@ pub fn run() {
 
     // ---- grid shelves ----
     // (name, logical window size at 100%, interface size, rows, the shelf).
-    let configs: Vec<(&str, (f32, f32), u32, usize, ShelfQuery)> = vec![
+    type Config = (&'static str, (f32, f32), u32, usize, ShelfQuery);
+    let configs: Vec<Config> = vec![
         ("w1920-z100-r2", (1920.0, 1080.0), 100, 2, ShelfQuery::RecentlyAdded),
         ("w1400-z100-r2", (1400.0, 900.0), 100, 2, ShelfQuery::RecentlyAdded),
         ("w1100-z100-r2", (1100.0, 700.0), 100, 2, ShelfQuery::RecentlyAdded),

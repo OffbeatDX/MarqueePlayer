@@ -379,11 +379,11 @@ pub fn home_grid_cols(st: &Rc<State>, cols: usize) {
     let Some(vm) = HOME.with(|h| h.borrow().clone()) else { return };
     let shelves = st.settings.borrow().shelves.clone();
     let models = st.models.home.borrow().clone();
-    for row in 0..vm.row_count().min(models.len()) {
+    for (row, m) in models.iter().enumerate().take(vm.row_count()) {
         let Some(v) = vm.row_data(row) else { continue };
         let Some(s) = shelves.get(v.index as usize).filter(|s| s.layout == ShelfLayout::Grid) else { continue };
         match shelf_albums(st, v.index as usize, s, s.fetch_limit(cols), cols) {
-            Ok(albums) if !albums.is_empty() => models[row].update(albums),
+            Ok(albums) if !albums.is_empty() => m.update(albums),
             Ok(_) => {}
             Err(e) => log::warn!("shelf {:?}: {e}", s.query),
         }
