@@ -183,9 +183,11 @@ impl Ring {
         let seq = self.cut_seq.load(Ordering::Acquire);
         if seq != self.cut_seen.load(Ordering::Relaxed) {
             self.cut_seen.store(seq, Ordering::Relaxed);
-            self.fade_len.store(self.cut_len.load(Ordering::Relaxed), Ordering::Relaxed);
+            let end = self.skip.load(Ordering::Acquire);
+            let len = u64::from(self.cut_len.load(Ordering::Relaxed)).min(end.saturating_sub(r)) as u32;
+            self.fade_len.store(len, Ordering::Relaxed);
             self.fade_pos.store(0, Ordering::Relaxed);
-            self.fade_end.store(self.skip.load(Ordering::Acquire), Ordering::Relaxed);
+            self.fade_end.store(end, Ordering::Relaxed);
         }
         let (fade_len, end) = (self.fade_len.load(Ordering::Relaxed), self.fade_end.load(Ordering::Relaxed));
         let mut fade_pos = self.fade_pos.load(Ordering::Relaxed);
@@ -353,6 +355,40 @@ mod tests {
         assert!(left[0] < 1.0 && left[0] > left[1] && left[1] > left[2] && left[2] > left[3], "{left:?}");
         assert!(left[3].abs() < 1e-6, "faded to silence: {left:?}");
         assert_eq!(&left[4..6], [0.5, 0.5], "then the new audio");
+    }
+
+    #[test]
+    fn a_cut_with_fewer_frames_left_scales_the_fade_to_zero() {
+        let r = Ring::new(48_000, FRAMES);
+        assert!(r.push(&vec![1.0f32; 2 * 10]));
+        assert_eq!(take_vec(&r, 8).0, 8);
+        // Only 2 frames remain, fewer than the requested 8-frame fade.
+        r.cut(8);
+        assert!(r.push(&[0.5, 0.5, 0.5, 0.5]));
+        let (n, out) = take_vec(&r, 8);
+        assert_eq!(n, 4);
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        assert!((left[0] - 0.5).abs() < 1e-6, "half-way through a 2-frame fade: {left:?}");
+        assert!(left[1].abs() < 1e-6, "fade must reach zero before the new audio: {left:?}");
+        assert_eq!(&left[2..4], [0.5, 0.5], "then the new audio");
+
+        // One frame left: fades to zero on that frame.
+        let r = Ring::new(48_000, FRAMES);
+        assert!(r.push(&[1.0, 1.0]));
+        r.cut(8);
+        assert!(r.push(&[0.5, 0.5]));
+        let (n, out) = take_vec(&r, 4);
+        assert_eq!(n, 2);
+        assert!(out[0].abs() < 1e-6 && out[1].abs() < 1e-6, "single frame reaches zero: {out:?}");
+        assert_eq!(&out[2..4], [0.5, 0.5]);
+
+        // Zero frames left: no fade frames, new audio plays straight away.
+        let r = Ring::new(48_000, FRAMES);
+        r.cut(8);
+        assert!(r.push(&[0.5, 0.5]));
+        let (n, out) = take_vec(&r, 4);
+        assert_eq!(n, 1);
+        assert_eq!(&out[..2], [0.5, 0.5]);
     }
 
     #[test]
