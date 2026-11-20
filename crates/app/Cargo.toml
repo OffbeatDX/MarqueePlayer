@@ -1,0 +1,83 @@
+[package]
+name = "marquee-player"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Local-first, artwork-forward desktop music player."
+
+[[bin]]
+name = "MarqueePlayer"
+path = "src/main.rs"
+
+[features]
+# The scripted bench and measurement harness (src/bench/, `MP_BENCH=...`,
+# docs/testing.md, "Measurement and test hooks"). Not in release builds (`cargo xtask build`,
+# `cargo xtask release`): about 1.3 MB of the exe. `cargo xtask bench` and `cargo xtask check`
+# build with it; by hand:
+#   cargo build --release -p marquee-player --features bench
+bench = ["subsonic/mock", "listenbrainz/mock"]
+# Skia on OpenGL (`SLINT_BACKEND=winit-skia-opengl`), for the frame-timing benches
+# (`MP_BENCH=grid|sidebar|playlist`): their rendering notifier is not called on the wgpu
+# surface the app uses. Implies `bench`. Not in release builds:
+#   cargo build --release -p marquee-player --features bench-opengl
+bench-opengl = ["bench", "slint/renderer-skia-opengl"]
+
+[dependencies]
+# The UI markup is in ui/ here; crates/ui compiles it (see its Cargo.toml for why).
+marquee-ui = { path = "../ui" }
+player-core = { path = "../player-core" }
+library = { path = "../library" }
+lastfm = { path = "../lastfm" }
+listenbrainz = { path = "../listenbrainz" }
+discord-ipc = { path = "../discord-ipc" }
+lrclib = { path = "../lrclib" }
+subsonic = { path = "../subsonic" }
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+log.workspace = true
+rusqlite.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+walkdir.workspace = true
+raw-window-handle = "0.6"
+rfd = "0.18.0"
+toml = "1.2.1"
+
+[dev-dependencies]
+# The Navidrome stand-in for the server tests (server/sync.rs, server/write.rs).
+subsonic = { path = "../subsonic", features = ["mock"] }
+# The ListenBrainz stand-in for the scrobbling tests (connections/scrobble.rs).
+listenbrainz = { path = "../listenbrainz", features = ["mock"] }
+
+[target.'cfg(windows)'.dependencies]
+# Media keys and the Windows media overlay (SMTC).
+souvlaki = "0.9.3"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Registry", "Win32_System_WindowsProgramming", "Win32_System_Time", "Win32_System_ProcessStatus"] }
+
+# Linux (platform/linux): D-Bus for MPRIS, the tray host check, the file manager and the
+# settings portal (zbus, already in the tree through Slint's accessibility and tray), the tray
+# icon's StatusNotifierItem (ksni, Slint's own tray crate with Slint's features), libc for
+# the time zone, the socket's permissions and the bench's CPU time, and Skia on OpenGL, the
+# first renderer tried there (main.rs, `select_renderer`). None of it reaches Windows.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+libc = "0.2"
+slint = { workspace = true, features = ["renderer-skia-opengl"] }
+
+# macOS (platform/macos): media keys and Now Playing (souvlaki, as on Windows), AppKit and
+# Foundation through the objc2 bindings (the versions Slint's winit backend and tray already
+# use, so nothing new is built, and no SDK or bindgen is needed to build them), block2 for
+# their notification blocks, and libc for the time zone, the socket's permissions and the
+# bench's CPU time.
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = "0.9.3"
+libc = "0.2"
+objc2 = "0.6.3"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "NSUserDefaults"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSEvent", "NSGraphics", "NSPasteboard", "NSResponder", "NSScreen", "NSWorkspace", "objc2-core-foundation"] }

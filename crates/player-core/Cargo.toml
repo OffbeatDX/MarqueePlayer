@@ -1,0 +1,36 @@
+[package]
+name = "player-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+symphonia.workspace = true
+symphonia-core = "0.6.1"
+opusic-sys.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+# Reading EasyEffects presets and writing this app's own (`eq/formats.rs`).
+serde_json.workspace = true
+
+# Each system's own audio output (`output::system_device`); none of it reaches another's build.
+[target.'cfg(windows)'.dependencies]
+wasapi.workspace = true
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+# Linux: PipeWire natively (libpipewire-0.3, 0.3.50 or newer: `pw_stream_get_time_n`), and
+# ALSA's default device (libasound) where there is no PipeWire to play through.
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = { version = "0.10.1", features = ["v0_3_50"] }
+alsa = "0.12.1"
+
+# macOS: Core Audio, an output audio unit (AUHAL) on the chosen or default device. The objc2
+# bindings are plain Rust declarations of the system frameworks (no SDK or bindgen at build).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes", "objc2"] }
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AUComponent", "AudioComponent", "AudioOutputUnit", "AudioUnitProperties", "objc2-core-audio-types"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString"] }
+libc = "0.2.186"

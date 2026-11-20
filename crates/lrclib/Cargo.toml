@@ -1,0 +1,16 @@
+[package]
+name = "lrclib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Lyrics from LRCLIB (lrclib.net) for tracks without local lyrics: exact lookup, a strict search fallback, an on-disk cache, a debounced worker thread."
+
+[dependencies]
+library = { path = "../library" }
+http-client = { path = "../http" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true

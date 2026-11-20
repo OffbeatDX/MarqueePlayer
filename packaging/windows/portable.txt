@@ -1,0 +1,11 @@
+This file makes Marquee Player portable.
+
+While portable.txt is beside MarqueePlayer.exe, Marquee Player keeps everything it saves
+(settings, your library with its plays, ratings and playlists, the caches, the log) in the
+Data folder beside it, and writes nothing to your user profile or to the registry. Copy
+the whole folder, Data included, to take your library with you, for example on a USB
+stick. Music folders on the same drive are found again when the drive has another letter.
+
+Delete this file to have Marquee Player keep its files in your user profile instead
+(%APPDATA%\MarqueePlayer), like the installed edition. The Data folder is then left
+alone.

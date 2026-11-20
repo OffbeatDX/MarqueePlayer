@@ -1,0 +1,917 @@
+// "View metadata" (metadata/view.rs; stores.slint, `Meta`): a wide panel centred over the dimmed
+// window, sized to the window (at most 960 x 980), for reading a track's or an album's
+// metadata, and with tag editing on (Settings > Library), for changing it. The header
+// names what it is about and the tag blocks the file has; under it, Back (a track opened
+// from its album), Copy all, Show in Explorer and Close; with unsaved edits, a bar saying
+// so with Review and save and Discard; then the rows in one scrolling list: group
+// headings, fields as two columns (the label quiet, the value in normal type, one line per
+// value), pictures with thumbnails, notes, and an album's track table.
+//
+// It has the keyboard while open: the list is one Tab stop with a cursor over its rows
+// (Up/Down, Home/End, Page Up/Down; Enter acts on the row: opens a track, lists more,
+// expands a long value or copies it, or with editing on edits the field; Right/Left expand
+// and fold; Ctrl+C copies), Tab and Shift+Tab go round the list and the buttons, Backspace
+// or Alt+Left goes back to the album, Esc closes (asking first with unsaved edits). No
+// shortcut fires (nothing reaches the window's shortcut scope) but tag editing's own
+// (Ctrl+S, F2 unless remapped). A click outside closes it; the wheel and middle-click
+// scrolling move only its list.
+//
+// Editing a field turns its value into one text field per value: Enter keeps it in the
+// draft, Esc cancels, Tab and Shift+Tab go to the next value or field, Ctrl+Enter adds a
+// value, Alt+Up/Down moves one; a table row's number, title and artist are three fields,
+// Up and Down going to the row above or below. Draft values are marked (a bar at the
+// row's left, what it was under it) until saved. Saving reviews every change first, then
+// shows progress (Cancel between files) and what happened.
+import { Theme } from "theme.slint";
+import { Meta, Actions, PlatformWords } from "stores.slint";
+import { MetaRow } from "types.slint";
+import { TextButton, IconButton, Icon, Icons, FocusRing, LinkText } from "widgets.slint";
+import { Panel } from "dialogs.slint";
+import { AutoFlickable, AutoscrollBlock } from "autoscroll.slint";
+
+// One value being edited: a text field that takes the keys editing needs.
+component EditValue inherits Rectangle {
+    in property <string> text;
+    in property <int> slot;
+    // A cell of a table row (Up and Down go to the next row).
+    in property <bool> table;
+    // What a screen reader calls it ("Album artist, value 2 of 3").
+    in property <string> label;
+    out property <bool> focused: input.has-focus;
+    // Window y and height of the value (and the line of help under it), to keep it in view.
+    callback reveal(length, length);
+    // Once laid out (a field that just opened, a value just added, has no place yet when it
+    // takes the keyboard).
+    private property <bool> to-reveal;
+    changed focused => {
+        if self.focused { self.to-reveal = true; }
+    }
+    Timer {
+        interval: 30ms;
+        running: root.to-reveal;
+        triggered => {
+            root.to-reveal = false;
+            root.reveal(root.absolute-position.y, root.height + 44px);
+        }
+    }
+    height: 32px;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    private property <int> seq: Meta.edit-focus-seq;
+    changed seq => {
+        if Meta.edit-slot == root.slot {
+            if !input.has-focus { input.focus(); input.select-all(); }
+            root.to-reveal = true;
+        }
+    }
+    init => {
+        if Meta.edit-slot == root.slot { input.focus(); input.select-all(); root.to-reveal = true; }
+    }
+    input := TextInput {
+        x: 10px;
+        width: parent.width - 20px;
+        height: 100%;
+        text: root.text;
+        vertical-alignment: center;
+        color: Theme.text;
+        font-size: root.table ? Theme.font-small : Theme.font-body;
+        single-line: true;
+        selection-background-color: Theme.accent.with-alpha(0.4);
+        accessible-label: root.label;
+        accessible-description: Meta.edit-error != "" ? Meta.edit-error : "Editable. Enter keeps it, Escape cancels.";
+        edited => { Actions.meta-edit-text(root.slot, self.text); }
+        key-pressed(ev) => {
+            if ev.text == Key.Return && !ev.modifiers.alt {
+                if ev.modifiers.control && !root.table && Meta.edit-multi { Actions.meta-edit-add(root.slot); return accept; }
+                if !ev.modifiers.control { Actions.meta-edit-commit(); return accept; }
+            }
+            if ev.text == Key.Escape { Actions.meta-edit-cancel(); return accept; }
+            if ev.text == Key.Tab { Actions.meta-edit-next(root.slot, 1); return accept; }
+            if ev.text == Key.Backtab { Actions.meta-edit-next(root.slot, -1); return accept; }
+            if root.table && !ev.modifiers.alt && !ev.modifiers.control && (ev.text == Key.UpArrow || ev.text == Key.DownArrow) {
+                Actions.meta-edit-vertical(ev.text == Key.UpArrow ? -1 : 1);
+                return accept;
+            }
+            if !root.table && ev.modifiers.alt && !ev.modifiers.control && (ev.text == Key.UpArrow || ev.text == Key.DownArrow) {
+                Actions.meta-edit-move(root.slot, ev.text == Key.UpArrow ? -1 : 1);
+                return accept;
+            }
+            // Ctrl+S (save) in a field; the field keeps every other key it takes.
+            if ev.modifiers.control && !ev.modifiers.alt && Actions.meta-shortcut(ev.text, true, ev.modifiers.shift, false) { return accept; }
+            reject
+        }
+    }
+}
+
+// The values of a field being edited, with what can be done to them.
+component FieldEditor inherits VerticalLayout {
+    callback reveal(length, length);
+    in property <string> label;
+    spacing: 6px;
+    for v[i] in Meta.edit-values: HorizontalLayout {
+        spacing: 4px;
+        EditValue {
+            text: v;
+            slot: i;
+            label: root.label + (Meta.edit-values.length > 1 ? ", value " + (i + 1) + " of " + Meta.edit-values.length : "");
+            reveal(y, h) => { root.reveal(y, h); }
+            horizontal-stretch: 1;
+        }
+        if Meta.edit-multi || Meta.edit-values.length > 1: IconButton {
+            glyph: Icons.close;
+            size: 32px;
+            icon-size: 14px;
+            tabbable: false;
+            tooltip: "Remove this value";
+            label: "Remove value " + (i + 1);
+            clicked => { Actions.meta-edit-remove(i); }
+        }
+    }
+    if Meta.edit-error != "": Text {
+        text: Meta.edit-error;
+        font-size: Theme.font-small;
+        color: Theme.accent;
+        wrap: word-wrap;
+        accessible-role: text;
+    }
+    HorizontalLayout {
+        alignment: start;
+        spacing: 14px;
+        if Meta.edit-multi: LinkText {
+            text: "Add a value";
+            font-size: Theme.font-small;
+            base-color: Theme.accent;
+            clicked => { Actions.meta-edit-add(Meta.edit-values.length - 1); }
+        }
+        Text {
+            text: "Enter keeps it" + (Meta.edit-multi ? " \u{b7} Ctrl+Enter adds a value \u{b7} Alt+\u{2191}\u{2193} moves one" : "") + " \u{b7} Esc cancels";
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            wrap: word-wrap;
+            accessible-role: none;
+        }
+    }
+}
+
+// One row of the list.
+component MetaLine inherits Rectangle {
+    in property <MetaRow> line;
+    in property <int> index;
+    in property <bool> focused;
+    in property <length> label-width;
+    // Window y and height, to scroll it into view when the cursor reaches it.
+    callback reveal(length, length);
+    // A press on it (the list takes the keyboard).
+    callback pressed();
+    private property <bool> editable: Meta.edit-on && root.line.edit > 0;
+    private property <bool> editing: Meta.edit-on && Meta.edit-row == root.index;
+    changed focused => {
+        if self.focused { root.reveal(self.absolute-position.y, self.height); }
+    }
+    height: lay.preferred-height;
+    border-radius: Theme.radius-control;
+    background: root.editing ? Theme.surface-hi : root.line.selectable && ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.dur-hover; }
+    accessible-role: list-item;
+    accessible-label: root.line.kind == 5
+        ? root.line.cells[1] + ". " + root.line.cells[2] + ", " + root.line.cells[3] + ", " + root.line.cells[4] + (root.line.note != "" ? ". " + root.line.note : "")
+        : root.line.label + (root.line.values.length > 0 ? ": " + root.line.values[0] : root.line.empty ? ": not set" : "") + (root.line.note != "" ? ". " + root.line.note : "");
+    accessible-description: !root.editable ? "" : (root.line.changed ? "Changed, not saved yet. " : "") + (root.line.edit == 2 ? "Can be removed: Enter or Delete." : root.line.edit == 4 ? "Editable: F2. Enter opens the track." : "Editable: Enter or F2.");
+    accessible-action-default => { Actions.meta-activate(root.index); }
+
+    ta := TouchArea {
+        enabled: root.line.selectable && !root.editing;
+        mouse-cursor: root.line.action || root.line.kind == 5 ? MouseCursor.pointer : root.editable && root.line.edit != 4 ? MouseCursor.text : MouseCursor.default;
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left { root.pressed(); }
+        }
+        clicked => {
+            if root.line.action { Actions.meta-activate(root.index); }
+            else if root.editable && root.line.edit != 2 && root.line.edit != 4 { Actions.meta-edit(root.index); }
+            else { Actions.meta-select(root.index); }
+        }
+        double-clicked => {
+            if root.editable && root.line.edit == 4 { Actions.meta-edit(root.index); }
+            else if !root.line.action && root.line.copyable && !root.editable { Actions.meta-copy(root.index); }
+        }
+    }
+    // A draft value: a bar at the row's left edge, until it is saved.
+    if root.line.changed: Rectangle {
+        x: 2px;
+        y: 7px;
+        width: 3px;
+        height: parent.height - 14px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+
+    lay := VerticalLayout {
+        width: 100%;
+        // A group's heading.
+        if root.line.kind == 0: VerticalLayout {
+            padding-left: 10px;
+            padding-top: 24px;
+            padding-bottom: 6px;
+            Text {
+                text: root.line.label;
+                font-size: Theme.font-small;
+                font-weight: 700;
+                color: Theme.text-dim;
+                letter-spacing: 1.2px;
+                accessible-role: none;
+            }
+        }
+        // A field, a picture or a note: label and value in two columns.
+        if root.line.kind >= 1 && root.line.kind <= 3: HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 4px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 16px;
+            if root.line.kind != 3: Text {
+                width: root.label-width;
+                text: root.line.label;
+                font-size: Theme.font-small;
+                color: root.line.changed || root.line.attention ? Theme.accent : Theme.text-faint;
+                font-weight: root.line.changed ? 600 : 400;
+                wrap: word-wrap;
+                vertical-alignment: top;
+                accessible-role: none;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: start;
+                spacing: 3px;
+                if root.line.has-thumb: HorizontalLayout {
+                    alignment: start;
+                    padding-bottom: 4px;
+                    Rectangle {
+                        width: 72px;
+                        height: 72px;
+                        border-radius: 6px;
+                        clip: true;
+                        background: Theme.surface-hi;
+                        Image {
+                            source: root.line.thumb;
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                            accessible-role: none;
+                        }
+                    }
+                }
+                if root.editing: FieldEditor {
+                    label: root.line.label;
+                    reveal(y, h) => { root.reveal(y, h); }
+                }
+                if !root.editing: VerticalLayout {
+                    spacing: 3px;
+                    for v in root.line.values: Text {
+                        text: v;
+                        font-size: root.line.kind == 3 ? Theme.font-small : Theme.font-body;
+                        color: root.line.kind != 3 ? Theme.text : root.line.attention ? Theme.accent : root.line.action ? Theme.accent : root.line.changed ? Theme.accent : Theme.text-dim;
+                        font-weight: root.line.action ? 600 : 400;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                    if root.line.empty && root.line.kind == 1: Text {
+                        text: root.line.changed ? "Removed" : "Not set";
+                        font-size: Theme.font-body;
+                        color: Theme.text-faint;
+                        font-italic: true;
+                        accessible-role: none;
+                    }
+                }
+                if root.line.note != "" && !root.editing: Text {
+                    text: root.line.note;
+                    font-size: Theme.font-small;
+                    color: root.line.changed || root.line.attention ? Theme.accent : Theme.text-faint;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+                if root.line.expandable && !root.editing: HorizontalLayout {
+                    alignment: start;
+                    padding-top: 1px;
+                    LinkText {
+                        text: root.line.expanded ? "Show less" : "Show all";
+                        font-size: Theme.font-small;
+                        base-color: Theme.accent;
+                        clicked => { Actions.meta-toggle(root.index); }
+                    }
+                }
+            }
+            // Edit and copy, on hover or with the cursor here (Enter or F2 edits, the
+            // list's Ctrl+C copies).
+            Rectangle {
+                width: root.editable ? 64px : 30px;
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 4px;
+                    if root.editable && !root.editing: IconButton {
+                        y: 0;
+                        opacity: ta.has-hover || root.focused || self.has-hover ? 1 : 0;
+                        glyph: root.line.edit == 2 ? (root.line.changed ? Icons.refresh : Icons.close) : Icons.edit;
+                        size: 30px;
+                        icon-size: 15px;
+                        tabbable: false;
+                        tooltip: root.line.edit == 2 ? (root.line.changed ? "Keep it" : "Remove when you save") : "Edit (Enter or F2)";
+                        label: (root.line.edit == 2 ? (root.line.changed ? "Keep " : "Remove ") : "Edit ") + root.line.label;
+                        clicked => { Actions.meta-edit(root.index); }
+                    }
+                    copy := IconButton {
+                        y: 0;
+                        visible: root.line.copyable && !root.editing;
+                        opacity: ta.has-hover || root.focused || self.has-hover ? 1 : 0;
+                        glyph: Icons.copy;
+                        size: 30px;
+                        icon-size: 15px;
+                        tabbable: false;
+                        tooltip: "Copy";
+                        label: "Copy " + root.line.label;
+                        clicked => { Actions.meta-copy(root.index); }
+                    }
+                }
+            }
+        }
+        // The track table's head.
+        if root.line.kind == 4: HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 34px;
+            padding-top: 4px;
+            padding-bottom: 6px;
+            spacing: 12px;
+            Text { width: 34px; text: root.line.cells[0]; font-size: Theme.font-small; color: Theme.text-faint; accessible-role: none; }
+            Text { width: 30px; text: root.line.cells[1]; font-size: Theme.font-small; color: Theme.text-faint; accessible-role: none; }
+            Text { horizontal-stretch: 3; min-width: 0px; preferred-width: 0px; text: root.line.cells[2]; font-size: Theme.font-small; color: Theme.text-faint; accessible-role: none; }
+            Text { horizontal-stretch: 2; min-width: 0px; preferred-width: 0px; text: root.line.cells[3]; font-size: Theme.font-small; color: Theme.text-faint; accessible-role: none; }
+            Text { width: 52px; text: root.line.cells[4]; font-size: Theme.font-small; color: Theme.text-faint; horizontal-alignment: right; accessible-role: none; }
+            Text { width: 104px; text: root.line.cells[5]; font-size: Theme.font-small; color: Theme.text-faint; horizontal-alignment: right; accessible-role: none; }
+        }
+        // A track: its cells, and under them what is off about it (and what it was).
+        if root.line.kind == 5: VerticalLayout {
+            padding-left: 10px;
+            padding-right: 34px;
+            padding-top: 7px;
+            padding-bottom: 7px;
+            spacing: 2px;
+            if !root.editing: HorizontalLayout {
+                spacing: 12px;
+                Text { width: 34px; text: root.line.cells[0]; font-size: Theme.font-small; color: Theme.text-faint; vertical-alignment: center; accessible-role: none; }
+                Text {
+                    width: 30px;
+                    text: root.line.cells[1];
+                    font-size: Theme.font-small;
+                    font-weight: root.line.number-attention || root.line.cell-changed[0] ? 700 : 400;
+                    color: root.line.number-attention || root.line.cell-changed[0] ? Theme.accent : Theme.text-dim;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+                Text { horizontal-stretch: 3; min-width: 0px; preferred-width: 0px; text: root.line.cells[2]; font-size: Theme.font-body; color: root.line.cell-changed[1] ? Theme.accent : Theme.text; overflow: elide; accessible-role: none; }
+                Text { horizontal-stretch: 2; min-width: 0px; preferred-width: 0px; text: root.line.cells[3]; font-size: Theme.font-small; color: root.line.cell-changed[2] ? Theme.accent : Theme.text-dim; overflow: elide; vertical-alignment: center; accessible-role: none; }
+                Text { width: 52px; text: root.line.cells[4]; font-size: Theme.font-small; color: Theme.text-dim; horizontal-alignment: right; vertical-alignment: center; accessible-role: none; }
+                Text {
+                    width: 104px;
+                    text: root.line.cells[5];
+                    font-size: Theme.font-small;
+                    font-weight: root.line.format-attention ? 700 : 400;
+                    color: root.line.format-attention ? Theme.accent : Theme.text-faint;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+            }
+            // Editing the row: its number, title and artist.
+            if root.editing: HorizontalLayout {
+                spacing: 12px;
+                Text { width: 34px; text: root.line.cells[0]; font-size: Theme.font-small; color: Theme.text-faint; vertical-alignment: center; accessible-role: none; }
+                EditValue { width: 52px; text: Meta.edit-values[0]; slot: 0; table: true; label: "Track number of " + root.line.cells[2]; reveal(y, h) => { root.reveal(y, h); } }
+                EditValue { horizontal-stretch: 3; min-width: 0px; preferred-width: 0px; text: Meta.edit-values[1]; slot: 1; table: true; label: "Title of track " + root.line.cells[1]; reveal(y, h) => { root.reveal(y, h); } }
+                EditValue { horizontal-stretch: 2; min-width: 0px; preferred-width: 0px; text: Meta.edit-values[2]; slot: 2; table: true; label: "Artist of " + root.line.cells[2]; reveal(y, h) => { root.reveal(y, h); } }
+                Text { width: 52px; text: root.line.cells[4]; font-size: Theme.font-small; color: Theme.text-dim; horizontal-alignment: right; vertical-alignment: center; accessible-role: none; }
+            }
+            if root.editing: HorizontalLayout {
+                padding-left: 46px;
+                Text {
+                    text: Meta.edit-error != "" ? Meta.edit-error : "Enter keeps it \u{b7} Tab: the next cell \u{b7} \u{2191}\u{2193}: the row above or below \u{b7} Esc cancels";
+                    font-size: Theme.font-small;
+                    color: Meta.edit-error != "" ? Theme.accent : Theme.text-faint;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+            }
+            if root.line.note != "" && !root.editing: HorizontalLayout {
+                padding-left: 88px;
+                Text { text: root.line.note; font-size: Theme.font-small; color: Theme.accent; wrap: word-wrap; accessible-role: none; }
+            }
+        }
+    }
+    FocusRing { shown: root.focused && !root.editing; radius: Theme.radius-control; inset: true; }
+}
+
+// A plain line of the review: a file's name, or one of its changes.
+component ReviewLine inherits VerticalLayout {
+    in property <MetaRow> line;
+    padding-left: 4px;
+    padding-top: root.line.kind == 0 ? 14px : 2px;
+    padding-bottom: 2px;
+    Text {
+        text: root.line.kind == 0 ? root.line.label : root.line.values.length > 0 ? root.line.values[0] : "";
+        font-size: root.line.kind == 0 ? Theme.font-body : Theme.font-small;
+        font-weight: root.line.kind == 0 ? 600 : 400;
+        color: root.line.kind == 0 ? Theme.text : Theme.text-dim;
+        wrap: word-wrap;
+    }
+}
+
+// The stages of a save, each holding the keyboard while it shows (its buttons are inside
+// it, so their keys come here): Tab goes between its buttons, Enter presses the focused
+// one, Esc goes back (the review, the question) or closes (the result). Nothing else gets
+// through.
+component StageKeys inherits FocusScope {
+    focus-on-click: false;
+    callback escape();
+    callback tab();
+    key-pressed(ev) => {
+        if ev.text == Key.Escape { root.escape(); return accept; }
+        if ev.text == Key.Tab || ev.text == Key.Backtab { root.tab(); return accept; }
+        accept
+    }
+}
+
+component ReviewStage inherits StageKeys {
+    in property <length> max-list;
+    private property <int> seq: Meta.overlay-seq;
+    changed seq => { ok.focus-button(); }
+    init => { ok.focus-button(); }
+    escape => { Actions.meta-back-to-edit(); }
+    tab => {
+        if ok.focused { no.focus-button(); } else { ok.focus-button(); }
+    }
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        width: parent.width;
+        spacing: 10px;
+        Text { text: Meta.review-title; font-size: Theme.font-title; font-weight: 700; color: Theme.text; wrap: word-wrap; }
+        Text { text: Meta.review-note; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+        Rectangle {
+            height: min(rv.preferred-height, root.max-list);
+            border-radius: Theme.radius-control;
+            background: Theme.surface;
+            clip: true;
+            AutoFlickable {
+                autoscroll-layer: 4;
+                content-width: self.width;
+                content-height: rv.preferred-height;
+                rv := VerticalLayout {
+                    x: 0;
+                    width: parent.width;
+                    padding: 12px;
+                    padding-top: 0px;
+                    for r in Meta.review-rows: ReviewLine { line: r; }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            no := TextButton { text: "Back to editing"; zone: "dialog"; clicked => { Actions.meta-back-to-edit(); } }
+            ok := TextButton { text: Meta.save-label; glyph: Icons.check; primary: true; zone: "dialog"; clicked => { Actions.meta-save(); } }
+        }
+    }
+}
+
+component SavingStage inherits StageKeys {
+    private property <int> seq: Meta.overlay-seq;
+    changed seq => {
+        if Meta.can-cancel { stop.focus-button(); } else { self.focus(); }
+    }
+    init => {
+        if Meta.can-cancel { stop.focus-button(); } else { self.focus(); }
+    }
+    tab => {
+        if Meta.can-cancel { stop.focus-button(); }
+    }
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        width: parent.width;
+        spacing: 12px;
+        Text { text: "Saving"; font-size: Theme.font-title; font-weight: 700; color: Theme.text; }
+        Text { text: Meta.progress-text; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; accessible-role: text; }
+        Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.surface-hi;
+            accessible-role: progress-indicator;
+            accessible-value: round(Meta.progress * 100) + "%";
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(Meta.progress, 0, 1);
+                border-radius: 3px;
+                background: Theme.accent;
+                animate width { duration: 150ms; }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            height: 36px;
+            stop := TextButton {
+                visible: Meta.can-cancel;
+                text: "Cancel";
+                zone: "dialog";
+                label: "Cancel: stops after the file being saved";
+                clicked => { Actions.meta-cancel-save(); }
+            }
+        }
+    }
+}
+
+component ResultStage inherits StageKeys {
+    private property <int> seq: Meta.overlay-seq;
+    changed seq => { done.focus-button(); }
+    init => { done.focus-button(); }
+    escape => { Actions.meta-result-done(); }
+    tab => {
+        if Meta.result-can-undo {
+            if done.focused { undo.focus-button(); } else { done.focus-button(); }
+        }
+    }
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        width: parent.width;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            Icon { y: 2px; width: 20px; height: 20px; glyph: Meta.result-attention ? Icons.warning : Icons.check; color: Meta.result-attention ? Theme.accent : Theme.text-dim; }
+            Text { text: Meta.result-title; font-size: Theme.font-title; font-weight: 700; color: Theme.text; wrap: word-wrap; horizontal-stretch: 1; }
+        }
+        if Meta.result-text != "": Text { text: Meta.result-text; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; accessible-role: text; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            undo := TextButton {
+                visible: Meta.result-can-undo;
+                width: Meta.result-can-undo ? self.min-width : 0px;
+                tabbable: Meta.result-can-undo;
+                text: "Undo what was saved";
+                zone: "dialog";
+                clicked => { Actions.meta-undo-result(); }
+            }
+            done := TextButton { text: "Done"; primary: true; zone: "dialog"; clicked => { Actions.meta-result-done(); } }
+        }
+    }
+}
+
+component ConfirmStage inherits StageKeys {
+    private property <int> seq: Meta.overlay-seq;
+    changed seq => { keep.focus-button(); }
+    init => { keep.focus-button(); }
+    escape => { Actions.meta-back-to-edit(); }
+    tab => {
+        if keep.focused { drop.focus-button(); } else { keep.focus-button(); }
+    }
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        width: parent.width;
+        spacing: 10px;
+        Text { text: "Discard your unsaved changes?"; font-size: Theme.font-title; font-weight: 700; color: Theme.text; }
+        Text { text: Meta.draft-text + " would be lost: nothing of it has been written to the files yet."; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+            drop := TextButton { text: "Discard and close"; zone: "dialog"; clicked => { Actions.meta-discard-close(); } }
+            keep := TextButton { text: "Keep editing"; primary: true; zone: "dialog"; clicked => { Actions.meta-back-to-edit(); } }
+        }
+    }
+}
+
+export component MetadataPanel inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: window-width;
+    height: window-height;
+    background: #00000070;
+    private property <length> label-width: panel.width < 760px ? 132px : 176px;
+    private property <bool> has-draft: Meta.draft-text != "";
+
+    // Tab order: Back (when shown), the list, Review and save and Discard (with a draft),
+    // Copy all, Show in Explorer, Close.
+    // A stop is there: Back only from a track of an album, the draft's buttons only with
+    // a draft.
+    function stop-shown(i: int) -> bool {
+        (i != 0 || Meta.can-back) && ((i != 2 && i != 3) || root.has-draft) && (i != 5 || !Meta.no-file)
+    }
+    // The next stop from `at` in direction `d` (at most two in a row are left out).
+    function step(at: int, d: int) -> int {
+        root.stop-shown(mod(at + d + 7, 7)) ? mod(at + d + 7, 7) : root.stop-shown(mod(at + 2 * d + 14, 7)) ? mod(at + 2 * d + 14, 7) : mod(at + 3 * d + 21, 7)
+    }
+    function cycle(d: int) {
+        let at = back.focused ? 0 : list.has-focus ? 1 : review.focused ? 2 : discard.focused ? 3 : copy-all.focused ? 4 : explore.focused ? 5 : close.focused ? 6 : 1;
+        let next = root.step(at, d);
+        if next == 0 {
+            back.focus-button();
+        } else if next == 1 {
+            list.focus();
+        } else if next == 2 {
+            review.focus-button();
+        } else if next == 3 {
+            discard.focus-button();
+        } else if next == 4 {
+            copy-all.focus-button();
+        } else if next == 5 {
+            explore.focus-button();
+        } else {
+            close.focus-button();
+        }
+    }
+
+    // Keep the cursor's row in view (window y and height).
+    function reveal(y: length, h: length) {
+        let top = y - flick.absolute-position.y;
+        if top < 0 {
+            Meta.scroll = min(0px, Meta.scroll - top + 8px);
+        } else if top + h > flick.height {
+            Meta.scroll = max(min(0px, flick.height - flick.content-height), Meta.scroll - (top + h - flick.height) - 8px);
+        }
+    }
+
+    private property <int> focus-seq: Meta.focus-seq;
+    // Not while a save's review, progress, result or question has the keyboard.
+    changed focus-seq => {
+        if Meta.stage == 0 { list.focus(); }
+    }
+    private property <int> flash-seq: Meta.flash-seq;
+    changed flash-seq => {
+        flash-timer.running = false;
+        flash-timer.running = true;
+    }
+    flash-timer := Timer {
+        interval: 2s;
+        running: false;
+        triggered => {
+            self.running = false;
+            Meta.flash = "";
+        }
+    }
+
+    // Anywhere outside: closes (asking first with unsaved edits). The wheel does nothing under it.
+    TouchArea {
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down && ev.button != PointerEventButton.middle { Actions.meta-close(); }
+        }
+        scroll-event(ev) => { accept }
+    }
+    // A middle press here never scrolls the page under the panel.
+    AutoscrollBlock { layer: 3; }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Escape { Actions.meta-close(); return accept; }
+            if ev.text == Key.Tab { root.cycle(1); return accept; }
+            if ev.text == Key.Backtab { root.cycle(-1); return accept; }
+            if Meta.can-back && (ev.text == Key.Backspace || (ev.modifiers.alt && ev.text == Key.LeftArrow)) {
+                Actions.meta-back();
+                return accept;
+            }
+            if ev.modifiers.control && (ev.text == "c" || ev.text == "C" || ev.text == "\u{3}") {
+                if list.has-focus { Actions.meta-copy(Meta.cursor); }
+                return accept;
+            }
+            if list.has-focus && !ev.modifiers.control && !ev.modifiers.alt {
+                if ev.text == Key.Return || ev.text == " " { Actions.meta-activate(Meta.cursor); return accept; }
+                if ev.text == Key.DownArrow { Actions.meta-key("down"); return accept; }
+                if ev.text == Key.UpArrow { Actions.meta-key("up"); return accept; }
+                if ev.text == Key.Home { Actions.meta-key("home"); return accept; }
+                if ev.text == Key.End { Actions.meta-key("end"); return accept; }
+                if ev.text == Key.PageDown { Actions.meta-key("page-down"); return accept; }
+                if ev.text == Key.PageUp { Actions.meta-key("page-up"); return accept; }
+                if ev.text == Key.RightArrow { Actions.meta-key("right"); return accept; }
+                if ev.text == Key.LeftArrow { Actions.meta-key("left"); return accept; }
+                if ev.text == Key.Delete && Meta.edit-on { Actions.meta-remove-field(Meta.cursor); return accept; }
+            }
+            // Tag editing's keys (Settings > Keys: save, edit the field).
+            if Meta.edit-on && Actions.meta-shortcut(ev.text, ev.modifiers.control, ev.modifiers.shift, ev.modifiers.alt) { return accept; }
+            // Everything else stays here: no shortcut acts while the panel is open.
+            accept
+        }
+
+        panel := Panel {
+            width: min(960px, root.width - 48px);
+            height: min(980px, root.height - 40px);
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: (Meta.eyebrow == "ALBUM" ? "Metadata of the album " : "Metadata of ") + Meta.title;
+            VerticalLayout {
+                // What it is about.
+                HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 22px;
+                    padding-bottom: 14px;
+                    spacing: 18px;
+                    Rectangle {
+                        width: 76px;
+                        height: 76px;
+                        border-radius: Theme.radius-cover;
+                        background: Theme.surface-hi;
+                        clip: true;
+                        if Meta.has-cover: Image { source: Meta.cover; width: 100%; height: 100%; image-fit: cover; accessible-role: none; }
+                        if !Meta.has-cover: Icon { glyph: Icons.note; width: 30px; height: 30px; color: Theme.text-faint; }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        horizontal-stretch: 1;
+                        Text { text: Meta.eyebrow; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; accessible-role: none; }
+                        Text { text: Meta.title; font-size: Theme.font-heading; font-weight: 700; color: Theme.text; overflow: elide; }
+                        if Meta.subtitle != "": Text { text: Meta.subtitle; font-size: Theme.font-body; color: Theme.text-dim; overflow: elide; }
+                        if Meta.blocks != "": Text { text: Meta.blocks; font-size: Theme.font-small; color: Theme.text-faint; overflow: elide; }
+                    }
+                }
+                // Its actions.
+                HorizontalLayout {
+                    padding-left: Meta.can-back ? 24px : 16px;
+                    padding-right: 24px;
+                    padding-bottom: 14px;
+                    spacing: 8px;
+                    back := TextButton {
+                        visible: Meta.can-back;
+                        width: Meta.can-back ? self.min-width : 0px;
+                        tabbable: Meta.can-back;
+                        text: "Album";
+                        glyph: Icons.back;
+                        zone: "dialog";
+                        label: "Back to the album";
+                        horizontal-stretch: 0;
+                        clicked => { Actions.meta-back(); }
+                    }
+                    copy-all := TextButton {
+                        text: "Copy all";
+                        glyph: Icons.copy;
+                        zone: "dialog";
+                        label: "Copy everything shown, as text";
+                        horizontal-stretch: 0;
+                        clicked => { Actions.meta-copy-all(); }
+                    }
+                    explore := TextButton {
+                        // Nothing to show for a track or album only the server has.
+                        visible: !Meta.no-file;
+                        max-width: Meta.no-file ? 0px : 10000px;
+                        text: PlatformWords.show-in;
+                        glyph: Icons.folder;
+                        zone: "dialog";
+                        label: Meta.eyebrow == "ALBUM" ? PlatformWords.show-folder : PlatformWords.show-file;
+                        horizontal-stretch: 0;
+                        clicked => { Actions.meta-explore(); }
+                    }
+                    Text {
+                        text: Meta.flash;
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                        accessible-role: text;
+                    }
+                    close := TextButton {
+                        text: "Close";
+                        primary: !root.has-draft;
+                        zone: "dialog";
+                        horizontal-stretch: 0;
+                        clicked => { Actions.meta-close(); }
+                    }
+                }
+                // Tag editing: what is not saved yet, and what to do with it.
+                Rectangle {
+                    visible: Meta.edit-on;
+                    height: Meta.edit-on ? draft-lay.preferred-height : 0px;
+                    background: root.has-draft ? Theme.accent.with-alpha(0.12) : transparent;
+                    border-width: root.has-draft ? 1px : 0px;
+                    border-color: Theme.accent.with-alpha(0.45);
+                    accessible-role: text;
+                    accessible-label: root.has-draft ? Meta.draft-text + ", not saved yet" : "Tag editing is on";
+                    draft-lay := HorizontalLayout {
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        padding-top: root.has-draft ? 10px : 0px;
+                        padding-bottom: 10px;
+                        spacing: 10px;
+                        Icon { y: (parent.height - self.height) / 2; width: 16px; height: 16px; glyph: Icons.edit; color: root.has-draft ? Theme.accent : Theme.text-faint; }
+                        Text {
+                            text: root.has-draft ? Meta.draft-text + " \u{b7} not written to the files yet" : "Tag editing is on: Enter or F2 edits the field at the cursor. Nothing is written until you save.";
+                            font-size: Theme.font-small;
+                            font-weight: root.has-draft ? 600 : 400;
+                            color: root.has-draft ? Theme.text : Theme.text-faint;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                            accessible-role: none;
+                        }
+                        discard := TextButton {
+                            visible: root.has-draft;
+                            width: root.has-draft ? self.min-width : 0px;
+                            tabbable: root.has-draft;
+                            text: "Discard";
+                            zone: "dialog";
+                            label: "Discard the unsaved changes";
+                            horizontal-stretch: 0;
+                            clicked => { Actions.meta-discard(); }
+                        }
+                        review := TextButton {
+                            visible: root.has-draft;
+                            width: root.has-draft ? self.min-width : 0px;
+                            tabbable: root.has-draft;
+                            text: "Review and save";
+                            glyph: Icons.check;
+                            primary: true;
+                            zone: "dialog";
+                            label: "Review the changes and save them (Ctrl+S)";
+                            horizontal-stretch: 0;
+                            clicked => { Actions.meta-review(); }
+                        }
+                    }
+                }
+                if Meta.status != "": HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
+                    accessible-role: text;
+                    accessible-label: Meta.status;
+                    Icon { y: 0; width: 16px; height: 16px; glyph: Icons.warning; color: Meta.status-attention ? Theme.accent : Theme.text-dim; }
+                    Text { text: Meta.status; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; horizontal-stretch: 1; accessible-role: none; }
+                }
+                Rectangle { height: 1px; background: Theme.border; }
+                flick := AutoFlickable {
+                    vertical-stretch: 1;
+                    autoscroll-layer: 3;
+                    content-y <=> Meta.scroll;
+                    // Long values wrap: the list never scrolls sideways.
+                    content-width: self.width;
+                    content-height: col.preferred-height;
+                    col := VerticalLayout {
+                        x: 0;
+                        width: flick.width;
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        padding-bottom: 22px;
+                        for r[i] in Meta.rows: MetaLine {
+                            line: r;
+                            index: i;
+                            focused: list.has-focus && Meta.cursor == i;
+                            label-width: root.label-width;
+                            reveal(y, h) => { root.reveal(y, h); }
+                            pressed => { list.focus(); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The list's keyboard focus: one Tab stop, a cursor over its rows (keys above).
+        list := FocusScope {
+            x: panel.x;
+            y: panel.y;
+            width: 0;
+            height: 0;
+            focus-on-click: false;
+            accessible-role: AccessibleRole.list;
+            accessible-label: Meta.eyebrow == "ALBUM" ? "Album metadata" : "Track metadata";
+            accessible-item-count: Meta.rows.length;
+            key-pressed(ev) => { reject }
+        }
+    }
+
+    // Saving: the review, the progress, the result; and the question before closing with
+    // unsaved edits. Over the panel, which waits under it.
+    if Meta.stage > 0: Rectangle {
+        background: #00000050;
+        TouchArea { scroll-event(ev) => { accept } }
+        Panel {
+            width: min(640px, root.width - 64px);
+            height: min(stage-lay.preferred-height, root.height - 80px);
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            clip: true;
+            accessible-role: groupbox;
+            accessible-label: Meta.stage == 1 ? Meta.review-title : Meta.stage == 2 ? "Saving" : Meta.stage == 3 ? Meta.result-title : "Unsaved changes";
+            stage-lay := VerticalLayout {
+                padding: 22px;
+                if Meta.stage == 1: ReviewStage { max-list: root.height - 340px; }
+                if Meta.stage == 2: SavingStage { }
+                if Meta.stage == 3: ResultStage { }
+                if Meta.stage == 4: ConfirmStage { }
+            }
+        }
+    }
+
+    init => { list.focus(); }
+}

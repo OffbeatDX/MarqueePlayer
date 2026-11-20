@@ -1,0 +1,123 @@
+// Settings > Home and Window.
+
+import { Page } from "../../types.slint";
+import { Nav, Home, Player, Actions, Keys, Output, Autoscroll, PlatformWords, Chrome } from "../../stores.slint";
+import { Icons, TextButton, Segmented, Stepper, SettingCard, SettingRow, SwitchRow } from "../../widgets.slint";
+import { SectionHead } from "parts.slint";
+
+// ---- Home ----------------------------------------------------------------------
+
+export component HomeSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Home"; blurb: "The shelves of albums on the home page."; }
+    SettingCard {
+        SettingRow {
+            divider: false;
+            label: "Home shelves";
+            hint: "Reorder, hide or add shelves; change their titles, layouts and sizes.";
+            TextButton { text: "Edit shelves"; glyph: Icons.chevron-right; label: "Edit the home shelves"; clicked => { Nav.go(Page.shelves); } }
+        }
+    }
+}
+
+// ---- Window --------------------------------------------------------------------
+
+export component WindowSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Window"; blurb: "The interface size, how the window closes, starting with the system, the tray icon, the player bar, technical details and scrolling."; }
+    SettingCard {
+        SettingRow {
+            divider: false;
+            label: "Interface size";
+            hint: "Everything in the window larger or smaller: text, covers, buttons and spacing.";
+            more: "Also Ctrl+Plus, Ctrl+Minus and Ctrl+0 (Settings > Keys), Ctrl and the mouse wheel, or two fingers pinched on a touchscreen. It multiplies the display's own scaling.";
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Stepper {
+                    label: "Interface size";
+                    value: Chrome.zoom-text;
+                    step(d) => { Actions.zoom-step(d); }
+                }
+                TextButton {
+                    text: "Reset";
+                    label: "Interface size back to 100%";
+                    clicked => { Actions.zoom-step(0); }
+                }
+            }
+        }
+        SettingRow {
+            label: "Close button";
+            hint: Player.no-tray
+                ? "There is no tray on this desktop, so closing quits. (On GNOME, an AppIndicator extension adds one.)"
+                : "Hide to tray keeps the music playing; open it again, or quit, from the tray icon.";
+            Segmented {
+                label: "Close button";
+                options: ["Hide to tray", "Quit"];
+                selected: Player.close-quits ? 1 : 0;
+                chosen(i) => {
+                    if (i == 1) != Player.close-quits { Actions.toggle-close-action(); }
+                }
+            }
+        }
+        SettingRow {
+            label: "Click on the tray icon";
+            hint: Player.tray-click-shows
+                ? "Shows the window. The middle button plays the next track; the wheel sets the volume."
+                : "Plays or pauses; a double click shows or hides the window. The middle button plays the next track; the wheel sets the volume.";
+            Segmented {
+                label: "Click on the tray icon";
+                options: ["Play/pause", "Show window"];
+                selected: Player.tray-click-shows ? 1 : 0;
+                chosen(i) => {
+                    if (i == 1) != Player.tray-click-shows { Actions.toggle-tray-click(); }
+                }
+            }
+        }
+        if Player.autostart-offered: SwitchRow {
+            label: PlatformWords.autostart;
+            hint: Player.portable
+                ? "Opens in the tray when you sign in. This copy is portable: its location goes in Windows' startup list, the one thing it writes outside its folder."
+                : "Opens in the tray when you sign in, ready for the media keys.";
+            more: PlatformWords.autostart-more;
+            checked: Player.autostart;
+            toggled => { Actions.toggle-autostart(); }
+        }
+        if Player.default-apps-offered: SettingRow {
+            label: "Default app for music files";
+            hint: "Marquee Player is in Open with for every format it plays. Windows lets you choose it as the default in its own settings.";
+            more: "Windows 11 opens Marquee Player's page in Default apps; Windows 10 opens the Default apps page, where you choose by file type, or Marquee Player under Set defaults by app.";
+            TextButton {
+                text: "Choose default apps\u{2026}";
+                label: "Choose default apps for Marquee Player in Windows' settings";
+                clicked => { Actions.choose-default-apps(); }
+            }
+        }
+        SwitchRow {
+            label: "Animated tray icon";
+            hint: "The tray icon's bars move with the music while it plays, and rest when it stops.";
+            checked: Player.tray-animation;
+            toggled => { Actions.toggle-tray-animation(); }
+        }
+        SwitchRow {
+            label: "Auto-hide player bar";
+            hint: "Slides the bar away while playing; point at the bottom of the window to bring it back.";
+            checked: Player.bar-autohide;
+            toggled => { Actions.toggle-bar-autohide(); }
+        }
+        SwitchRow {
+            label: "Show technical details";
+            hint: "Format, bit depth, sample rate and bitrate beside tracks, in the player bar and on Now playing.";
+            more: "Also what reaches the output device and the ReplayGain adjustment, on Now playing and in Output. A track's View metadata shows the file's details either way.";
+            checked: Player.show-details;
+            toggled => { Actions.toggle-details(); }
+        }
+        SwitchRow {
+            label: "Middle-click scrolling";
+            hint: "Middle-click a list or page, then move the pointer to scroll; click again to stop.";
+            more: "As in web browsers: the further the pointer is from where you clicked, the faster it goes. Hold the button and drag to scroll only until you let go. Esc, the wheel or any click stops it.";
+            checked: Autoscroll.enabled;
+            toggled => { Actions.toggle-autoscroll(); }
+        }
+    }
+}

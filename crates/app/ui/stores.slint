@@ -1,0 +1,1374 @@
+// One global per area. Pages bind to these directly; Rust fills them
+// (`app.global::<X>()`) and handles every callback in `Actions`.
+import { AlbumCard, TrackRow, ShelfView, QueueRow, PlaylistRow, NamedCount, ShelfEdit, Page, ShelfLayout, MenuItemData, KeyHelp, KeyRow, LyricLine, SettingHit, MetaRow, AboutFile, AboutCredit, ArtistLink, SmartRow, EqBandRow, EqNote, VizPresetRow } from "types.slint";
+
+// The open context menu (menu.slint). Rust fills the entries and runs the chosen one.
+export global MenuStore {
+    in-out property <bool> open;
+    // Where it was asked for, in window coordinates.
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <[MenuItemData]> items;
+    in-out property <int> highlight: -1;
+    // The submenu (Add to playlist): its entries, which entry opened it, its row offset.
+    in-out property <[MenuItemData]> sub;
+    in-out property <int> sub-of: -1;
+    in-out property <int> sub-highlight: -1;
+    in-out property <length> sub-row-y;
+    // Opened from the keyboard (Menu key, Shift+F10): the list it was opened from keeps
+    // the focus and passes the arrows, Enter and Esc on (lists.slint, ListKeys).
+    in-out property <bool> from-keys;
+    // Some entry is a choice with a check mark (the Albums sort).
+    in-out property <bool> checks;
+    // Entries with long names (output devices): a wider panel.
+    in-out property <bool> wide;
+}
+
+// The dialogs over the window: the name prompt of "New playlist…" (playlists/newplaylist.rs) and
+// "View metadata" (metadata/view.rs, `Meta`). Only one is open at a time; while one is, it has
+// the keyboard. A list that had the focus when one opened takes it back when it closes
+// (`returns`); otherwise the window's shortcuts do (app.slint).
+export global Dialog {
+    in-out property <bool> prompt-open;
+    in-out property <bool> meta-open;
+    // The equalizer's paste and import preview (EqPreview).
+    in-out property <bool> eq-preview-open;
+    // A playlist name another playlist has (playlists/nameclash.rs, ClashPrompt in dialogs.slint).
+    in-out property <bool> clash-open;
+    out property <bool> open: prompt-open || meta-open || eq-preview-open || clash-open;
+    // A list lost the focus to the dialog and will take it back (set by the list).
+    in-out property <bool> returns;
+    // Where it was asked for (the menu's place, a drop point), window coordinates.
+    in-out property <length> x;
+    in-out property <length> y;
+
+    // The name prompt: its title, the name, a note under the field ("" for none), the
+    // confirming button's text ("Create", or "Add to existing" after a duplicate name).
+    in-out property <string> prompt-title: "New playlist";
+    in-out property <string> prompt-text;
+    in-out property <string> prompt-note;
+    in-out property <string> prompt-confirm: "Create";
+    // The field's placeholder ("Preset name" when the equalizer asks).
+    in-out property <string> prompt-placeholder: "Playlist name";
+
+    // The clash prompt: what it asks, how many tracks each has, what the choices do, whether
+    // Replace is offered; the clashes still to come in a batch ("do the same for the rest"
+    // shows when there are any) and that switch; bumped each time it asks (the keyboard goes
+    // to Keep both).
+    in-out property <string> clash-title;
+    in-out property <string> clash-text;
+    in-out property <string> clash-note;
+    in-out property <bool> clash-can-replace;
+    in-out property <int> clash-rest;
+    in-out property <bool> clash-same;
+    in-out property <int> clash-shown;
+}
+
+// "View metadata" (metadata/view.rs, metaview.slint): what the panel shows.
+export global Meta {
+    // "TRACK" or "ALBUM", the title, the artist line, which tag blocks the file has.
+    in-out property <string> eyebrow;
+    in-out property <string> title;
+    in-out property <string> subtitle;
+    in-out property <string> blocks;
+    in-out property <image> cover;
+    in-out property <bool> has-cover;
+    // A track opened from its album's table: Back returns there.
+    in-out property <bool> can-back;
+    // Said under the header when the file is missing or unreadable.
+    in-out property <string> status;
+    in-out property <bool> status-attention;
+    // A track or album only the server has: no file or folder to show in Explorer.
+    in-out property <bool> no-file;
+    in-out property <[MetaRow]> rows;
+    // The row the keys act on, and the list's scroll (kept for Back).
+    in-out property <int> cursor: -1;
+    in-out property <length> scroll;
+    // "Copied …", for a moment beside the buttons (bumped each time).
+    in-out property <string> flash;
+    in-out property <int> flash-seq;
+    // Bumped to give the list the keyboard (after opening a track, Back).
+    in-out property <int> focus-seq;
+
+    // Tag editing (metadata/tagedit.rs; all off with it off): on for this view.
+    in-out property <bool> edit-on;
+    // "3 unsaved changes in 2 files"; "" without a draft.
+    in-out property <string> draft-text;
+    // The row being edited (-1: none), its values (a table row: number, title, artist),
+    // the value with the keyboard, a field (0) or a table row (1), whether values can be
+    // added, why the values cannot be written ("" when they can).
+    in-out property <int> edit-row: -1;
+    in-out property <[string]> edit-values;
+    in-out property <int> edit-slot;
+    in-out property <int> edit-kind;
+    in-out property <bool> edit-multi;
+    in-out property <string> edit-error;
+    // Bumped to give the value at `edit-slot` the keyboard.
+    in-out property <int> edit-focus-seq;
+    // 0 the view, 1 the review before saving, 2 saving, 3 the result, 4 asked before
+    // closing with unsaved changes.
+    in-out property <int> stage;
+    // Bumped to give the review, progress, result or question the keyboard.
+    in-out property <int> overlay-seq;
+    in-out property <string> review-title;
+    in-out property <string> review-note;
+    in-out property <[MetaRow]> review-rows;
+    in-out property <string> save-label;
+    in-out property <float> progress;
+    in-out property <string> progress-text;
+    in-out property <bool> can-cancel;
+    in-out property <string> result-title;
+    in-out property <string> result-text;
+    in-out property <bool> result-attention;
+    in-out property <bool> result-can-undo;
+}
+
+// Keyboard focus. Lists keep the focus themselves and move a cursor over their rows
+// (rows come and go as they scroll; the list stays), so this holds only what is shared.
+export global Focus {
+    // Where the focused control is: "" on a page, "sidebar", "queue", "bar", "pill". A
+    // sidebar holding the focus stays open; a control on a page scrolls into view.
+    in-out property <string> zone;
+    // A sidebar playlist a drag is over (it stays open while one is), or -1.
+    in-out property <int> drop-playlist: -1;
+}
+
+// Settings > Keys, the shortcut editor (keys/edit.rs, keys/map.rs), and the current keys of
+// the actions the chrome names in its labels and tooltips ("" when one has no key).
+export global Keys {
+    in-out property <[KeyRow]> rows;
+    // The keys that cannot be remapped.
+    in-out property <[KeyHelp]> fixed;
+    in-out property <bool> all-default: true;
+    // The row and slot waiting for a key; row -1 when none is.
+    in-out property <int> capture-row: -1;
+    in-out property <int> capture-slot;
+    // What the editor says under a row (how to capture, a refused key, a conflict).
+    in-out property <int> note-row: -1;
+    in-out property <string> note;
+    // The note is a conflict: offer Reassign and Cancel.
+    in-out property <bool> conflict;
+    in-out property <string> play-pause;
+    in-out property <string> previous;
+    in-out property <string> next;
+    in-out property <string> shuffle;
+    in-out property <string> repeat;
+    in-out property <string> mute;
+    in-out property <string> favourite;
+    // The rating keys in a few words ("0 to 5").
+    in-out property <string> rate;
+    in-out property <string> now-playing;
+    in-out property <string> visualizer;
+    in-out property <string> visualizer-look;
+    in-out property <string> visualizer-place;
+    in-out property <string> eq-copy;
+    in-out property <string> eq-paste;
+    in-out property <string> back;
+    in-out property <string> forward;
+    in-out property <string> pin-sidebar;
+    in-out property <string> pin-queue;
+    // "Pause (Space)": a label with its key, or alone when the action has none.
+    public pure function with-key(text: string, key: string) -> string {
+        return key == "" ? text : text + " (" + key + ")";
+    }
+}
+
+// The app-drawn caption (frame.rs): the window has no Windows title bar.
+export global Chrome {
+    in-out property <bool> maximized;
+    // The window has no decorations from the system at all (Linux; set before it is shown):
+    // no server-side title bar on KDE, none drawn by the toolkit elsewhere. Windows keeps
+    // its frame, whose caption frame.rs takes over.
+    in-out property <bool> frameless;
+    // The maximize button is non-client (so Windows 11 shows snap layouts on hover):
+    // Slint does not see the pointer there, the frame reports it.
+    in-out property <bool> max-hover;
+    in-out property <bool> max-pressed;
+    // The pointer is near the top-right corner: the caption buttons show.
+    in-out property <bool> caption-zone;
+    // The system draws the caption's buttons (macOS: the traffic lights at the top left, over
+    // the page): the app's own are not shown, and the top-left corner keeps `caption-inset`
+    // free of controls. Set once the window exists (platform/macos/window.rs).
+    in-out property <bool> native-caption;
+    in-out property <length> caption-inset: 0px;
+    // The window's minimum size (app.slint), logical pixels: the design minimum, smaller
+    // only when the interface size would not let that fit the monitor (zoom.rs).
+    in-out property <length> min-width: 960px;
+    in-out property <length> min-height: 620px;
+    // Settings > Window > Interface size, percent, and as shown ("110%").
+    in-out property <int> zoom: 100;
+    in-out property <string> zoom-text: "100%";
+    callback minimize();
+    callback toggle-maximize();
+    callback close();
+    // The window menu (Alt+Space menu) at a window point, as a right click on a title bar.
+    callback system-menu(length, length);
+}
+
+export global Nav {
+    in-out property <Page> page: Page.home;
+    in-out property <bool> can-back;
+    in-out property <bool> can-forward;
+    // The scroll offset of the page on screen (content-y, <= 0). Pages bind to it two
+    // ways; Rust saves it with each history entry and restores it on Back and Forward.
+    in-out property <length> page-scroll;
+    // Page transitions: bumped on every navigation, with its direction (+1 forward or
+    // somewhere new, -1 back), so the new page slides in from the matching side.
+    in-out property <int> transition-seq;
+    in-out property <int> transition-dir: 1;
+    // The width the page has (the window less pinned sidebars), set by the window: track
+    // lists show a technical details column only where it leaves the title its room.
+    in-out property <length> content-width: 1440px;
+    // Name of the current page, shown in the navigation pill.
+    in-out property <string> title: "Home";
+    // A short note in the pill ("Nothing to go back to"), cleared by Rust.
+    in-out property <string> flash;
+    // Last side-button / browser-key input, shown with Ctrl+Shift+D (diagnostics).
+    in-out property <string> input-readout: "No side-button input received yet";
+    in-out property <bool> show-input-readout;
+    in-out property <bool> sidebar-pinned;
+    // Set by the hotkey; the sidebar opens while true.
+    in-out property <bool> sidebar-forced;
+    // The queue sidebar on the right: open by the button or Ctrl+Q (`queue-open`), by
+    // the pointer or a drag at the right edge (`queue-hover-open`), or pinned.
+    in-out property <bool> queue-open;
+    in-out property <bool> queue-pinned;
+    in-out property <bool> queue-hover-open;
+    // The left sidebar opened by the pointer at the edge (so Esc can close it too).
+    in-out property <bool> sidebar-hover-open;
+    callback go(Page);
+    callback back();
+    callback forward();
+    // A sidebar's pin changed from the UI (its pin button), for the settings.
+    callback pins-changed();
+}
+
+export global Home {
+    in-out property <[ShelfView]> shelves;
+    in-out property <bool> empty;
+}
+
+export global Grid {
+    in-out property <[AlbumCard]> albums;
+    in-out property <int> count;
+    // Albums in the library, whatever the filter.
+    in-out property <int> total;
+    // The quick filter, and the sort ("Artist", ...) and its direction.
+    in-out property <string> filter;
+    in-out property <string> sort-label: "Artist";
+    in-out property <bool> descending;
+    // Exposed so the frame-time benchmark can scroll the grid.
+    in-out property <length> content-y;
+}
+
+// A home shelf in full ("See all"): the shelf's ordering, every album.
+export global ShelfPage {
+    in-out property <string> title;
+    in-out property <[AlbumCard]> albums;
+    in-out property <int> count;
+    // Random: the page can reshuffle.
+    in-out property <bool> random;
+}
+
+// Browse pages: Artists (or an artist search in full), and Genres / Labels. Each tile is
+// an AlbumCard: title the name, artist line "12 albums", cover from one of its albums.
+export global Browse {
+    in-out property <string> artists-title: "Artists";
+    in-out property <[AlbumCard]> artists;
+    in-out property <int> artists-count;
+    in-out property <[AlbumCard]> groups;
+    in-out property <int> groups-count;
+}
+
+// A track list in full (a search's tracks, "See all").
+export global TrackPage {
+    in-out property <string> title;
+    in-out property <string> info;
+    in-out property <[TrackRow]> tracks;
+}
+
+export global AlbumPage {
+    in-out property <AlbumCard> album;
+    in-out property <string> info;
+    // The album's format ("FLAC · 16-bit / 44.1 kHz", "Mixed formats"), shown with the
+    // details setting on; its track list has the details column only when the tracks differ.
+    in-out property <string> details;
+    in-out property <bool> details-column;
+    in-out property <string> label;
+    in-out property <image> full;
+    in-out property <[TrackRow]> tracks;
+    in-out property <bool> favourite;
+}
+
+export global ArtistPage {
+    in-out property <string> name;
+    in-out property <[AlbumCard]> albums;
+    in-out property <[AlbumCard]> appears;
+    in-out property <[TrackRow]> top;
+}
+
+export global Search {
+    in-out property <string> query;
+    in-out property <[AlbumCard]> albums;
+    in-out property <[ArtistLink]> artists;
+    in-out property <[TrackRow]> tracks;
+    // A section has more than it shows: "See all" opens it in full.
+    in-out property <bool> more-albums;
+    in-out property <bool> more-artists;
+    in-out property <bool> more-tracks;
+    // The query has operators (`library::smart::search`): it was searched by rules, and can be
+    // saved as a smart playlist.
+    in-out property <bool> operators;
+    // What in the query was not understood (searched as text), for the line under the field.
+    in-out property <string> hint;
+    // The syntax help under the field is open (the "?" beside it).
+    in-out property <bool> help-open;
+}
+
+export global Playlists {
+    in-out property <[PlaylistRow]> list;
+    in-out property <int> current-id: -1;
+    in-out property <string> current-name;
+    // The smart playlists whose rules name the open playlist (`query::smart_playlists_using`),
+    // said when Delete is armed: their rule about it would then match nothing.
+    in-out property <string> used-by;
+    // "12 tracks · 54 min" for the open playlist.
+    in-out property <string> current-info;
+    // The last playlist file imported: how it went, and the entries not found.
+    in-out property <string> import-summary;
+    in-out property <[string]> import-missing;
+    in-out property <[TrackRow]> tracks;
+}
+
+export global Player {
+    in-out property <bool> has-track;
+    in-out property <bool> playing;
+    in-out property <string> title;
+    in-out property <string> artist;
+    // The playing track's id in the library (0 for a file from outside), for its artist links.
+    in-out property <int> track-id;
+    in-out property <string> album;
+    in-out property <int> album-id: -1;
+    in-out property <image> cover;
+    in-out property <image> full;
+    in-out property <bool> has-cover;
+    in-out property <float> position;
+    in-out property <float> duration;
+    in-out property <string> position-text: "0:00";
+    in-out property <string> duration-text: "0:00";
+    in-out property <float> volume: 0.8;
+    in-out property <bool> muted;
+    // "Off" / "Track" / "Album"
+    in-out property <string> gain-mode: "Track";
+    // ReplayGain preamp, dB, as text ("+2 dB").
+    in-out property <string> preamp: "0 dB";
+    in-out property <bool> limit-peaks: true;
+    in-out property <bool> prevent-clipping: true;
+    // The close button quits instead of hiding to the tray.
+    in-out property <bool> close-quits;
+    // A click on the tray icon shows the window instead of playing or pausing.
+    in-out property <bool> tray-click-shows;
+    // The desktop shows no tray (Linux: no StatusNotifierItem host): closing quits whatever
+    // the setting says.
+    in-out property <bool> no-tray;
+    // Settings > Now playing.
+    in-out property <bool> visualizer: true;
+    in-out property <bool> lyrics-online;
+    in-out property <int> repeat; // 0 off, 1 all, 2 one
+    in-out property <bool> shuffle;
+    in-out property <bool> favourite;
+    // The playing track's stars, 0 to 5.
+    in-out property <int> rating;
+    in-out property <bool> bar-autohide;
+    // Settings > Window: the tray icon's bars move while music plays.
+    in-out property <bool> tray-animation: true;
+    // Settings > Window > Start with Windows (edition.rs, platform::integration): offered
+    // where the system has it; on when this exe is in the startup list. The portable edition
+    // says what it writes.
+    in-out property <bool> autostart-offered;
+    in-out property <bool> autostart;
+    in-out property <bool> portable;
+    // Settings > Window > Default app for music files: the installed edition only.
+    in-out property <bool> default-apps-offered;
+    // Whether the player bar is up (app.slint decides; the sidebars leave it room).
+    in-out property <bool> bar-up: true;
+    // Settings > Window > Show technical details, and the playing track's (metadata/details.rs):
+    // short for the player bar ("FLAC 24/96"), in full for now playing ("FLAC · 24-bit /
+    // 96 kHz · 2,915 kbps"), as a screen reader says it, and what reaches the device with
+    // the ReplayGain adjustment ("Output: 96 kHz, exclusive, 24-bit · ReplayGain -6.2 dB, track").
+    in-out property <bool> show-details;
+    in-out property <string> details-short;
+    in-out property <string> details-full;
+    in-out property <string> details-spoken;
+    in-out property <string> details-output;
+    // Settings > Playback > Crossfade (crossfade.rs).
+    in-out property <bool> crossfade;
+    in-out property <string> crossfade-secs: "6 s";
+    in-out property <bool> crossfade-albums: true;
+    in-out property <bool> crossfade-skips: true;
+    // A track from the server is loading: not started yet, or waiting for its download
+    // (playback.rs, `show_loading`).
+    in-out property <bool> buffering;
+    // Settings > Playback > Music from the server (server/streaming.rs): shown once there is a server
+    // or a cache; the cap ("2 GB") and the space used ("340 MB used").
+    in-out property <bool> stream-shown;
+    in-out property <string> stream-cap: "2 GB";
+    in-out property <string> stream-used;
+}
+
+// Settings > Equalizer (eq.rs): the setting that plays now (the playing device's own, or
+// the shared one), as the panel shows it.
+export global Equalizer {
+    in-out property <bool> on;
+    // The preset it is ("Bass boost"), or "Custom" once edited.
+    in-out property <string> preset: "Flat";
+    in-out property <bool> custom;
+    // The preset is one of the user's (it can be renamed and deleted).
+    in-out property <bool> is-user;
+    // The ten sliders (else the bands in full).
+    in-out property <bool> graphic: true;
+    // The sliders' gains (dB) and as text ("+4.5"); the closest ten when the curve is not them.
+    in-out property <[float]> gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    in-out property <[string]> gain-texts: ["0", "0", "0", "0", "0", "0", "0", "0", "0", "0"];
+    in-out property <[EqBandRow]> bands;
+    in-out property <bool> can-add: true;
+    in-out property <bool> auto-preamp: true;
+    // The preamp in effect ("-6.0 dB").
+    in-out property <string> preamp: "0 dB";
+    // The curve (path commands, view box 1000 x 240): the bands combined, the area under it
+    // to 0 dB, and with the preamp added ("" when that is 0 dB).
+    in-out property <string> curve;
+    in-out property <string> curve-fill;
+    in-out property <string> curve-total;
+    in-out property <float> zero-y: 0.5;
+    // "Drawn for 96 kHz, the rate playing", or "".
+    in-out property <string> rate-note;
+    // The device that plays ("" when not known), whether it has a setting of its own, and
+    // how many other devices do.
+    in-out property <string> device;
+    in-out property <bool> per-device;
+    in-out property <int> others;
+    // The sliders shown for a setting that is not them: what they cannot show ("" when they
+    // are the setting).
+    in-out property <string> graphic-note;
+    in-out property <int> max-bands: 32;
+}
+
+// What pasted or imported equalizer settings would do, before they apply (eq.rs).
+export global EqPreview {
+    // A read is going on (a GraphicEQ curve being fitted).
+    in-out property <bool> reading;
+    in-out property <string> title;
+    // "Equalizer APO text", "EasyEffects preset", "GraphicEQ curve"...
+    in-out property <string> format;
+    // "10 filters · preamp −4.3 dB".
+    in-out property <string> summary;
+    // At a glance: "Exact: plays as written", "2 things left out (below)"; its kind (0
+    // exact, 1 approximated, 2 something left out or a rough match).
+    in-out property <string> verdict;
+    in-out property <int> verdict-kind;
+    // Recognised but refused: why (only Close is offered).
+    in-out property <bool> refused;
+    in-out property <string> reason;
+    in-out property <[EqBandRow]> rows;
+    in-out property <[EqNote]> notes;
+    // The curves (view box 1000 x 240, as Equalizer.curve): what plays now, what would
+    // (and the area under it), a GraphicEQ's own curve ("" for none).
+    in-out property <string> curve-now;
+    in-out property <string> curve-new;
+    in-out property <string> curve-new-fill;
+    in-out property <string> curve-target;
+    in-out property <string> now-label;
+    // "Adds the preset “FiiO FT1” and plays it".
+    in-out property <string> name-line;
+    // Counts each time it is shown (the panel gives its answer the keyboard).
+    in-out property <int> shown;
+}
+
+export global Queue {
+    in-out property <[QueueRow]> rows;
+    in-out property <int> current: -1;
+    // "42 tracks · 2 h 51 min", or "" when empty.
+    in-out property <string> summary;
+}
+
+export global Library {
+    in-out property <bool> scanning;
+    // One short line (the sidebar's foot); the last scan's outcome when none runs.
+    in-out property <string> status;
+    // While a scan runs, for Settings > Library and an empty home: what it is doing (a title),
+    // how far (a line), and a note when the disk is slow or has stopped answering.
+    in-out property <string> status-title;
+    in-out property <string> status-detail;
+    in-out property <string> status-note;
+    // How far, 0..1; below 0 while that cannot be known yet (the walk still going).
+    in-out property <float> progress: -1;
+    // Stop was asked for: the scan writes what it has read and ends.
+    in-out property <bool> stopping;
+    // The last scan was stopped before its end: Rescan picks it up (so does the next start).
+    in-out property <bool> resumable;
+    // What the mass-removal guard kept in the library (empty: nothing).
+    in-out property <string> held;
+    // Some of it is missing (not only unreadable): "Remove missing tracks" would remove it.
+    in-out property <bool> held-removable;
+    in-out property <[string]> folders;
+    // Files the last scan could not read: "path: why".
+    in-out property <[string]> unreadable;
+    // Settings > Library > Edit tags (metadata/tagedit.rs), and what its undo history holds.
+    in-out property <bool> tag-editing;
+    in-out property <string> edit-history;
+}
+
+// The progress in the top right of Home (activity.rs): a scan of the folders or a sync with the
+// server, whichever runs. Once shown it stays a moment, and a job that ends runs its bar to full
+// before it goes (or the next job takes its place).
+export global Activity {
+    in-out property <bool> shown;
+    // Which: a sync with the server (a cloud), else a scan of the folders (a folder).
+    in-out property <bool> sync;
+    // What it does ("Syncing with the server", "Scanning your folders") and how far ("120 of
+    // 480 albums read"), 0..1; below 0 while that cannot be told.
+    in-out property <string> title;
+    in-out property <string> text;
+    in-out property <float> progress: -1;
+    // The job shown has ended: its last words, the bar at full.
+    in-out property <bool> done;
+}
+
+// The playing track's lyrics (lyrics/mod.rs), on the now playing page.
+export global Lyrics {
+    in-out property <[LyricLine]> lines;
+    in-out property <bool> synced;
+    // The line being sung (synced lyrics), or -1.
+    in-out property <int> current: -1;
+    // Said instead of lyrics ("No lyrics for this track..."); "" when there are some.
+    in-out property <string> status;
+    // The now playing panel shows lyrics instead of Up next (Y).
+    in-out property <bool> shown;
+    // The online lookup (LRCLIB), when the track has no lyrics of its own: "" (local
+    // lyrics, or none and the lookup is off), "looking", "found", "instrumental",
+    // "not-found", "offline", "failed", "rejected".
+    in-out property <string> online;
+    // The synced lyrics' timing offset for the playing track, ms (positive: later), and as
+    // shown ("+0.3 s"). Kept per track (lyrics/mod.rs).
+    in-out property <int> offset;
+    in-out property <string> offset-text: "0.0 s";
+    // Said under the lyrics after a Copy or a Save ("Saved D:\Music\...\01 Song.lrc."), or
+    // asked: `ask` is "replace" (Replace / Cancel), "tags" (Save / Cancel), or "" (a note, OK).
+    in-out property <string> notice;
+    in-out property <string> ask;
+    in-out property <bool> notice-attention;
+}
+
+// The visualizer (visualizer/mod.rs runs it, visualizer/draw.rs draws it, visualizer/look.rs is its look).
+// One stage shows at a time (`VisualizerStage` in vizstage.slint): behind Now playing, its
+// panel's tab, the full page, or the Settings preview. Each frame is a few paths in the
+// stage's logical pixels: the top box (`top-h` high, the bars rising from its foot) and
+// under it the reflection's (`refl-h`), with brushes Rust builds when the look changes.
+export global Visualizer {
+    in-out property <string> fill;
+    in-out property <string> caps;
+    in-out property <string> line;
+    in-out property <string> refl0;
+    in-out property <string> refl1;
+    in-out property <string> refl2;
+    in-out property <string> refl3;
+    in-out property <string> refl4;
+    in-out property <string> refl5;
+    // The ring's ripples: the contours that left the cover on a beat, on their way out.
+    in-out property <string> ripples;
+    in-out property <brush> ripples-brush;
+    // Sparks (the ring's, the bonfire's): the young ones' dots, the old ones', and the soft
+    // discs of light round them.
+    in-out property <string> sparks;
+    in-out property <string> sparks-old;
+    in-out property <string> sparks-glow;
+    in-out property <brush> sparks-brush;
+    in-out property <brush> sparks-old-brush;
+    in-out property <brush> sparks-glow-brush;
+    // What is in front of the cover (Saturn's near grains, with the sparks' brushes).
+    in-out property <string> front;
+    in-out property <string> front-glow;
+    in-out property <length> ripples-width: 1.5px;
+    // Bars sit on whole pixels: drawn without anti-aliasing (cheaper, as sharp).
+    in-out property <bool> crisp;
+    in-out property <brush> fill-brush;
+    in-out property <brush> caps-brush;
+    in-out property <brush> line-brush;
+    in-out property <brush> glow-brush;
+    in-out property <brush> refl-brush0;
+    in-out property <brush> refl-brush1;
+    in-out property <brush> refl-brush2;
+    in-out property <brush> refl-brush3;
+    in-out property <brush> refl-brush4;
+    in-out property <brush> refl-brush5;
+    // The halo's bloom behind the cover, and how bright it is now (with the low notes).
+    in-out property <brush> bloom-brush;
+    in-out property <float> pulse: 0.4;
+    in-out property <length> line-width: 2px;
+    in-out property <length> glow-width;
+    in-out property <length> top-h;
+    in-out property <length> refl-h;
+    // Drawing (between the first frame and coming to rest), and the preview's still frame.
+    in-out property <bool> active;
+    in-out property <bool> still;
+    // The stage's size, from the stage shown (Rust lays the frame out across it).
+    in-out property <length> stage-width;
+    in-out property <length> stage-height;
+    // The halo's hub on the stage shown (the cover it surrounds: its half size), which the
+    // stage lays out (VisualizerStage.hub).
+    in-out property <length> stage-hub;
+    // The look drawn is the halo (the ring style), around the cover's round shape or, with
+    // `square`, its rounded square (visualizer/mod.rs, MP_HALO_SHAPE).
+    in-out property <bool> ring;
+    in-out property <bool> square;
+    // The look drawn wants the page's whole height behind it (the bonfire: its sparks rise).
+    in-out property <bool> tall;
+    // The bench counts frames drawn (visualizer/mod.rs sets it on every frame).
+    in-out property <int> frame;
+
+    // Where it shows: 0 behind the page, 1 in the panel, 2 full page; and whether the
+    // panel's Visualizer tab is the one chosen.
+    in-out property <int> placement;
+    in-out property <bool> tab;
+    // The band behind the page: its reflection's height as a share of the bars' (0: none).
+    in-out property <float> refl-share;
+
+    // Settings > Visualizer: the preset (its index in `presets`: the built-in ones, then
+    // the user's; -1 for Custom) and its name, and each choice as the index of its option.
+    in-out property <int> preset;
+    in-out property <string> look-name: "Classic";
+    in-out property <[VizPresetRow]> presets: [
+        { name: "Classic", hint: "Bars in the cover's colour, quietly behind the page" },
+        { name: "Prism", hint: "A bright line in a soft spectrum over its reflection" },
+        { name: "Skyline", hint: "Fine bars, low notes in the middle, over a clear mirror" },
+        { name: "Calm", hint: "A slow, soft line" },
+        { name: "Bonfire", hint: "Sparks rising from a glowing line along the foot" },
+        { name: "Halo", hint: "A glowing ring around the cover, in its colours" },
+        { name: "Saturn", hint: "A tilted ring of dust in orbit round the cover" },
+        { name: "Galaxy", hint: "Two spiral arms of dust turning round the cover" },
+        { name: "Swarm", hint: "Dust in a whirl round the cover" },
+        { name: "Eclipse", hint: "A glow at the cover's rim, flares on the beat" },
+    ];
+    // The user's presets: how many; the one the look is ("" for none); the one it was chosen
+    // from and has changed since ("" for none: "Update" saves to it).
+    in-out property <int> user-count;
+    in-out property <string> user-current;
+    in-out property <string> user-based;
+    // A pasted or imported preset shown in the preview, waiting for the user's yes
+    // (visualizer/presets.rs): its name, whether one of the user's presets has that name (Replace or
+    // Keep both) or is that preset already (Use it), what the preview says; `trial-shown`
+    // counts each time one is shown (the preview gives its answer the keyboard).
+    in-out property <bool> trial;
+    in-out property <string> trial-name;
+    in-out property <bool> trial-taken;
+    in-out property <bool> trial-identical;
+    in-out property <string> trial-text;
+    in-out property <int> trial-shown;
+    out property <[string]> styles: ["Bars", "Line", "Ring", "Bonfire"];
+    // The kind of ring (its index in `visualizer::look::Style::RING`; -1 when the style is not Ring),
+    // whether its cover pulses with the beat, and how large the cover is drawn right now (1,
+    // or a little more at a beat).
+    in-out property <int> ring-kind: -1;
+    in-out property <bool> cover-pulse: true;
+    in-out property <float> cover-scale: 1.0;
+    out property <[{name: string, hint: string}]> schemes: [
+        { name: "Accent", hint: "The cover's colour, as the rest of the app" },
+        { name: "Cover", hint: "A gradient of the cover's own colours" },
+        { name: "Classic", hint: "Green, yellow and red, like a hardware meter" },
+        { name: "Prism", hint: "Soft pink through yellow and mint to lavender" },
+        { name: "Rainbow", hint: "Every hue" },
+        { name: "Ember", hint: "Deep red to glowing orange" },
+        { name: "Ice", hint: "Deep blue to white" },
+        { name: "Sunset", hint: "Violet, rose and peach" },
+        { name: "Custom", hint: "Three colours you choose" },
+    ];
+    in-out property <int> style;
+    in-out property <int> colours;
+    in-out property <int> colour-by;
+    in-out property <int> detail: 1;
+    in-out property <int> motion: 1;
+    in-out property <int> fps;
+    in-out property <bool> reflection: true;
+    in-out property <bool> peaks: true;
+    in-out property <bool> mirror;
+    // What the style has: a reflection, peaks, a mirrored layout.
+    in-out property <bool> reflects: true;
+    in-out property <bool> has-peaks: true;
+    in-out property <bool> can-mirror: true;
+    // The steppers' values as shown ("45%", "+3 dB").
+    in-out property <string> refl-size: "45%";
+    in-out property <string> refl-strength: "55%";
+    in-out property <string> sensitivity: "0 dB";
+    // The ring's swing ("100%").
+    in-out property <string> intensity: "100%";
+    // The opacity where it shows now ("40%"), and behind the page and elsewhere.
+    in-out property <string> opacity: "40%";
+    in-out property <string> opacity-behind: "40%";
+    in-out property <string> opacity-elsewhere: "100%";
+    // Each colour scheme's swatch (left to right), and the custom gradient's colours.
+    in-out property <[brush]> swatches;
+    in-out property <[color]> custom;
+    in-out property <[string]> custom-names;
+}
+
+// Settings: which section shows, and the filter box (settings/nav.rs, views.rs). The
+// section is part of the history entry (nav.rs, Route::Settings), not one of its own:
+// Back leaves Settings, and returns to the section it left.
+export global SettingsView {
+    // 0 Library, 1 Playback, 2 Equalizer, 3 Output, 4 Lyrics, 5 Visualizer, 6 Home,
+    // 7 Window, 8 Connections, 9 Keys, 10 About (settings::nav::SECTIONS).
+    in-out property <int> section;
+    // What is typed in "Find a setting", and what it finds (empty filter: none).
+    in-out property <string> filter;
+    in-out property <[SettingHit]> hits;
+    // A setting just jumped to from the filter: its row is outlined for a moment.
+    in-out property <string> highlight;
+    // The fixed header above the scrolling column (the title and its spacing).
+    out property <length> header: 72px;
+    // Where the column starts, in window coordinates (the page sets it): a control the
+    // Tab key reaches above it is scrolled down into view (views::reveal).
+    in-out property <length> column-top: 144px;
+    // A section's pinned card (the visualizer's preview, the equalizer's curve), which stays
+    // in view while the column scrolls: where its place in the column is (the section sets
+    // it, in the column's coordinates), whether it is beside the column (a wide page) or held
+    // at the column's top, and how much of the column's top it covers then (views::reveal
+    // keeps a control the Tab key reaches below it). The page sets the last two.
+    in-out property <length> pin-slot;
+    in-out property <bool> pin-side;
+    in-out property <length> pin-height;
+    in-out property <length> pin-cover;
+    // Home's "Connect Navidrome": Library's server sign-in is to be scrolled into view and its
+    // address focused (the card does it and clears this).
+    in-out property <bool> focus-server;
+}
+
+// Settings > About (about.rs). The version, the paths and the credits are set at start;
+// the system line, the sizes and the library's totals each time the section is shown.
+export global AboutView {
+    in property <image> icon;
+    in property <string> name;
+    in property <string> description;
+    in property <string> copyright;
+    // Which edition runs (edition.rs): "Portable: everything it keeps is in …".
+    in property <string> edition;
+    // "2026.11.15.3", or "2026.11.15-dev" for a build that is not a release (`dev`).
+    in property <string> version;
+    in property <bool> dev;
+    // "Windows 11 24H2 (build 26100.2605) · Skia (Direct3D 12 through wgpu)".
+    in property <string> system;
+    in property <[AboutFile]> files;
+    // Sizes and totals are being measured (the totals below are not in yet).
+    in property <bool> measuring: true;
+    in property <string> albums;
+    in property <string> tracks;
+    in property <string> length;
+    in property <string> size;
+    // Where the tracks are, with a server ("" without one): "… only in your folders, … only
+    // on the server, … in both".
+    in property <string> sources;
+    in property <[AboutCredit]> credits;
+    in property <string> credits-note;
+}
+
+// Settings > Output (output.rs).
+export global Output {
+    // The choice: "System default" or the device's name.
+    in-out property <string> device-label: "System default";
+    // Where it plays now, or why not where chosen.
+    in-out property <string> status;
+    in-out property <bool> exclusive;
+    // Not playing where chosen (the device is away, or exclusive mode fell back to
+    // shared): marked on the section list.
+    in-out property <bool> attention;
+    // With the details setting on and a track playing: what reaches the device
+    // ("Output: shared, 48 kHz (Windows resamples from 96 kHz)"); "" otherwise.
+    in-out property <string> stream;
+}
+
+// Settings > Connections > Discord (connections/presence.rs).
+export global Discord {
+    in-out property <bool> enabled;
+    // The field, and the application ID in use (they differ while one is being typed).
+    in-out property <string> app-id;
+    in-out property <string> applied-id;
+    // Where the connection stands: "Connected as Alice", and a line about it.
+    in-out property <string> title;
+    in-out property <string> status;
+    in-out property <bool> connected;
+    // Nothing is shown until the user acts (the application ID): marked on the section list.
+    in-out property <bool> attention;
+}
+
+// Settings > Connections > Last.fm (connections/scrobble.rs).
+export global LastFm {
+    in-out property <string> api-key;
+    in-out property <string> api-secret;
+    in-out property <string> status;
+    in-out property <bool> connected;
+    // Waiting for the user to allow access in the browser.
+    in-out property <bool> authorising;
+    in-out property <string> user;
+    // Scrobbling stopped and needs the user (connect again, check the key): marked on
+    // the section list.
+    in-out property <bool> attention;
+}
+
+// Settings > Connections > ListenBrainz (connections/listens.rs).
+export global ListenBrainz {
+    // The token field: emptied once connected (the token is kept sealed, never shown again).
+    in-out property <string> token;
+    // "Server address": empty for ListenBrainz's own (api.listenbrainz.org).
+    in-out property <string> server;
+    // The address typed is plain http: the connection is not encrypted.
+    in-out property <bool> plain-http;
+    // The address is a server of one's own: ListenBrainz's token page does not apply.
+    in-out property <bool> own-server;
+    in-out property <string> status;
+    in-out property <bool> connected;
+    // Checking a token.
+    in-out property <bool> connecting;
+    in-out property <string> user;
+    // The token is no longer accepted: marked on the section list.
+    in-out property <bool> attention;
+    // "Love favourites on ListenBrainz" (settings.json: listenbrainz_love).
+    in-out property <bool> love;
+}
+
+// Settings > Library > Server: a Navidrome (Subsonic) server beside the folders (server/mod.rs).
+export global Server {
+    // The sign-in fields. The password is cleared as soon as Connect takes it.
+    in-out property <string> address;
+    in-out property <string> user;
+    in-out property <string> password;
+    // The address typed is plain http: the connection is not encrypted.
+    in-out property <bool> plain-http;
+    in-out property <bool> signed-in;
+    // Where the server's music in the library comes from, as the cloud's tooltip says it:
+    // the address without its scheme ("music.example.org/nd"); "" with no server's music.
+    in-out property <string> host;
+    in-out property <bool> signing-in;
+    // Why the last sign-in did not work; "" when it did.
+    in-out property <string> error;
+    // A sync, or signing out's removal, is running.
+    in-out property <bool> busy;
+    in-out property <bool> stopping;
+    // The status card: who and what, the counts and when last synced (or what it does now),
+    // and a quieter line (what is wrong, quietly).
+    in-out property <string> title;
+    in-out property <string> status;
+    in-out property <string> detail;
+    // How far a sync is, 0..1; below 0 when that cannot be told.
+    in-out property <float> progress: -1;
+    // The sidebar's line while busy.
+    in-out property <string> short;
+    // What the shrink guard kept (empty: nothing).
+    in-out property <string> held;
+    // Signed out, but the library still shows a server's music (a sign-in that no longer
+    // opens here, or that the server refused): what to do about it.
+    in-out property <string> leftover;
+    // Something needs the user (sign in again): marked on Settings' section list.
+    in-out property <bool> attention;
+    // The switches below the sign-in (settings.json: server_marks, server_plays, server_lastfm).
+    in-out property <bool> sync-marks: true;
+    in-out property <bool> report-plays: true;
+    in-out property <bool> lastfm-scrobbles: true;
+}
+
+export global ShelfEditor {
+    in-out property <[ShelfEdit]> rows;
+    in-out property <[NamedCount]> genres;
+    in-out property <[NamedCount]> labels;
+    in-out property <[PlaylistRow]> playlists;
+}
+
+// The blurred art behind everything: the open album's on its page, otherwise
+// the playing album's.
+export global Backdrop {
+    in-out property <image> image;
+    in-out property <bool> visible;
+}
+
+// Middle-click autoscroll (autoscroll.rs runs the mode; autoscroll.slint the areas).
+// A middle press bumps `probe` with the anchor; every scroll area under it claims the
+// axes it can scroll (the highest layer, then the smallest area, wins each axis), and
+// panels over the page raise `top-layer` so what is under them does not count. The area
+// holding an axis scrolls itself each frame at `vx` / `vy` while the mode is on.
+export global Autoscroll {
+    // Settings > Window > Middle-click scrolling.
+    in-out property <bool> enabled: true;
+    in-out property <bool> on;
+    // The middle press, in window coordinates.
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <int> probe;
+    // Claim tokens: an area holding an axis keeps the token it was given.
+    in-out property <int> serial;
+    in-out property <int> top-layer: -1;
+    in-out property <int> x-owner;
+    in-out property <int> x-layer: -1;
+    in-out property <float> x-area;
+    in-out property <int> y-owner;
+    in-out property <int> y-layer: -1;
+    in-out property <float> y-area;
+    out property <bool> has-x: x-owner > 0 && x-layer >= top-layer;
+    out property <bool> has-y: y-owner > 0 && y-layer >= top-layer;
+    // On, and something under the press scrolls: the mark and the scroll cursor show.
+    out property <bool> engaged: on && (has-x || has-y);
+    // Logical px per second; positive toward the content's end (right, down).
+    in-out property <float> vx;
+    in-out property <float> vy;
+    // Something took the user elsewhere (a page change): end it.
+    callback stop();
+    // For the bench: where the area holding each axis is (content-x / -y, and its end,
+    // the most negative it goes), and frames stepped so far.
+    in-out property <length> at-x;
+    in-out property <length> at-y;
+    in-out property <length> end-x;
+    in-out property <length> end-y;
+    in-out property <int> frames;
+}
+
+export global Actions {
+    // Navigation targets.
+    callback open-album(int);
+    callback open-artist(string);
+    // A credit as links (views::artist_links): the credited artists of the track or album
+    // ("track" or "album", its id; 0 for a file from outside) where they stand in the
+    // credit as shown, the rest plain text.
+    pure callback artist-links(string, int, string) -> [ArtistLink];
+    // An artist tile of the Artists page (or a search's artists in full), by its place.
+    callback open-artist-at(int);
+    // A hero shelf (by its place in the settings) features its album at this index.
+    callback hero-select(int, int);
+    callback open-playlist(int);
+
+    // Albums.
+    callback play-album(int);
+    callback shuffle-album(int);
+    callback enqueue-album(int, bool /* next */);
+    callback toggle-favourite-album(int);
+    callback add-album-to-playlist(int /* album */, int /* playlist */);
+
+    // Track lists. `ctx` names the list on screen: "album", "artist", "search", "playlist".
+    callback play-in(string /* ctx */, int /* index */);
+    // The list on screen, shuffled (a playlist page's Shuffle).
+    callback shuffle-in(string /* ctx */);
+    callback enqueue-in(string, int, bool /* next */);
+    callback favourite-in(string, int);
+    callback add-to-playlist(string, int, int /* playlist id */);
+    // The selection of a list (selected.rs; `ctx` as above, "queue" for the queue): the left
+    // button down on a row with Ctrl / Shift; that press ended as a click; the keyboard cursor
+    // moved (Shift: stretching it); Ctrl+A; Esc (-> something was chosen); Delete in a
+    // playlist or the queue (the rows chosen, else the one at the cursor).
+    callback select-press(string, int, bool /* ctrl */, bool /* shift */);
+    callback select-release(string, int);
+    callback select-cursor(string, int /* from */, int /* to */, bool /* extend */);
+    callback select-all(string);
+    callback select-clear(string) -> bool;
+    callback delete-selected(string, int /* cursor */);
+
+    // Transport.
+    callback toggle-play();
+    callback next();
+    callback previous();
+    callback seek(float /* seconds */);
+    // A seek while dragging: throttled, the last one always lands.
+    callback scrub(float /* seconds */);
+    callback seek-by(float);
+    callback set-volume(float);
+    callback toggle-mute();
+    callback cycle-gain();
+    // ReplayGain set directly: 0 off, 1 track, 2 album (Settings' segmented control).
+    callback set-gain-mode(int);
+    callback preamp-step(int /* dB, +1 or -1 */);
+    callback toggle-limit-peaks();
+    // Settings > Playback > Crossfade.
+    callback crossfade-toggle();
+    callback crossfade-step(int);
+    callback crossfade-album-toggle();
+    callback crossfade-skip-toggle();
+    // Settings > Playback > Music from the server.
+    callback stream-cap-step(int);
+    callback stream-clear();
+    // Settings > Equalizer (eq.rs): on / off; a slider to a gain (dB); the preset menu
+    // under its button; graphic (0) or parametric (1); everything flat; a band's kind, a
+    // step of its frequency, gain or Q ("freq", "gain", "q"), removing it, adding one; the
+    // preamp auto (0) or by hand (1) and its steps; a setting of the playing device's own.
+    callback eq-toggle();
+    callback eq-gain(int, float);
+    callback eq-preset-menu(length, length);
+    callback eq-mode(int);
+    callback eq-reset();
+    callback eq-band-kind(int, int);
+    callback eq-band-step(int, string, int);
+    callback eq-band-remove(int);
+    callback eq-band-add();
+    callback eq-preamp-mode(int);
+    callback eq-preamp-step(int);
+    callback eq-per-device();
+    // Copy (Equalizer APO text), "Copy as…" (its menu at the button), Paste, a band's kind
+    // menu, and the paste preview's Apply and Cancel.
+    callback eq-copy();
+    callback eq-copy-menu(length, length);
+    callback eq-paste();
+    callback eq-band-kind-menu(int, length, length);
+    callback eq-preview-accept();
+    callback eq-preview-cancel();
+    // The player bar's button: Settings > Equalizer.
+    callback open-equalizer();
+    // Settings > Output: the device menu, under its button; exclusive mode on or off.
+    callback output-menu(length, length);
+    callback toggle-exclusive();
+    // Play from a line of synced lyrics.
+    callback lyrics-seek(int);
+    // Lyrics found online: they are wrong (drop them, do not look this track up again);
+    // look up again (after "not found", "offline", a rejection).
+    callback lyrics-reject();
+    callback lyrics-retry();
+    // The Lyrics tab (lyrics/mod.rs, lyrics/save.rs): its "⋯" menu at a window point (from the
+    // keyboard: true); the timing moved by steps of 0.1 s (- earlier, + later), and reset;
+    // the answer to the question under the lyrics ("replace", "tags", "cancel", "ok").
+    callback lyrics-menu(length, length, bool);
+    callback lyrics-nudge(int);
+    callback lyrics-reset-offset();
+    callback lyrics-answer(string);
+    // Settings > Now playing.
+    callback toggle-lyrics-online();
+    callback toggle-visualizer();
+    // A visualizer stage was shown or resized, or the panel's tab chosen (visualizer/mod.rs
+    // decides whether to run).
+    callback visualizer-wake();
+    // Settings > Visualizer (visualizer/mod.rs): a preset by index; a choice ("style",
+    // "colours", "colour_by", "detail", "motion", "placement", "fps") by the index of its
+    // option; a switch ("reflection", "peaks", "mirror"); a stepper ("size", "strength",
+    // "sensitivity", "opacity": where it shows now) by +1 or -1; a custom colour's slot
+    // stepped; Reset.
+    callback viz-preset(int);
+    callback viz-choose(string, int);
+    callback viz-toggle(string);
+    callback viz-step(string, int);
+    callback viz-custom(int, int);
+    callback viz-reset();
+    // Now playing's visualizer menu, at a window point (from the keyboard: true).
+    callback viz-menu(length, length, bool);
+    // Settings > Visualizer's preset menu (visualizer/presets.rs), under its button; the preview's
+    // answer to a pasted or imported preset ("add", "replace", "keep", "use", "cancel").
+    callback viz-presets-menu(length, length);
+    callback viz-trial(string);
+    // Settings > Connections.
+    callback lastfm-connect(string /* api key */, string /* shared secret */);
+    callback lastfm-cancel();
+    callback lastfm-disconnect();
+    callback lastfm-retry();
+    callback listenbrainz-connect(string /* token */, string /* server address */);
+    callback listenbrainz-disconnect();
+    callback listenbrainz-retry();
+    // Open ListenBrainz's settings page, where the token is (never from a bench run).
+    callback listenbrainz-token-page();
+    callback listenbrainz-server-edited(string);
+    callback toggle-listenbrainz-love();
+    // The Discord switch and application ID as they should now be.
+    callback discord-set(bool /* on */, string /* application id */);
+    callback toggle-prevent-clipping();
+    callback toggle-close-action();
+    callback toggle-tray-click();
+    // Settings > Window.
+    callback toggle-autoscroll();
+    callback toggle-tray-animation();
+    callback toggle-autostart();
+    callback choose-default-apps();
+    callback toggle-details();
+    callback cycle-repeat();
+    callback toggle-shuffle();
+    callback toggle-favourite-current();
+    // The rating menu for the playing track, at a window point.
+    callback rating-menu(length, length);
+
+    // Queue.
+    callback queue-play(int);
+    callback queue-remove(int);
+    callback queue-clear();
+    // Context menus: kind is "album" (id), "track" (ctx, index), "queue" (index) or
+    // "playlist" (id); x/y in window coordinates.
+    callback menu-request(string /* kind */, string /* ctx */, int /* index */, int /* id */, length, length);
+    // The same from the keyboard: the first entry is highlighted, and the list keeps the
+    // focus (MenuStore.from-keys).
+    callback menu-request-keys(string, string, int, int, length, length);
+    callback menu-activate(int /* entry */, int /* submenu entry, or -1 */);
+    callback menu-key(string);
+    // Open entry i's submenu beside it (menus.rs fills its rows).
+    callback menu-sub(int);
+    // Drag and drop. Payloads are built and read in Rust (`dnd.rs`).
+    pure callback album-payload(int /* album id */) -> data-transfer;
+    pure callback track-payload(string /* ctx */, int /* index */) -> data-transfer;
+    pure callback queue-payload(int /* queue index */) -> data-transfer;
+    pure callback accepts(data-transfer) -> bool;
+    // Insert albums/tracks, or move a queue row, so it lands at `index`.
+    callback queue-drop(data-transfer, int /* index */);
+
+    callback search(string);
+    // A search section in full: "albums", "artists" or "tracks".
+    callback search-all(string);
+    // "Save as smart playlist" on a search with operators: the editor, with the query's rules.
+    callback search-save-smart();
+
+    // Browse.
+    // A genre's (or, on the Labels page, a label's) albums.
+    callback open-group(string);
+    callback grid-filter(string);
+    // The sort menu, at a window point; the direction button.
+    callback grid-sort-menu(length, length);
+    callback grid-toggle-direction();
+
+    // Keyboard. A key nothing on the page took: true when it was a shortcut
+    // (keys/shortcuts.rs). Text fields keep their keys (widgets.slint, TypingScope).
+    callback shortcut(string /* text */, bool /* control */, bool /* shift */, bool /* alt */) -> bool;
+    // Where the arrow and paging keys move a list's cursor (shortcuts::list_key):
+    // `layout` 0 vertical, 1 horizontal, 2 grid of `cols`; `page` rows per screen. -1 when
+    // the key does not move it.
+    pure callback list-key(string /* text */, int /* index */, int /* count */, int /* layout */, int /* cols */, int /* page */) -> int;
+    // Scroll the page so a control that took the focus from the keyboard shows (window
+    // coordinates).
+    callback reveal(length /* y */, length /* height */);
+
+    // Library folders.
+    callback add-folder();
+    // Home's "Connect Navidrome": Settings > Library, the server's sign-in (server/mod.rs).
+    callback server-open-sign-in();
+    callback remove-folder(int);
+    callback rescan();
+    // Stop the running scan: what it has read stays, the rest is read at the next scan.
+    callback stop-scan();
+    // Remove the missing tracks the guard held back.
+    callback confirm-removal();
+    // Settings > Library > Server (server/mod.rs).
+    callback server-connect(string /* address */, string /* user */, string /* password */);
+    callback server-address-edited(string);
+    callback server-sync();
+    callback server-stop();
+    callback server-sign-out();
+    // Settings > Library > Server's switches: 0 favourites and ratings, 1 plays, 2 Last.fm.
+    callback server-toggle(int);
+    // Remove what the server no longer lists, which the shrink guard kept.
+    callback server-confirm-removal();
+    callback shelf-reshuffle(int);
+    // Open a home shelf in full (by its index), and reshuffle the open one.
+    callback shelf-open(int);
+    callback shelf-page-reshuffle();
+    callback toggle-bar-autohide();
+    // Settings > Window > Interface size: a step of the ladder (+1 / -1), or 0 for 100%.
+    callback zoom-step(int);
+
+    // Settings: show a section (replaces the history entry's section; scroll to the top);
+    // the filter box's text changed; go to a setting the filter found (its section,
+    // and outline its row).
+    callback settings-section(int);
+    callback settings-filter(string);
+    callback settings-jump(int /* section */, string /* label */);
+    // Settings > About: copy the version line for a bug report; open a place's folder
+    // (AboutView.files order).
+    callback about-copy();
+    // Settings > About: everything a problem report needs, on the clipboard (`about::diagnostics`).
+    callback about-diagnostics();
+    callback about-open(int);
+
+    // Settings > Keys: wait for a key for a row's slot; the key pressed meanwhile (text
+    // and Ctrl, Shift, Alt); stop waiting; leave the slot without a key; take the key
+    // from the action that has it; reset a row, or all.
+    callback key-capture(int /* row */, int /* slot */);
+    callback key-captured(string, bool, bool, bool);
+    callback key-capture-cancel();
+    callback key-clear();
+    callback key-reassign();
+    callback key-reset(int /* row */);
+    callback key-reset-all();
+
+    // Playlists.
+    callback create-playlist(string);
+    // The smart playlist editor, for a new one.
+    callback new-smart-playlist();
+    callback delete-playlist(int);
+    callback rename-playlist(int, string);
+    callback playlist-remove(int /* index */);
+    // Drag reorder on the playlist page: the row at `from` dropped on the line before `at`.
+    callback playlist-move(int /* from */, int /* at */);
+    // Albums or tracks dropped on a playlist in the sidebar: appended to it.
+    callback playlist-drop(data-transfer, int /* playlist id */);
+    // ...dropped on the sidebar's Playlists heading or the empty space below its list: a
+    // new playlist for them (the name prompt, at the drop point).
+    callback playlist-drop-new(data-transfer, length, length);
+    // The name prompt (Dialog): the name was edited; confirmed (Enter or the button);
+    // cancelled (Esc, Cancel, a click outside).
+    callback prompt-edited(string);
+    callback prompt-confirm(string);
+    callback prompt-cancel();
+    // The clash prompt's answer (playlists/nameclash.rs): 0 Cancel, 1 Replace, 2 Keep both; and whether
+    // it stands for the rest of the batch.
+    callback clash-choose(int, bool);
+    // View metadata (metadata/view.rs): close; copy a row, or everything; show the file or folder
+    // in Explorer; Enter or a click on a row (open a track, list more, expand, copy); fold
+    // or expand a long value; the list's keys; back to the album; a click on a row.
+    callback meta-close();
+    callback meta-copy(int);
+    callback meta-copy-all();
+    callback meta-explore();
+    callback meta-activate(int);
+    callback meta-toggle(int);
+    callback meta-key(string);
+    callback meta-back();
+    callback meta-select(int);
+    // Tag editing in View metadata (metadata/view.rs, metadata/tagedit.rs): edit a row; a value typed
+    // (slot, text); commit (Enter), cancel (Esc), the next value or field (slot, +1/-1:
+    // Tab, Shift+Tab), the row above or below (a table row: Up, Down); add a value after
+    // a slot, remove one, move one (slot, +1/-1); remove a row's field (Delete); review
+    // and save (Ctrl+S), save, cancel the save, back to editing, discard, the result's
+    // Done and its undo, discard and close; keys the panel did not take (-> taken).
+    callback meta-edit(int);
+    callback meta-edit-text(int, string);
+    callback meta-edit-commit();
+    callback meta-edit-cancel();
+    callback meta-edit-next(int, int);
+    callback meta-edit-vertical(int);
+    callback meta-edit-add(int);
+    callback meta-edit-remove(int);
+    callback meta-edit-move(int, int);
+    callback meta-remove-field(int);
+    callback meta-review();
+    callback meta-save();
+    callback meta-cancel-save();
+    callback meta-back-to-edit();
+    callback meta-discard();
+    callback meta-result-done();
+    callback meta-undo-result();
+    callback meta-discard-close();
+    callback meta-shortcut(string, bool, bool, bool) -> bool;
+    // Settings > Library: tag editing on or off; clear its undo history.
+    callback toggle-tag-editing();
+    callback clear-edit-history();
+    // A row of the open playlist dragged to the line before `at` on its page.
+    callback playlist-reorder(data-transfer, int /* at */);
+    // Playlist files: import an M3U / M3U8; the export menu under a playlist's button.
+    callback import-playlist();
+    callback import-playlist-dismiss();
+    callback playlist-export-menu(int /* playlist id */, length, length);
+    // A drag payload that is a row of the open playlist (it can be reordered there).
+    pure callback is-playlist-row(data-transfer) -> bool;
+
+    // Shelf editor.
+    callback shelf-move(int, int /* delta */);
+    callback shelf-toggle(int);
+    callback shelf-remove(int);
+    callback shelf-layout(int, ShelfLayout);
+    callback shelf-limit(int, int);
+    callback shelf-title(int, string);
+    callback shelf-add(string /* kind */, string /* param */);
+    callback shelves-reset();
+}
+
+// A smart playlist's page (playlists/smart.rs): its rules in words, and what they hold now. It is
+// worked out off the UI thread and again when what it depends on changes (a scan, a
+// rating, a favourite, a play); the queue already made from it stays as it was.
+export global SmartList {
+    in-out property <int> id: -1;
+    in-out property <string> name;
+    in-out property <string> summary;
+    // "142 tracks · 9 h 12 min", or "Working it out…" the first time.
+    in-out property <string> info;
+    // What in its rules this version cannot use, in words.
+    in-out property <[string]> problems;
+    in-out property <[TrackRow]> tracks;
+    // A random order or selection: Reshuffle is offered.
+    in-out property <bool> random;
+    // Bumped to rename it in place (its menu's Rename).
+    in-out property <int> rename-seq;
+    callback play(bool /* shuffled */);
+    callback edit();
+    callback reshuffle();
+    // Its menu (Rename, Duplicate, Save as playlist, Export), under the button.
+    callback more(length, length);
+    callback rename(string);
+    callback delete();
+    // Delete on a row: why nothing is removed.
+    callback hint();
+}
+
+// The smart playlist editor (playlists/smart.rs, playlists/smartedit.rs). Its lines are `rows` (the rules, with
+// "match all / any" first) and `tail` (the order and the limit); a control is named by its
+// line's key (its place in `rows`, or 1000 + its place in `tail`) and its role.
+export global SmartEdit {
+    in-out property <bool> is-new;
+    in-out property <string> name;
+    in-out property <string> name-error;
+    in-out property <[SmartRow]> rows;
+    in-out property <[SmartRow]> tail;
+    // Starting points (a new playlist only), in two rows.
+    in-out property <[string]> templates;
+    in-out property <[string]> templates-more;
+    // "Matches 142 tracks · 9 h 12 min", "Working it out…", or what to fix first.
+    in-out property <string> count;
+    in-out property <bool> count-attention;
+    in-out property <string> preview-note;
+    in-out property <[TrackRow]> preview;
+    in-out property <string> save-error;
+    in-out property <bool> can-duplicate;
+    // The control to give the keyboard (after adding a rule, after a list closes): its
+    // line's key and its role. Bumped.
+    in-out property <int> focus-key: -1;
+    in-out property <int> focus-role: -1;
+    in-out property <int> focus-seq;
+    // Bumped to give the name field the keyboard.
+    in-out property <int> name-focus-seq;
+    callback name-edited(string);
+    // A choice's list, under it (window coordinates).
+    callback open-choice(int /* key */, int /* role */, length, length);
+    callback text-edited(int /* key */, int /* role */, string);
+    callback stars(int /* key */, int /* role */, int /* +1 / -1 */);
+    callback toggle(int /* key */, int /* role */);
+    // A rule at the end of a group (its heading's key), or of the top (-1).
+    callback add-rule(int);
+    callback add-group();
+    callback remove(int /* key */);
+    callback move(int /* key */, int /* -1 / +1 */);
+    callback template(int);
+    callback save();
+    callback cancel();
+    callback duplicate();
+}
+
+// The list a choice of the smart playlist editor opens (smart.slint, `SmartPicker`): its
+// entries (filtered as typed when `filterable`), the one in effect, the one the keys are on.
+export global Picker {
+    in-out property <bool> open;
+    // Where it opens (under its control), window coordinates, and its least width.
+    in-out property <length> x;
+    in-out property <length> y;
+    in-out property <length> min-width: 220px;
+    in-out property <string> title;
+    in-out property <bool> filterable;
+    in-out property <string> filter;
+    in-out property <[string]> items;
+    in-out property <int> checked: -1;
+    in-out property <int> highlight;
+    callback filter-edited(string);
+    callback pick(int);
+    callback close();
+}
+
+// The words that name the system the app runs on ("Show in Explorer" on Windows, "Show in
+// file manager" on Linux; Windows' "Exclusive mode" is "Bit-perfect playback" on Linux),
+// set from Rust at start (`platform::Words`).
+export global PlatformWords {
+    in-out property <string> show-in: "Show in Explorer";
+    in-out property <string> show-file: "Show the file in Explorer";
+    in-out property <string> show-folder: "Show the album's folder in Explorer";
+    in-out property <string> open-folder-in: " in Explorer";
+    in-out property <string> copy-names: "Windows";
+    in-out property <string> copy-label: "Copy the version, Windows version and renderer, for a bug report";
+    in-out property <string> exclusive-title: "Exclusive mode";
+    in-out property <string> exclusive-hint;
+    in-out property <string> exclusive-more;
+    // Settings > Window, the setting that starts the app with the session.
+    in-out property <string> autostart: "Start with Windows";
+    in-out property <string> autostart-more: "Windows' Startup apps (Settings > Apps > Startup, or Task Manager) can turn it off too; turned off there, it shows off here.";
+}

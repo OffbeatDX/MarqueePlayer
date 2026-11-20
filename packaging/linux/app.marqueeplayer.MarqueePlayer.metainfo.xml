@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata (https://www.freedesktop.org/software/appstream/docs/): what software
+     centres and AppImage catalogues show. Install as
+     share/metainfo/app.marqueeplayer.MarqueePlayer.metainfo.xml. -->
+<component type="desktop-application">
+  <id>app.marqueeplayer.MarqueePlayer</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Marquee Player</name>
+  <summary>Play your music library, artwork first</summary>
+  <developer id="app.marqueeplayer">
+    <name>Offbeat</name>
+  </developer>
+  <description>
+    <p>
+      A local-first music player for the music on your own disks: it scans your folders into
+      a library of albums, artists and genres, and shows it cover first.
+    </p>
+    <ul>
+      <li>Gapless playback, ReplayGain, an equalizer that imports AutoEq and Equalizer APO files, crossfades</li>
+      <li>Opus, FLAC, MP3, Ogg Vorbis, AAC and ALAC, WAV and AIFF</li>
+      <li>Playlists and smart playlists, ratings, favourites, home shelves</li>
+      <li>Lyrics from local files or LRCLIB, a visualizer, Last.fm scrobbling, Discord Rich Presence</li>
+      <li>Media keys and the desktop's media controls (MPRIS), a tray icon</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">app.marqueeplayer.MarqueePlayer.desktop</launchable>
+  <icon type="stock">app.marqueeplayer.MarqueePlayer</icon>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <provides>
+    <binary>MarqueePlayer</binary>
+    <mediatype>audio/flac</mediatype>
+    <mediatype>audio/mpeg</mediatype>
+    <mediatype>audio/ogg</mediatype>
+    <mediatype>audio/opus</mediatype>
+    <mediatype>audio/mp4</mediatype>
+    <mediatype>audio/x-wav</mediatype>
+    <mediatype>audio/x-aiff</mediatype>
+  </provides>
+  <requires>
+    <display_length compare="ge">960</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0" date="2026-11-16" type="development"/>
+  </releases>
+</component>

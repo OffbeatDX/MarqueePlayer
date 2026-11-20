@@ -1,0 +1,8 @@
+# Batch files need CRLF line endings: cmd mis-reads labels in LF-only files.
+*.bat text eol=crlf
+# Linux packaging files are used on Linux: LF even in a Windows checkout (a shell script
+# with CRLF does not run).
+packaging/linux/** text eol=lf
+*.sh text eol=lf
+*.png binary
+*.webp binary

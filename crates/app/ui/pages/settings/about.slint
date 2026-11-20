@@ -1,0 +1,151 @@
+// Settings > About.
+
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { Player, Actions, AboutView, PlatformWords } from "../../stores.slint";
+import { Icons, IconButton, TextButton, SettingCard, SettingRow, Hairline } from "../../widgets.slint";
+import { SectionHead } from "parts.slint";
+
+// ---- About ---------------------------------------------------------------------
+
+// The version, where the app keeps its files, the library at a glance, and what it is
+// built on (about.rs). Sizes and totals arrive a moment after the section is shown.
+component AboutValue inherits Text {
+    color: Theme.text;
+    horizontal-alignment: right;
+}
+
+export component AboutSection inherits VerticalLayout {
+    // A narrow column (sidebars pinned on a small window): "Open folder" is its icon alone.
+    private property <bool> narrow: root.width < 520px;
+    spacing: 16px;
+    SectionHead { title: "About"; blurb: "The version, where your files are kept, and what Marquee Player is built on."; }
+    SettingCard {
+        accessible-label: AboutView.name;
+        HorizontalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 18px;
+            padding-bottom: 16px;
+            spacing: 18px;
+            Image {
+                source: AboutView.icon;
+                width: 64px;
+                height: 64px;
+                y: (parent.height - self.height) / 2;
+                accessible-role: none;
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 3px;
+                Text { text: AboutView.name; font-size: Theme.font-heading; font-weight: 700; color: Theme.text; }
+                Text { text: AboutView.description; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+                Text { text: AboutView.copyright; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+            }
+        }
+        SettingRow {
+            label: "Version " + AboutView.version;
+            find-key: "Version";
+            hint: (AboutView.dev ? "A development build, not a release. " : "") + AboutView.system + "\n" + AboutView.edition;
+            more: "Copy puts one line on the clipboard with the version, " + PlatformWords.copy-names + " and the renderer, to paste into a bug report. Nothing is sent anywhere.";
+            TextButton {
+                text: "Copy";
+                glyph: Icons.copy;
+                label: PlatformWords.copy-label;
+                clicked => { Actions.about-copy(); }
+            }
+        }
+        SettingRow {
+            label: "Report a problem";
+            find-key: "Report a problem";
+            hint: "Copy diagnostics, then paste them into an issue on the project's page.";
+            more: "The diagnostics are the version, " + PlatformWords.copy-names + ", the renderer, the sound device and format, the size of your library, a few settings, and the end of this run's and the previous run's logs, with your user name and home folder taken out. Read them before you send them; nothing is sent by Marquee Player itself.";
+            TextButton {
+                text: "Copy diagnostics";
+                glyph: Icons.copy;
+                label: "Copy diagnostics for a problem report";
+                clicked => { Actions.about-diagnostics(); }
+            }
+        }
+    }
+    SettingCard {
+        title: "Where your files are";
+        note: "Your music folders are only ever read. Everything Marquee Player writes is in these places; quit it before moving or deleting any of them.";
+        for f[i] in AboutView.files: SettingRow {
+            label: f.what;
+            hint: f.path + "\n" + f.detail;
+            if !root.narrow: TextButton {
+                text: "Open folder";
+                glyph: Icons.folder;
+                label: "Open the folder of the " + f.what + PlatformWords.open-folder-in;
+                clicked => { Actions.about-open(i); }
+            }
+            if root.narrow: IconButton {
+                glyph: Icons.folder;
+                size: 36px;
+                icon-size: 18px;
+                tooltip: "Open folder";
+                label: "Open the folder of the " + f.what + PlatformWords.open-folder-in;
+                clicked => { Actions.about-open(i); }
+            }
+        }
+    }
+    SettingCard {
+        title: "Your library";
+        note: AboutView.measuring ? "Counting\u{2026}" : "";
+        SettingRow {
+            label: "Albums";
+            AboutValue { text: AboutView.measuring ? "\u{2026}" : AboutView.albums; }
+        }
+        SettingRow {
+            label: "Tracks";
+            AboutValue { text: AboutView.measuring ? "\u{2026}" : AboutView.tracks; }
+        }
+        SettingRow {
+            label: "Length";
+            hint: "Every track, end to end.";
+            AboutValue { text: AboutView.measuring ? "\u{2026}" : AboutView.length; }
+        }
+        SettingRow {
+            label: "Size of the music files";
+            hint: AboutView.sources != "" ? "As the last scan and sync found them, the server's files included." : "As the last scan found them.";
+            AboutValue { text: AboutView.measuring ? "\u{2026}" : AboutView.size; }
+        }
+        if AboutView.sources != "": SettingRow {
+            label: "Where they are";
+            hint: AboutView.measuring ? "\u{2026}" : AboutView.sources;
+        }
+    }
+    SettingCard {
+        title: "Built with";
+        note: "Marquee Player is built on open-source software. Thank you to everyone who makes it.";
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-bottom: 4px;
+            alignment: start;
+            // Slint's badge: a credit (the app uses Slint under the GPL, which does not ask for it).
+            AboutSlint { }
+        }
+        for c in AboutView.credits: Rectangle {
+            height: clay.preferred-height;
+            Hairline { y: 0; width: parent.width; }
+            clay := VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+                spacing: 2px;
+                Text { text: c.name; font-size: Theme.font-body; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+                Text { text: c.what; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+                Text { text: c.licence; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+            }
+        }
+        Hairline { }
+        VerticalLayout {
+            padding: 20px;
+            padding-top: 12px;
+            padding-bottom: 16px;
+            Text { text: AboutView.credits-note; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+        }
+    }
+}

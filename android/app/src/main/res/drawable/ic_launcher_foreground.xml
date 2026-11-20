@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The desktop's icon glyph (crates/app/src/icon_art.rs): a sound wave of five round bars in amber
+     running to pink, on the 108 dp adaptive grid (inside the 66 dp safe zone). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M27.6,49.2a3.6,3.6 0,0 1,7.2,0V58.8a3.6,3.6 0,0 1,-7.2,0ZM39,39a3.6,3.6 0,0 1,7.2,0V69a3.6,3.6 0,0 1,-7.2,0ZM50.4,31.8a3.6,3.6 0,0 1,7.2,0V76.2a3.6,3.6 0,0 1,-7.2,0ZM61.8,42a3.6,3.6 0,0 1,7.2,0V66a3.6,3.6 0,0 1,-7.2,0ZM73.2,48a3.6,3.6 0,0 1,7.2,0V60a3.6,3.6 0,0 1,-7.2,0Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="32.88"
+                android:startY="28.2"
+                android:endX="75.12"
+                android:endY="79.8"
+                android:startColor="#FFFFC65C"
+                android:endColor="#FFFF4DB8" />
+        </aapt:attr>
+    </path>
+</vector>

@@ -1,0 +1,17 @@
+# Gradle and build output
+.gradle/
+.kotlin/
+build/
+dist/
+# Machine-specific
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+# Never in the repo: credentials and keys
+*.jks
+*.keystore
+test-server.properties
+keystore.properties

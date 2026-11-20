@@ -1,0 +1,798 @@
+import { Theme } from "theme.slint";
+import { Page } from "types.slint";
+import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer } from "stores.slint";
+import { Icon, Icons, IconButton, Cover, Slider, ArtistLinks, LinkText, FocusRing, FocusTarget } from "widgets.slint";
+import { QueueList } from "lists.slint";
+import { AutoFlickable, AutoscrollBlock } from "autoscroll.slint";
+
+component NavItem inherits Rectangle {
+    in property <string> glyph;
+    in property <string> text;
+    in property <bool> current;
+    // Reached with Tab (only while the sidebar is out).
+    in property <bool> tabbable: true;
+    // A playlist: albums and tracks dropped on it are added to it.
+    in property <int> drop-playlist: -1;
+    callback clicked();
+    callback context-requested(length, length);
+    height: 40px;
+    border-radius: Theme.radius-control;
+    background: drop.has-drag && root.drop-playlist >= 0 ? Theme.accent.with-alpha(0.3)
+        : current ? Theme.accent.with-alpha(0.16) : ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.text + (root.current ? ", current page" : "");
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget {
+        enabled: root.tabbable;
+        zone: "sidebar";
+        activated => { root.clicked(); }
+    }
+    drop := DropArea {
+        enabled: root.drop-playlist >= 0;
+        can-drop(ev) => { Actions.accepts(ev.data) ? DragAction.copy : DragAction.none }
+        dropped(ev) => {
+            Actions.playlist-drop(ev.data, root.drop-playlist);
+            return DragAction.copy;
+        }
+    }
+    // A drag over this playlist holds the sidebar open (the pointer's hover does not
+    // count during a drag).
+    private property <bool> drag-here: drop.has-drag;
+    changed drag-here => {
+        if self.drag-here {
+            Focus.drop-playlist = root.drop-playlist;
+        } else if Focus.drop-playlist == root.drop-playlist {
+            Focus.drop-playlist = -1;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(ev) => {
+            if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                root.context-requested(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 14px;
+        Icon { y: (parent.height - self.height) / 2; glyph: root.glyph; color: root.current ? Theme.accent : Theme.text-dim; }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: root.current ? 700 : 500;
+            color: root.current ? Theme.text : Theme.text-dim;
+            overflow: elide;
+            accessible-role: none;
+        }
+    }
+    FocusRing { shown: fs.has-focus; radius: Theme.radius-control; inset: true; }
+}
+
+// The navigation sidebar. It lives over the content (no reflow): hidden off the left
+// edge, it slides in when the pointer touches the edge or on its pin key (Ctrl+B), and slides out
+// again when the pointer leaves. Pinned, it stays out (the content then makes room).
+export component Sidebar inherits Rectangle {
+    in property <length> window-height;
+    // Open while the keyboard focus is in it too, so Tab never lands on a hidden item.
+    out property <bool> open: Nav.sidebar-pinned || Nav.sidebar-forced || Nav.sidebar-hover-open || Focus.zone == "sidebar";
+    private property <bool> hovering: edge.has-hover || panel.has-hover || edge-drop.has-drag || Focus.drop-playlist >= 0 || playlists.autoscrolling || drop-new.has-drag;
+    changed hovering => {
+        if self.hovering { Nav.sidebar-hover-open = true; }
+    }
+    width: Theme.sidebar-width + 12px;
+    height: window-height;
+    // The player bar's room at the bottom, while it is up (it can auto-hide); follows its
+    // slide.
+    private property <length> bar-room: Player.bar-up ? Theme.bar-height : 0px;
+    animate bar-room { duration: Theme.dur-sidebar; easing: ease-out; }
+
+    // Pointer hits this strip at the window edge to open the sidebar.
+    edge := TouchArea {
+        x: 0;
+        y: 0;
+        width: 6px;
+        height: root.height - root.bar-room;
+    }
+    // A drag reaching the left edge opens it, so a playlist can take the drop. (It has to
+    // accept the drag to see it; a drop on the edge itself does nothing.)
+    edge-drop := DropArea {
+        x: 0;
+        y: 0;
+        width: 28px;
+        height: root.height - root.bar-room;
+        can-drop(ev) => { Actions.accepts(ev.data) ? DragAction.copy : DragAction.none }
+        dropped(ev) => { DragAction.none }
+    }
+    // Leaving closes it, however it was opened (the edge or the pill's menu button).
+    Timer {
+        interval: Theme.sidebar-linger;
+        running: !root.hovering && Nav.sidebar-hover-open;
+        triggered => {
+            Nav.sidebar-hover-open = false;
+            Nav.sidebar-forced = false;
+        }
+    }
+    panel := TouchArea {
+        y: 0;
+        x: root.open ? 0px : -Theme.sidebar-width - 24px;
+        animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        width: Theme.sidebar-width;
+        height: root.height - root.bar-room;
+        // A middle press on the panel leaves the page under it alone.
+        AutoscrollBlock { }
+        Rectangle {
+            // Frosted glass: blurs the page scrolling behind it (Skia), tinted.
+            background: Theme.glass-fill;
+            backdrop-blur: Theme.glass-radius-blur;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Nav.sidebar-pinned ? 0px : 28px;
+            drop-shadow-color: #00000070;
+            // Albums or tracks dropped on the Playlists heading, or the empty space under the
+            // playlists: a new playlist for them. Behind the playlists, which take a drop
+            // on themselves.
+            drop-new := DropArea {
+                x: 0;
+                y: pl-head.y - 6px;
+                width: parent.width;
+                height: max(0px, playlists.y + playlists.height - pl-head.y + 6px);
+                can-drop(ev) => { Actions.accepts(ev.data) ? DragAction.copy : DragAction.none }
+                dropped(ev) => {
+                    Actions.playlist-drop-new(ev.data, self.absolute-position.x + ev.position.x, self.absolute-position.y + ev.position.y);
+                    return DragAction.copy;
+                }
+            }
+            VerticalLayout {
+                padding: 14px;
+                spacing: 4px;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-bottom: 14px;
+                    height: 48px;
+                    Text {
+                        text: "Marquee";
+                        font-size: Theme.font-heading;
+                        font-weight: 800;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                    }
+                    IconButton {
+                        y: 6px;
+                        glyph: Icons.pin;
+                        size: 32px;
+                        icon-size: 18px;
+                        active: Nav.sidebar-pinned;
+                        tabbable: root.open;
+                        zone: "sidebar";
+                        tooltip: Keys.with-key(Nav.sidebar-pinned ? "Unpin the sidebar" : "Pin the sidebar open", Keys.pin-sidebar);
+                        clicked => { Nav.sidebar-pinned = !Nav.sidebar-pinned; Nav.pins-changed(); }
+                    }
+                }
+                NavItem { glyph: Icons.home; text: "Home"; tabbable: root.open; current: Nav.page == Page.home; clicked => { Nav.sidebar-forced = false; Nav.go(Page.home); } }
+                NavItem { glyph: Icons.albums; text: "Albums"; tabbable: root.open; current: Nav.page == Page.albums; clicked => { Nav.sidebar-forced = false; Nav.go(Page.albums); } }
+                NavItem { glyph: Icons.person; text: "Artists"; tabbable: root.open; current: Nav.page == Page.artists || Nav.page == Page.artist; clicked => { Nav.sidebar-forced = false; Nav.go(Page.artists); } }
+                NavItem { glyph: Icons.tag; text: "Genres"; tabbable: root.open; current: Nav.page == Page.genres || Nav.page == Page.labels; clicked => { Nav.sidebar-forced = false; Nav.go(Page.genres); } }
+                NavItem { glyph: Icons.search; text: "Search"; tabbable: root.open; current: Nav.page == Page.search; clicked => { Nav.sidebar-forced = false; Nav.go(Page.search); } }
+                NavItem { glyph: Icons.playlist; text: "Playlists"; tabbable: root.open; current: Nav.page == Page.playlists; clicked => { Nav.sidebar-forced = false; Nav.go(Page.playlists); } }
+                NavItem { glyph: Icons.expand; text: "Now playing"; tabbable: root.open; current: Nav.page == Page.now-playing; clicked => { Nav.sidebar-forced = false; Nav.go(Page.now-playing); } }
+                NavItem { glyph: Icons.settings; text: "Settings"; tabbable: root.open; current: Nav.page == Page.settings || Nav.page == Page.shelves; clicked => { Nav.sidebar-forced = false; Nav.go(Page.settings); } }
+                Rectangle { height: 14px; }
+                pl-head := Text { text: "PLAYLISTS"; font-size: Theme.font-small; font-weight: 700; color: drop-new.has-drag ? Theme.accent : Theme.text-dim; letter-spacing: 1px; }
+                playlists := AutoFlickable {
+                    vertical-stretch: 1;
+                    autoscroll-layer: 2;
+                    content-height: pl.preferred-height;
+                    pl := VerticalLayout {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        alignment: start;
+                        spacing: 2px;
+                        for p in Playlists.list: NavItem {
+                            glyph: p.smart ? Icons.smart : Icons.note;
+                            text: p.name;
+                            tabbable: root.open;
+                            // A smart playlist takes no drops: its tracks come from its rules.
+                            drop-playlist: p.smart ? -1 : p.id;
+                            current: (Nav.page == Page.playlist || Nav.page == Page.smart || Nav.page == Page.smart-edit) && Playlists.current-id == p.id;
+                            clicked => { Nav.sidebar-forced = false; Actions.open-playlist(p.id); }
+                            context-requested(x, y) => { Actions.menu-request("playlist", "", 0, p.id, x, y); }
+                        }
+                    }
+                }
+                // A sync with the server (no scan running): the same line (server/mod.rs).
+                if !Library.scanning && Server.busy: VerticalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 8px;
+                    spacing: 4px;
+                    accessible-role: text;
+                    accessible-label: Server.short;
+                    HorizontalLayout {
+                        height: 26px;
+                        spacing: 10px;
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            glyph: Icons.refresh;
+                            width: 16px;
+                            height: 16px;
+                            color: Theme.text-faint;
+                        }
+                        Text {
+                            text: Server.short;
+                            font-size: Theme.font-small;
+                            color: Theme.text-faint;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            accessible-role: none;
+                        }
+                    }
+                    if Server.progress >= 0: Rectangle {
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: Theme.surface-hi;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(Server.progress, 0, 1);
+                            border-radius: 1.5px;
+                            background: Theme.accent.with-alpha(0.8);
+                            animate width { duration: 400ms; }
+                        }
+                    }
+                }
+                // A scan in progress: quiet, at the foot of the sidebar. Settings has the
+                // details.
+                if Library.scanning: VerticalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    padding-top: 8px;
+                    spacing: 4px;
+                    accessible-role: text;
+                    accessible-label: Library.status + (Library.status-note != "" ? ". " + Library.status-note : "");
+                    HorizontalLayout {
+                        height: 26px;
+                        spacing: 10px;
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            glyph: Library.status-note != "" ? Icons.warning : Icons.refresh;
+                            width: 16px;
+                            height: 16px;
+                            color: Theme.text-faint;
+                        }
+                        Text {
+                            text: Library.status;
+                            font-size: Theme.font-small;
+                            color: Theme.text-faint;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            accessible-role: none;
+                        }
+                    }
+                    // How far (once it is known); Settings > Library says more.
+                    if Library.progress >= 0: Rectangle {
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: Theme.surface-hi;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(Library.progress, 0, 1);
+                            border-radius: 1.5px;
+                            background: Theme.accent.with-alpha(0.8);
+                            animate width { duration: 400ms; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Always-visible transport at the bottom, over the blurred art.
+export component PlayerBar inherits Rectangle {
+    height: Theme.bar-height;
+    // The seek or volume slider is being dragged (or has not caught up with its release).
+    out property <bool> dragging: seek.active || volume.active;
+    // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
+    // no Skia), it falls back to the pre-blurred album art.
+    background: Theme.glass ? Theme.glass-tint : Theme.bg;
+    backdrop-blur: Theme.glass-radius-blur;
+    if !Theme.glass: Rectangle {
+        clip: true;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: Backdrop.image;
+            image-fit: cover;
+            visible: Backdrop.visible;
+        }
+        Rectangle { background: Theme.bar-tint; }
+    }
+    Rectangle { y: 0; height: 1px; background: Theme.border; }
+    HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        spacing: 18px;
+        // Now playing.
+        HorizontalLayout {
+            width: 30%;
+            spacing: 14px;
+            Cover {
+                y: (parent.height - self.height) / 2;
+                size: 60px;
+                radius: 6px;
+                source: Player.cover;
+                has-cover: Player.has-cover;
+                visible: Player.has-track;
+                accessible-role: button;
+                accessible-label: "Now playing";
+                accessible-action-default => { Nav.go(Page.now-playing); }
+                TouchArea { mouse-cursor: pointer; clicked => { Nav.go(Page.now-playing); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                HorizontalLayout {
+                    alignment: start;
+                    LinkText {
+                        text: Player.title;
+                        font-size: Theme.font-body;
+                        font-weight: 600;
+                        base-color: Theme.text;
+                        tabbable: Player.has-track;
+                        zone: "bar";
+                        clicked => { Actions.open-album(Player.album-id); }
+                    }
+                }
+                ArtistLinks { text: Player.artist; ref-id: Player.track-id; tabbable: Player.has-track; zone: "bar"; }
+                // Technical details (Settings > Window): short, quiet, under the artist.
+                if Player.show-details && Player.has-track && Player.details-short != "": Text {
+                    text: Player.details-short;
+                    font-size: Theme.font-small;
+                    color: Theme.text-faint;
+                    overflow: elide;
+                    accessible-label: Player.details-spoken;
+                }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                visible: Player.has-track;
+                glyph: Player.favourite ? Icons.heart : Icons.heart-outline;
+                active: Player.favourite;
+                size: 32px;
+                icon-size: 18px;
+                zone: "bar";
+                label: Keys.with-key(Player.favourite ? "Remove the playing track from favourites" : "Add the playing track to favourites", Keys.favourite);
+                clicked => { Actions.toggle-favourite-current(); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                visible: Player.has-track;
+                glyph: Player.rating > 0 ? Icons.star : Icons.star-outline;
+                active: Player.rating > 0;
+                size: 32px;
+                icon-size: 18px;
+                zone: "bar";
+                label: (Player.rating > 0 ? "Rated " + Player.rating + " of 5 stars" : "Not rated") + ". " + Keys.with-key("Rate the playing track", Keys.rate);
+                clicked => { Actions.rating-menu(self.absolute-position.x, self.absolute-position.y - 6px); }
+            }
+        }
+        // Transport and seek.
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                IconButton { y: 4px; glyph: Icons.shuffle; size: 32px; icon-size: 18px; active: Player.shuffle; zone: "bar"; label: Keys.with-key(Player.shuffle ? "Shuffle on" : "Shuffle off", Keys.shuffle); clicked => { Actions.toggle-shuffle(); } }
+                IconButton { y: 2px; glyph: Icons.prev; zone: "bar"; label: Keys.with-key("Previous track", Keys.previous); clicked => { Actions.previous(); } }
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    IconButton { glyph: Player.playing ? Icons.pause : Icons.play; primary: true; size: 40px; icon-size: 24px; zone: "bar"; label: (Player.buffering ? "Loading from the server. " : "") + Keys.with-key(Player.playing ? "Pause" : "Play", Keys.play-pause); clicked => { Actions.toggle-play(); } }
+                    // A server track loading (playback.rs): a ring that breathes around the
+                    // button, only while it lasts (no frame is drawn for it otherwise).
+                    if Player.buffering: Rectangle {
+                        private property <float> phase: mod(animation-tick() / 1100ms, 1);
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 48px;
+                        height: 48px;
+                        border-radius: self.width / 2;
+                        border-width: 2px;
+                        border-color: Theme.accent.with-alpha(0.25 + 0.55 * (0.5 - 0.5 * cos(self.phase * 360deg)));
+                    }
+                }
+                IconButton { y: 2px; glyph: Icons.next; zone: "bar"; label: Keys.with-key("Next track", Keys.next); clicked => { Actions.next(); } }
+                IconButton {
+                    y: 4px;
+                    glyph: Player.repeat == 2 ? Icons.repeat-one : Icons.repeat;
+                    active: Player.repeat != 0;
+                    size: 32px;
+                    icon-size: 18px;
+                    zone: "bar";
+                    label: Keys.with-key(Player.repeat == 0 ? "Repeat off" : Player.repeat == 1 ? "Repeat all" : "Repeat one", Keys.repeat);
+                    clicked => { Actions.cycle-repeat(); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    width: 44px;
+                    // While dragging and until the seek lands: the target, not the old position.
+                    text: seek.active ? floor(seek.shown-value * Player.duration / 60) + ":" + (mod(floor(seek.shown-value * Player.duration), 60) < 10 ? "0" : "") + mod(floor(seek.shown-value * Player.duration), 60) : Player.position-text;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                }
+                // Live scrub: audio follows the thumb while dragging (throttled in Rust).
+                seek := Slider {
+                    enabled: Player.has-track && Player.duration > 0;
+                    value: Player.duration > 0 ? Player.position / Player.duration : 0;
+                    // Arrived when within 0.4 s of the target.
+                    settle: Player.duration > 0 ? 0.4 / Player.duration : 0.01;
+                    // The arrow keys seek 5 s while it has the focus.
+                    step: Player.duration > 0 ? 5 / Player.duration : 0.05;
+                    label: "Seek";
+                    value-text: Player.position-text + " of " + Player.duration-text;
+                    zone: "bar";
+                    changed(v) => { Actions.scrub(v * Player.duration); }
+                    released(v) => { Actions.seek(v * Player.duration); }
+                    keyed(v) => { Actions.seek(v * Player.duration); }
+                }
+                Text {
+                    width: 44px;
+                    text: Player.duration-text;
+                    vertical-alignment: center;
+                    font-size: Theme.font-small;
+                    color: Theme.text-dim;
+                }
+            }
+        }
+        // Volume, gain, queue, now playing.
+        HorizontalLayout {
+            width: 30%;
+            alignment: end;
+            spacing: 6px;
+            // The equalizer: lit while it is on; opens Settings > Equalizer.
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Icons.graphic-eq;
+                active: Equalizer.on;
+                size: 32px;
+                icon-size: 18px;
+                zone: "bar";
+                tooltip: Equalizer.on ? "Equalizer: " + Equalizer.preset : "Equalizer off";
+                label: (Equalizer.on ? "Equalizer on, " + Equalizer.preset : "Equalizer off") + ". Open the equalizer";
+                clicked => { Actions.open-equalizer(); }
+            }
+            Rectangle {
+                width: 52px;
+                Text {
+                    text: Player.gain-mode == "Off" ? "RG off" : "RG " + Player.gain-mode;
+                    font-size: Theme.font-small;
+                    color: gain-ta.has-hover || gain-fs.has-focus ? Theme.text : Theme.text-dim;
+                    accessible-role: button;
+                    accessible-label: "ReplayGain: " + Player.gain-mode;
+                    accessible-action-default => { Actions.cycle-gain(); }
+                    gain-fs := FocusTarget { zone: "bar"; activated => { Actions.cycle-gain(); } }
+                    gain-ta := TouchArea { mouse-cursor: pointer; clicked => { Actions.cycle-gain(); } }
+                    FocusRing { shown: gain-fs.has-focus; radius: 4px; }
+                }
+            }
+            // Click to mute and unmute; the slider keeps the volume to come back to.
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Player.muted || Player.volume == 0 ? Icons.volume-off : Player.volume < 0.4 ? Icons.volume-low : Icons.volume;
+                active: Player.muted;
+                size: 32px;
+                icon-size: 20px;
+                zone: "bar";
+                label: Keys.with-key(Player.muted ? "Unmute" : "Mute", Keys.mute);
+                clicked => { Actions.toggle-mute(); }
+            }
+            volume := Slider {
+                y: (parent.height - self.height) / 2;
+                width: 110px;
+                value: Player.volume;
+                opacity: Player.muted ? 0.4 : 1;
+                label: "Volume";
+                wheel: true;
+                value-text: round(Player.volume * 100) + "%" + (Player.muted ? ", muted" : "");
+                zone: "bar";
+                changed(v) => { Actions.set-volume(v); }
+                keyed(v) => { Actions.set-volume(v); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Icons.queue;
+                active: Nav.queue-open || Nav.queue-pinned;
+                zone: "bar";
+                label: Nav.queue-open || Nav.queue-pinned ? "Hide the queue" : "Show the queue";
+                clicked => { Nav.queue-open = !Nav.queue-open; Nav.queue-hover-open = false; }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                glyph: Nav.page == Page.now-playing ? Icons.collapse : Icons.expand;
+                active: Nav.page == Page.now-playing;
+                zone: "bar";
+                label: Keys.with-key(Nav.page == Page.now-playing ? "Leave Now playing" : "Now playing", Keys.now-playing);
+                clicked => { if Nav.page == Page.now-playing { Nav.back(); } else { Nav.go(Page.now-playing); } }
+            }
+        }
+    }
+}
+
+// The queue sidebar, the left sidebar's mirror on the right: hidden off the right edge,
+// it slides in when the pointer (or a drag) reaches the edge, on its pin key or the bar's
+// queue button, and out again when the pointer leaves. Pinned, it stays and the content
+// makes room, as on the left. Frosted, like the left one.
+export component QueueSidebar inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    // Open while the keyboard focus is in it too, so Tab never lands on a hidden row.
+    out property <bool> open: Nav.queue-pinned || Nav.queue-open || Nav.queue-hover-open || Focus.zone == "queue";
+    private property <bool> hovering: edge.has-hover || panel.has-hover || edge-drop.has-drag || list.dragging-over || list.autoscrolling;
+    changed hovering => {
+        if self.hovering { Nav.queue-hover-open = true; }
+    }
+    x: window-width - self.width;
+    width: Theme.queue-width + 12px;
+    // Clear of the player bar while it is up (it can auto-hide); follows its slide.
+    private property <length> bar-room: Player.bar-up ? Theme.bar-height : 0px;
+    animate bar-room { duration: Theme.dur-sidebar; easing: ease-out; }
+    height: window-height - self.bar-room;
+    private property <bool> confirm-clear;
+    Timer {
+        interval: 4s;
+        running: root.confirm-clear;
+        triggered => { root.confirm-clear = false; }
+    }
+
+    // Leaving closes it, however it was opened (the edge, a drag, or the bar's queue
+    // button: once the pointer has been over it, leaving closes it too).
+    Timer {
+        interval: Theme.sidebar-linger;
+        running: !root.hovering && Nav.queue-hover-open;
+        triggered => {
+            Nav.queue-hover-open = false;
+            Nav.queue-open = false;
+            root.confirm-clear = false;
+        }
+    }
+    // Pointer at the window edge.
+    edge := TouchArea {
+        x: root.width - 6px;
+        width: 6px;
+    }
+    // A drag reaching the edge opens the queue (otherwise it could not be reached);
+    // a drop right on the edge appends.
+    edge-drop := DropArea {
+        x: root.width - 28px;
+        width: 28px;
+        can-drop(ev) => { Actions.accepts(ev.data) ? DragAction.copy : DragAction.none }
+        dropped(ev) => {
+            Actions.queue-drop(ev.data, Queue.rows.length);
+            return DragAction.copy;
+        }
+    }
+    panel := TouchArea {
+        y: 0;
+        x: root.open ? root.width - Theme.queue-width : root.width + 24px;
+        animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        width: Theme.queue-width;
+        height: root.height;
+        AutoscrollBlock { }
+        Rectangle {
+            background: Theme.glass-fill;
+            backdrop-blur: Theme.glass-radius-blur;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: Nav.queue-pinned ? 0px : 28px;
+            drop-shadow-color: #00000070;
+            VerticalLayout {
+                padding: 14px;
+                // Clear of the caption buttons above the header.
+                padding-top: Theme.caption-height + 4px;
+                spacing: 8px;
+                HorizontalLayout {
+                    height: 52px;
+                    spacing: 2px;
+                    // Title, and under it what the queue holds ("42 tracks · 2 h 51 min").
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Queue";
+                            font-size: Theme.font-heading;
+                            font-weight: 800;
+                            color: Theme.text;
+                        }
+                        if Queue.summary != "": Text {
+                            text: Queue.summary;
+                            font-size: Theme.font-body;
+                            color: Theme.text-dim;
+                            overflow: elide;
+                        }
+                    }
+                    IconButton {
+                        y: 4px;
+                        glyph: Icons.shuffle;
+                        size: 32px;
+                        icon-size: 18px;
+                        active: Player.shuffle;
+                        tabbable: root.open;
+                        zone: "queue";
+                        tooltip: Player.shuffle ? "Shuffle on" : "Shuffle";
+                        clicked => { Actions.toggle-shuffle(); }
+                    }
+                    // Clear asks once: the first click arms it (red), a second within 4 s
+                    // clears. What is playing stays.
+                    IconButton {
+                        y: 4px;
+                        glyph: Icons.clear-queue;
+                        size: 32px;
+                        icon-size: 18px;
+                        enabled: Queue.rows.length > 1;
+                        tabbable: root.open;
+                        zone: "queue";
+                        danger: root.confirm-clear;
+                        // The armed text is the longer one: a tooltip box does not shrink while shown.
+                        tooltip: root.confirm-clear ? "Click again to clear" : "Clear the queue";
+                        clicked => {
+                            if root.confirm-clear {
+                                root.confirm-clear = false;
+                                Actions.queue-clear();
+                            } else {
+                                root.confirm-clear = true;
+                            }
+                        }
+                    }
+                    IconButton {
+                        y: 4px;
+                        glyph: Icons.pin;
+                        size: 32px;
+                        icon-size: 18px;
+                        active: Nav.queue-pinned;
+                        tabbable: root.open;
+                        zone: "queue";
+                        tooltip: Keys.with-key(Nav.queue-pinned ? "Unpin the queue" : "Pin the queue open", Keys.pin-queue);
+                        clicked => { Nav.queue-pinned = !Nav.queue-pinned; Nav.pins-changed(); }
+                    }
+                }
+                list := QueueList { vertical-stretch: 1; zone: "queue"; enabled: root.open; autoscroll-layer: 2; }
+            }
+        }
+    }
+}
+
+// Top-left navigation: open the sidebar, back, forward, and where you are. Always
+// visible, small, frosted; the sidebar itself stays hidden until asked for.
+export component NavPill inherits Rectangle {
+    height: 40px;
+    // A long page title or note is cut short (…) rather than stretching the pill.
+    width: min(row.preferred-width, 560px);
+    border-radius: 20px;
+    background: Theme.glass-fill;
+    backdrop-blur: Theme.glass-radius-blur;
+    border-width: 1px;
+    border-color: Theme.border;
+    // Swallow clicks between the buttons.
+    TouchArea { }
+    AutoscrollBlock { layer: 1; }
+    row := HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 14px;
+        spacing: 0px;
+        IconButton {
+            y: 4px;
+            glyph: Icons.menu;
+            size: 32px;
+            icon-size: 18px;
+            active: Nav.sidebar-forced || Nav.sidebar-pinned;
+            zone: "pill";
+            label: Nav.sidebar-forced ? "Close the sidebar" : "Open the sidebar";
+            clicked => { Nav.sidebar-forced = !Nav.sidebar-forced; }
+        }
+        IconButton {
+            y: 4px;
+            glyph: Icons.back;
+            size: 32px;
+            icon-size: 18px;
+            enabled: Nav.can-back;
+            zone: "pill";
+            label: Keys.with-key("Back", Keys.back);
+            clicked => { Nav.back(); }
+        }
+        IconButton {
+            y: 4px;
+            glyph: Icons.forward;
+            size: 32px;
+            icon-size: 18px;
+            enabled: Nav.can-forward;
+            zone: "pill";
+            label: Keys.with-key("Forward", Keys.forward);
+            clicked => { Nav.forward(); }
+        }
+        Text {
+            accessible-role: text;
+            // Read out when it changes (a page change, a note such as "Added to Mix").
+            accessible-live-region: AccessibleLiveness.polite;
+            text: Nav.flash != "" ? Nav.flash : Nav.title;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: Nav.flash != "" ? 500 : 600;
+            color: Nav.flash != "" ? Theme.text-dim : Theme.text;
+            min-width: 40px;
+            overflow: elide;
+        }
+    }
+}
+
+// Minimize, maximize/restore, close: the window has no Windows title bar (frame.rs).
+// They show when the pointer comes near the top-right corner, in the app's style.
+// The maximize button is reported to Windows as such (so it gets the snap layouts
+// flyout), so its hover and press come from the frame, not from a TouchArea.
+component CaptionButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> hovered;
+    in property <bool> pressed;
+    in property <bool> close;
+    // What a screen reader says. Not reached with Tab: Alt+Space and Alt+F4 are the
+    // keyboard's way to these.
+    in property <string> label;
+    callback activated();
+    width: 46px;
+    height: 32px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.activated(); }
+    background: root.close
+        ? (root.pressed ? #c42b1cd0 : root.hovered ? #c42b1c : transparent)
+        : (root.pressed ? Theme.press : root.hovered ? Theme.hover : transparent);
+    animate background { duration: Theme.dur-hover; }
+    Icon {
+        glyph: root.glyph;
+        width: 16px;
+        height: 16px;
+        color: root.close && root.hovered ? #ffffff : root.hovered ? Theme.text : Theme.text-dim;
+    }
+}
+
+export component CaptionButtons inherits Rectangle {
+    width: 3 * 46px;
+    height: 32px;
+    private property <bool> shown: Chrome.caption-zone || Chrome.max-hover || min-ta.has-hover || close-ta.has-hover;
+    opacity: root.shown ? 1 : 0;
+    animate opacity { duration: 120ms; }
+    AutoscrollBlock { live: root.shown; }
+    HorizontalLayout {
+        CaptionButton {
+            glyph: Icons.win-minimize;
+            label: "Minimize";
+            activated => { Chrome.minimize(); }
+            hovered: min-ta.has-hover;
+            pressed: min-ta.pressed;
+            min-ta := TouchArea { clicked => { Chrome.minimize(); } }
+        }
+        CaptionButton {
+            glyph: Chrome.maximized ? Icons.win-restore : Icons.win-maximize;
+            label: Chrome.maximized ? "Restore" : "Maximize";
+            activated => { Chrome.toggle-maximize(); }
+            hovered: Chrome.max-hover;
+            pressed: Chrome.max-pressed;
+        }
+        CaptionButton {
+            glyph: Icons.win-close;
+            label: "Close";
+            activated => { Chrome.close(); }
+            close: true;
+            hovered: close-ta.has-hover;
+            pressed: close-ta.pressed;
+            close-ta := TouchArea { clicked => { Chrome.close(); } }
+        }
+    }
+}

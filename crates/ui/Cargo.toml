@@ -1,0 +1,18 @@
+[package]
+name = "marquee-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Marquee Player's Slint UI (crates/app/ui), compiled to Rust in a crate of its own."
+
+# The generated UI is a quarter of the exe and none of it is a hot path, so the workspace
+# Cargo.toml builds this crate for size (`[profile.release.package.marquee-ui]`) while the
+# app around it stays at opt-level 3. That is why it is not compiled inside the app crate.
+
+[dependencies]
+slint = { workspace = true, features = ["raw-window-handle-06"] }
+
+[build-dependencies]
+slint-build.workspace = true

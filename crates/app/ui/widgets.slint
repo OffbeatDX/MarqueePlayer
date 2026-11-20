@@ -1,0 +1,1377 @@
+import { Theme } from "theme.slint";
+import { AlbumCard, TrackRow, ArtistLink } from "types.slint";
+import { Playlists, Actions, Focus, SettingsView, Player, Nav, Server } from "stores.slint";
+
+// 24x24 SVG path data (Material-style glyphs), drawn with `Icon`.
+export global Icons {
+    out property <string> play: "M8 5v14l11-7z";
+    out property <string> pause: "M6 19h4V5H6v14zm8-14v14h4V5h-4z";
+    out property <string> next: "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z";
+    out property <string> prev: "M6 6h2v12H6zm3.5 6l8.5 6V6z";
+    out property <string> shuffle: "M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z";
+    out property <string> repeat: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z";
+    out property <string> repeat-one: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z";
+    out property <string> volume: "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z";
+    out property <string> volume-off: "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z";
+    out property <string> volume-low: "M7 9v6h4l5 5V4l-5 5H7z";
+    out property <string> queue: "M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z";
+    out property <string> home: "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z";
+    out property <string> albums: "M4 11h5V5H4v6zm0 7h5v-6H4v6zm6 0h5v-6h-5v6zm6 0h5v-6h-5v6zm-6-7h5V5h-5v6zm6-6v6h5V5h-5z";
+    out property <string> search: "M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z";
+    out property <string> star: "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z";
+    out property <string> star-outline: "M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z";
+    out property <string> heart: "M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z";
+    out property <string> heart-outline: "M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z";
+    out property <string> playlist: "M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z";
+    // A smart playlist (Material "filter_list"): it is made by rules.
+    out property <string> smart: "M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z";
+    out property <string> settings: "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z";
+    out property <string> pin: "M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z";
+    out property <string> back: "M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z";
+    out property <string> forward: "M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z";
+    out property <string> menu: "M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z";
+    out property <string> clear-queue: "M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z";
+    out property <string> up: "M7 14l5-5 5 5z";
+    out property <string> chevron-left: "M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z";
+    out property <string> chevron-right: "M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z";
+    out property <string> down: "M7 10l5 5 5-5z";
+    out property <string> plus: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z";
+    out property <string> minus: "M19 13H5v-2h14v2z";
+    // Settings' sections.
+    out property <string> keyboard: "M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z";
+    out property <string> equalizer: "M10 20h4V4h-4v16zm-6 0h4v-8H4v8zM16 9v11h4V9h-4z";
+    // Material "graphic_eq": the equalizer (its section, the player bar's button).
+    out property <string> graphic-eq: "M7 18h2V6H7v12zm4 4h2V2h-2v20zm-8-8h2v-4H3v4zm12 4h2V6h-2v12zm4-8v4h2v-4h-2z";
+    out property <string> desktop: "M21 2H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H3V4h18v12z";
+    out property <string> speaker: "M17 2H7c-1.1 0-2 .9-2 2v16c0 1.1.9 1.99 2 1.99L17 22c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-5 2c1.1 0 2 .9 2 2s-.9 2-2 2c-1.11 0-2-.9-2-2s.89-2 2-2zm0 16c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z";
+    out property <string> info: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z";
+    out property <string> warning: "M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z";
+    // Caption buttons, thin like the system ones.
+    out property <string> win-minimize: "M6 11.5h12v1H6z";
+    out property <string> win-maximize: "M6 6h12v12H6zM7 7v10h10V7z";
+    out property <string> win-restore: "M8 6h10v10h-2v-1h1V7H9v1H8zM6 8h10v10H6zM7 9v8h8V9z";
+    out property <string> win-close: "M6.7 6 12 11.3 17.3 6l.7.7-5.3 5.3 5.3 5.3-.7.7-5.3-5.3L6.7 18l-.7-.7 5.3-5.3L6 6.7z";
+    out property <string> close: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z";
+    out property <string> eye: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z";
+    out property <string> eye-off: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z";
+    out property <string> expand: "M12 8l-6 6 1.41 1.41L12 10.83l4.59 4.58L18 14z";
+    out property <string> collapse: "M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z";
+    out property <string> folder: "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z";
+    out property <string> refresh: "M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z";
+    out property <string> note: "M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z";
+    out property <string> check: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z";
+    out property <string> link: "M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z";
+    out property <string> person: "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z";
+    out property <string> tag: "M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z";
+    out property <string> copy: "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z";
+    out property <string> paste: "M19 2h-4.18C14.4.84 13.3 0 12 0c-1.3 0-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z";
+    out property <string> more: "M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z";
+    // Material "edit" (a pencil) and "image".
+    out property <string> edit: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z";
+    out property <string> image: "M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z";
+    // Material "cloud": a track or album that plays from the server (`RemoteMark`).
+    out property <string> cloud: "M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z";
+}
+
+// The keyboard focus mark: an accent outline in the control's shape, just outside it
+// (`inset`: just inside, for rows that sit edge to edge). Only keyboard focus shows it:
+// controls do not take the focus on a click.
+export component FocusRing inherits Rectangle {
+    in property <bool> shown;
+    in property <length> radius;
+    in property <bool> inset;
+    width: 100%;
+    height: 100%;
+    visible: shown;
+    Rectangle {
+        x: root.inset ? 0px : -3px;
+        y: root.inset ? 0px : -3px;
+        width: parent.width + (root.inset ? 0px : 6px);
+        height: parent.height + (root.inset ? 0px : 6px);
+        border-radius: root.inset ? root.radius : root.radius + 3px;
+        border-width: 2px;
+        border-color: Theme.accent;
+    }
+}
+
+// What a focusable control does with the focus: Enter activates it (Space stays play /
+// pause, the app-wide shortcut), and the page scrolls to show it when it came by Tab.
+// It lies under the control's TouchArea, so the pointer works as before.
+export component FocusTarget inherits FocusScope {
+    in property <string> zone;
+    callback activated();
+    width: 100%;
+    height: 100%;
+    focus-on-click: false;
+    key-pressed(ev) => {
+        if ev.text == Key.Return && !ev.modifiers.control && !ev.modifiers.alt {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+    focus-gained(reason) => {
+        Focus.zone = root.zone;
+        if reason == FocusReason.tab-navigation && root.zone == "" {
+            Actions.reveal(self.absolute-position.y, self.height);
+        }
+    }
+    focus-lost => {
+        if Focus.zone == root.zone { Focus.zone = ""; }
+    }
+}
+
+export component Icon inherits Path {
+    in property <string> glyph;
+    in property <color> color: Theme.text;
+    commands: glyph;
+    fill: color;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    width: 20px;
+    height: 20px;
+}
+
+// A tooltip's look (inside Slint's `Tooltip`, which shows it after a short hover and takes no
+// input: what is under it keeps its clicks).
+export component TipBubble inherits Rectangle {
+    in property <string> text;
+    width: tip.preferred-width + 20px;
+    height: 28px;
+    border-radius: 6px;
+    background: Theme.surface-hi;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 12px;
+    drop-shadow-color: #00000080;
+    tip := Text {
+        text: root.text;
+        font-size: Theme.font-small;
+        color: Theme.text;
+    }
+}
+
+export component IconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <length> size: 36px;
+    in property <length> icon-size: 20px;
+    in property <bool> active;
+    in property <bool> primary;
+    // Shown in the app's style after a short hover.
+    in property <string> tooltip;
+    in property <bool> enabled: true;
+    // A destructive action armed (second click to confirm): drawn in red.
+    in property <bool> danger;
+    // What a screen reader says (icon-only buttons have no text); the tooltip if empty.
+    in property <string> label;
+    // Reached with Tab. Off for buttons that only show on hover (a row's actions: the
+    // row's list takes the keys and the menu instead).
+    in property <bool> tabbable: true;
+    in property <string> zone;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: self.width / 2;
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.tooltip;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    fs := FocusTarget {
+        enabled: root.enabled && root.tabbable;
+        zone: root.zone;
+        activated => { root.clicked(); }
+    }
+    background: primary ? (ta.pressed ? Theme.accent.darker(15%) : ta.has-hover ? Theme.accent.brighter(8%) : Theme.accent)
+        : ta.pressed ? Theme.press : ta.has-hover ? Theme.hover : transparent;
+    animate background { duration: Theme.dur-hover; }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    out property <bool> has-hover: ta.has-hover;
+    // Held down (the Lyrics tab's timing buttons repeat while it is).
+    out property <bool> pressed: ta.pressed;
+    Icon {
+        glyph: root.glyph;
+        width: root.icon-size;
+        height: root.icon-size;
+        color: !root.enabled ? Theme.text-faint.with-alpha(0.5)
+            : root.danger ? #ff8a80
+            : root.primary ? Theme.accent-text : root.active ? Theme.accent : ta.has-hover || fs.has-focus ? Theme.text : Theme.text-dim;
+    }
+    FocusRing { shown: fs.has-focus; radius: root.width / 2; }
+    if root.tooltip != "": Tooltip { TipBubble { text: root.tooltip; } }
+}
+
+// What plays from the server (a track only it has, an album with no file here): a small cloud,
+// quiet, after the title. Hovering it names the server (`Server.host`, one for every row). It
+// sits in a cell of its own width and the row's height, centred, so the row keeps its height,
+// and it takes no click (the tooltip only watches the pointer): the row under it keeps them.
+export component RemoteMark inherits Rectangle {
+    in property <length> size: 14px;
+    in property <color> tint: Theme.text-faint;
+    width: root.size;
+    horizontal-stretch: 0;
+    accessible-role: none;
+    mark := Rectangle {
+        y: (parent.height - self.height) / 2;
+        width: root.size;
+        height: root.size;
+        Icon { glyph: Icons.cloud; width: root.size; height: root.size; color: root.tint; }
+        if Server.host != "": Tooltip { TipBubble { text: Server.host; } }
+    }
+}
+
+export component TextButton inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <bool> primary;
+    // What a screen reader says, when the text alone does not say it.
+    in property <string> label;
+    in property <bool> tabbable: true;
+    in property <string> zone;
+    callback clicked();
+    // For a dialog that moves the focus itself (dialogs.slint).
+    public function focus-button() { fs.focus(); }
+    out property <bool> focused: fs.has-focus;
+    height: 36px;
+    min-width: lay.preferred-width;
+    border-radius: Theme.radius-pill;
+    accessible-role: button;
+    accessible-label: root.label != "" ? root.label : root.text;
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget {
+        enabled: root.tabbable;
+        zone: root.zone;
+        activated => { root.clicked(); }
+    }
+    background: primary ? (ta.has-hover ? Theme.accent.brighter(8%) : Theme.accent) : (ta.has-hover ? Theme.surface-hi : Theme.surface);
+    border-width: primary ? 0 : 1px;
+    border-color: Theme.border;
+    animate background { duration: Theme.dur-hover; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    lay := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 18px;
+        spacing: 6px;
+        alignment: center;
+        if root.glyph != "": Icon {
+            y: (parent.height - self.height) / 2;
+            glyph: root.glyph;
+            width: 18px;
+            height: 18px;
+            color: root.primary ? Theme.accent-text : Theme.text;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            color: root.primary ? Theme.accent-text : Theme.text;
+            accessible-role: none;
+        }
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// Text that navigates somewhere: pointer cursor and accent colour on hover, like a link.
+export component LinkText inherits Text {
+    in property <color> base-color: Theme.text-dim;
+    // Reached with Tab; off inside lists (the list's cursor stands for the row).
+    in property <bool> tabbable;
+    in property <string> zone;
+    callback clicked();
+    // A right click on the link: the row it sits in shows its menu (window coordinates).
+    callback context-requested(length, length);
+    color: lta.has-hover || fs.has-focus ? Theme.accent : base-color;
+    overflow: elide;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget {
+        enabled: root.tabbable;
+        zone: root.zone;
+        activated => { root.clicked(); }
+    }
+    FocusRing { shown: fs.has-focus; radius: 4px; }
+    lta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(ev) => {
+            if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                root.context-requested(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+}
+
+// An artist credit as shown ("A feat. B", "Mara Lind; Kenji Arai"), each credited artist's
+// name a link to their page and the rest plain text (`Actions.artist-links`). `kind` and
+// `ref-id` say whose credit it is: a "track" or an "album" of the library, by id.
+export component ArtistLinks inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> kind: "track";
+    in property <int> ref-id;
+    in property <length> font-size: Theme.font-small;
+    in property <color> base-color: Theme.text-dim;
+    in property <int> font-weight: 400;
+    in property <bool> tabbable;
+    in property <string> zone;
+    callback context-requested(length, length);
+    private property <[ArtistLink]> parts: Actions.artist-links(kind, ref-id, text);
+    alignment: start;
+    for part in parts: HorizontalLayout {
+        if part.key != "": LinkText {
+            text: part.text;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            base-color: root.base-color;
+            tabbable: root.tabbable;
+            zone: root.zone;
+            clicked => { Actions.open-artist(part.key); }
+            context-requested(x, y) => { root.context-requested(x, y); }
+        }
+        if part.key == "": Text {
+            accessible-role: none;
+            text: part.text;
+            font-size: root.font-size;
+            font-weight: root.font-weight;
+            color: root.base-color;
+            overflow: elide;
+        }
+    }
+}
+
+// Square album art with rounded corners; a tinted placeholder when there is none.
+export component Cover inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-cover: true;
+    in property <color> tint: Theme.surface-hi;
+    in property <length> size: 120px;
+    in property <length> radius: Theme.radius-cover;
+    // Album title, set on the placeholder when there is no art (large covers only).
+    in property <string> label;
+    width: size;
+    height: size;
+    border-radius: radius;
+    clip: true;
+    // No art: a sleeve in the album's tint, lit from the top left, with its title.
+    background: has-cover ? Theme.surface : @linear-gradient(135deg, tint.brighter(35%) 0%, tint 55%, tint.darker(45%) 100%);
+    if !root.has-cover && (root.label == "" || root.size < 120px): Icon {
+        glyph: Icons.note;
+        width: root.size * 0.3;
+        height: root.size * 0.3;
+        color: #ffffff38;
+    }
+    if !root.has-cover && root.label != "" && root.size >= 120px: Rectangle {
+        Icon {
+            x: root.size * 0.09;
+            y: root.size * 0.09;
+            glyph: Icons.note;
+            width: root.size * 0.12;
+            height: root.size * 0.12;
+            color: #ffffff40;
+        }
+        Text {
+            x: root.size * 0.09;
+            width: root.size * 0.82;
+            y: root.size - self.height - root.size * 0.09;
+            height: min(self.preferred-height, root.size * 0.6);
+            text: root.label;
+            wrap: word-wrap;
+            overflow: elide;
+            font-size: max(12px, root.size * 0.085);
+            font-weight: 800;
+            color: #ffffffd8;
+            vertical-alignment: bottom;
+        }
+    }
+    Image {
+        width: 100%;
+        height: 100%;
+        source: root.source;
+        image-fit: cover;
+        image-rendering: smooth;
+    }
+}
+
+// A cover with title and artist under it, play button on hover. As a browse tile
+// (`group`: an artist, a genre, a label), the second line is plain text ("12 albums"),
+// with no play button and no album menu; `round` for an artist.
+export component AlbumTile inherits Rectangle {
+    in property <AlbumCard> album;
+    in property <length> size: Theme.cover-size;
+    // The keyboard cursor of the tile's list is here (the list has the focus).
+    in property <bool> focused;
+    // Place in its list, for screen readers.
+    in property <int> index;
+    in property <bool> group;
+    in property <bool> round;
+    callback open();
+    callback play();
+    callback open-artist();
+    width: size;
+    height: cover.height + 50px;
+    accessible-role: list-item;
+    accessible-label: root.album.title + ", " + root.album.artist + (root.album.year != "" ? ", " + root.album.year : "") + (root.album.remote ? ", from the server" : "");
+    accessible-item-index: root.index;
+    accessible-action-default => { root.open(); }
+    function menu-at(x: length, y: length) {
+        if !root.group {
+            Actions.menu-request("album", "", 0, root.album.id, x, y);
+        }
+    }
+    cover := Cover {
+        y: ta.has-hover || play-ta.has-hover || root.focused ? -3px : 0px;
+        radius: root.round ? root.size / 2 : Theme.radius-cover;
+        animate y { duration: Theme.dur-hover; easing: ease-out; }
+        size: root.size;
+        source: root.album.cover;
+        has-cover: root.album.has-cover;
+        tint: root.album.tint;
+        // A round placeholder has no room for the name (it is under the tile anyway).
+        label: root.round ? "" : root.album.title;
+        drop-shadow-blur: ta.has-hover ? 18px : 8px;
+        drop-shadow-color: #00000080;
+        drop-shadow-offset-y: 4px;
+        // Drag the cover onto the queue to add the album there.
+        DragArea {
+            enabled: !root.group;
+            data: Actions.album-payload(root.album.id);
+            allow-copy: true;
+            drag-image: root.album.cover;
+            drag-image-offset-x: -12;
+            drag-image-offset-y: -12;
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.open(); }
+                pointer-event(ev) => {
+                    if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                        root.menu-at(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
+        }
+        Rectangle {
+            x: parent.width - self.width - 10px;
+            y: parent.height - self.height - 10px;
+            width: 44px;
+            height: 44px;
+            border-radius: 22px;
+            visible: !root.group;
+            background: play-ta.has-hover ? Theme.accent.brighter(10%) : Theme.accent;
+            opacity: ta.has-hover || play-ta.has-hover || root.focused ? 1 : 0;
+            animate opacity { duration: Theme.dur-hover; }
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000080;
+            play-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.play(); }
+            }
+            Icon { glyph: Icons.play; width: 24px; height: 24px; color: Theme.accent-text; }
+        }
+    }
+    Rectangle {
+        y: cover.y;
+        width: root.size;
+        height: root.size;
+        FocusRing { shown: root.focused; radius: cover.radius; }
+    }
+    LinkText {
+        x: root.round ? (root.width - self.width) / 2 : 0px;
+        y: cover.height + 8px;
+        width: min(self.preferred-width, root.width);
+        text: root.album.title;
+        font-size: Theme.font-body;
+        font-weight: 600;
+        base-color: Theme.text;
+        clicked => { root.open(); }
+        context-requested(x, y) => { root.menu-at(x, y); }
+    }
+    if root.group: Text {
+        x: 0;
+        y: cover.height + 28px;
+        width: root.width;
+        height: 18px;
+        text: root.album.artist;
+        horizontal-alignment: root.round ? center : left;
+        font-size: Theme.font-small;
+        color: Theme.text-dim;
+        overflow: elide;
+    }
+    if !root.group: HorizontalLayout {
+        x: 0;
+        y: cover.height + 28px;
+        width: root.width;
+        height: 18px;
+        alignment: start;
+        ArtistLinks {
+            text: root.album.artist;
+            kind: "album";
+            ref-id: root.album.id;
+            context-requested(x, y) => { root.menu-at(x, y); }
+        }
+        if root.album.year != "": Text {
+            text: " · " + root.album.year;
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            horizontal-stretch: 0;
+        }
+        if root.album.remote: Rectangle { width: 6px; horizontal-stretch: 0; }
+        if root.album.remote: RemoteMark { size: 13px; }
+    }
+}
+
+// A thin progress/volume slider. `value` 0..1, reports drags through `changed`.
+// A horizontal slider. While dragging it shows the pointer's position; after release it
+// keeps showing that target until `value` arrives within `settle` of it (or 1.5 s pass),
+// so a seek bar never jumps back to the old position while the seek lands.
+export component Slider inherits Rectangle {
+    in property <float> value;
+    in property <bool> enabled: true;
+    // How close `value` must come to the released target to count as arrived.
+    in property <float> settle: 0.002;
+    // Keyboard: the arrow keys move it by `step` (Page Up/Down by four steps, Home/End to
+    // the ends) and report the new value through `keyed`.
+    in property <float> step: 0.05;
+    // The mouse wheel over it moves it a step per notch, up for more, reported through
+    // `keyed` (the volume). Off by default: a wheel passing over a seek bar must not seek.
+    in property <bool> wheel: false;
+    // What a screen reader says: what it sets, and the value as text.
+    in property <string> label;
+    in property <string> value-text;
+    in property <string> zone;
+    callback changed(float);
+    callback released(float);
+    callback keyed(float);
+    height: 16px;
+    accessible-role: slider;
+    accessible-label: root.label;
+    accessible-value: root.value-text;
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 1;
+    accessible-value-step: root.step;
+    accessible-enabled: root.enabled;
+    accessible-action-increment => { root.key-step(1); }
+    accessible-action-decrement => { root.key-step(-1); }
+    function key-step(steps: float) {
+        root.key-to(root.shown + steps * root.step);
+    }
+    function key-to(v: float) {
+        root.hold = clamp(v, 0, 1);
+        root.keyed(root.hold);
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.RightArrow || ev.text == Key.UpArrow { root.key-step(1); return accept; }
+            if ev.text == Key.LeftArrow || ev.text == Key.DownArrow { root.key-step(-1); return accept; }
+            if ev.text == Key.PageUp { root.key-step(4); return accept; }
+            if ev.text == Key.PageDown { root.key-step(-4); return accept; }
+            if ev.text == Key.Home { root.key-to(0); return accept; }
+            if ev.text == Key.End { root.key-to(1); return accept; }
+            reject
+        }
+        focus-gained => { Focus.zone = root.zone; }
+        focus-lost => {
+            if Focus.zone == root.zone { Focus.zone = ""; }
+        }
+    }
+    private property <float> drag-value;
+    private property <float> hold: -1;
+    private property <float> shown: ta.pressed ? drag-value : hold >= 0 ? hold : value;
+    // What the slider shows, and whether that is the user's target rather than `value`.
+    out property <float> shown-value: shown;
+    out property <bool> active: ta.pressed || hold >= 0;
+    changed value => {
+        if hold >= 0 && abs(value - hold) <= settle { hold = -1; }
+    }
+    Timer {
+        interval: 1500ms;
+        running: root.hold >= 0 && !ta.pressed;
+        triggered => { root.hold = -1; }
+    }
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: ta.has-hover || ta.pressed ? 6px : 4px;
+        animate height { duration: Theme.dur-hover; }
+        border-radius: self.height / 2;
+        background: #ffffff26;
+        Rectangle {
+            x: 0;
+            width: parent.width * clamp(root.shown, 0, 1);
+            height: parent.height;
+            border-radius: parent.border-radius;
+            background: ta.has-hover || ta.pressed ? Theme.accent : Theme.text;
+        }
+    }
+    Rectangle {
+        x: root.width * clamp(root.shown, 0, 1) - self.width / 2;
+        y: (parent.height - self.height) / 2;
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        background: Theme.text;
+        visible: root.enabled && (ta.has-hover || ta.pressed || fs.has-focus);
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down {
+                root.drag-value = clamp(self.mouse-x / root.width, 0, 1);
+                root.changed(root.drag-value);
+            }
+            if ev.kind == PointerEventKind.up {
+                root.hold = root.drag-value;
+                root.released(root.drag-value);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.drag-value = clamp(self.mouse-x / root.width, 0, 1);
+                root.changed(root.drag-value);
+            }
+        }
+        scroll-event(ev) => {
+            if !root.wheel || self.pressed { return reject; }
+            // A touchpad's sideways swipe counts too (right for more).
+            if ev.delta-y != 0 || ev.delta-x != 0 {
+                root.key-step(ev.delta-y > 0 || (ev.delta-y == 0 && ev.delta-x < 0) ? 1 : -1);
+            }
+            accept
+        }
+    }
+}
+
+export component SectionTitle inherits Text {
+    font-size: Theme.font-heading;
+    font-weight: 700;
+    color: Theme.text;
+}
+
+// A row's background: chosen in the list's selection (accent, stronger under the pointer),
+// else the hover. Apart from the playing marks (accent text, the play glyph; the queue's
+// current row a fainter accent).
+export global RowLook {
+    public pure function background(selected: bool, hover: bool) -> color {
+        return selected ? Theme.accent.with-alpha(hover ? 0.30 : 0.22) : hover ? Theme.hover : transparent;
+    }
+}
+
+// One row of a track list. Double-click plays; the trailing buttons act on it. A press
+// chooses it (with Ctrl or Shift: toggles it, or the range): the list's selection.
+export component TrackListRow inherits Rectangle {
+    in property <TrackRow> track;
+    in property <bool> show-cover;
+    in property <bool> show-album;
+    // The list has a technical details column (Settings > Window > Show technical
+    // details). Drawn only where the row is wide enough to keep the title its room.
+    in property <bool> details-column;
+    // (By the page's width: the row's own would depend on the column itself.)
+    private property <bool> show-details: root.details-column && Player.show-details && Nav.content-width - 2 * Theme.page-margin >= 720px;
+    callback play();
+    callback enqueue(bool);
+    callback favourite();
+    callback open-album();
+    callback open-artist();
+    callback add-to-playlist(int);
+    // The left button down on the row (Ctrl, Shift), and that press ended as a click.
+    callback select-press(bool, bool);
+    callback select-release();
+    // Set by the list: what the row's drag payload names.
+    in property <string> ctx;
+    // The keyboard cursor of the row's list is here (the list has the focus).
+    in property <bool> focused;
+    out property <bool> hovered: ta.has-hover;
+    accessible-role: list-item;
+    accessible-label: root.track.title + ", " + root.track.artist + (root.show-album ? ", " + root.track.album : "") + ", " + root.track.duration
+        + (root.show-details && root.track.details != "" ? ", " + root.track.details : "") + (root.track.remote ? ", from the server" : "");
+    accessible-item-index: root.index;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.track.selected;
+    accessible-action-default => { root.play(); }
+    function menu-at(x: length, y: length) {
+        Actions.menu-request("track", root.ctx, root.index, root.track.id, x, y);
+    }
+    in property <int> index;
+    height: 52px;
+    border-radius: Theme.radius-control;
+    background: RowLook.background(root.track.selected, ta.has-hover);
+    // Drag the row onto the queue to add the track there (with the rows chosen, when it is one).
+    DragArea {
+        enabled: root.ctx != "";
+        data: Actions.track-payload(root.ctx, root.index);
+        allow-copy: true;
+        ta := TouchArea {
+            double-clicked => { root.play(); }
+            clicked => { root.select-release(); }
+            pointer-event(ev) => {
+                if ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down {
+                    root.select-press(ev.modifiers.control, ev.modifiers.shift);
+                }
+                if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                    root.menu-at(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                }
+            }
+    // The row's content is inside its TouchArea: a TouchArea keeps its hover while a child of
+    // it has the pointer, but loses it to one drawn over it beside it. With the content a
+    // sibling, the play button (shown while the row is hovered) took the pointer, the row lost
+    // its hover, the button went, the row had it again: a flip on every pointer move, the row
+    // blinking and the click landing on whichever was there. The row's own buttons hid as
+    // they were hovered, for the same reason.
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 14px;
+        Rectangle {
+            width: root.show-cover ? 36px : 28px;
+            if root.show-cover: Cover {
+                y: (parent.height - self.height) / 2;
+                size: 36px;
+                radius: 4px;
+                source: root.track.cover;
+            }
+            if !root.show-cover && !root.track.playing && !ta.has-hover: Text {
+                text: root.track.number;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+                font-size: Theme.font-body;
+                color: Theme.text-faint;
+            }
+            if !root.show-cover && (root.track.playing || ta.has-hover): Rectangle {
+                Icon {
+                    x: parent.width - self.width;
+                    y: (parent.height - self.height) / 2;
+                    glyph: Icons.play;
+                    width: 18px;
+                    height: 18px;
+                    color: root.track.playing ? Theme.accent : Theme.text;
+                }
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.play(); }
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            HorizontalLayout {
+                alignment: start;
+                spacing: 6px;
+                Text {
+                    text: root.track.title;
+                    overflow: elide;
+                    font-size: Theme.font-body;
+                    font-weight: 500;
+                    color: root.track.playing ? Theme.accent : Theme.text;
+                }
+                if root.track.remote: RemoteMark { }
+            }
+            HorizontalLayout {
+                alignment: start;
+                ArtistLinks {
+                    text: root.track.artist;
+                    ref-id: root.track.id;
+                    context-requested(x, y) => { root.menu-at(x, y); }
+                }
+                if root.show-album: Text { text: " · "; font-size: Theme.font-small; color: Theme.text-faint; horizontal-stretch: 0; }
+                if root.show-album: LinkText {
+                    text: root.track.album;
+                    font-size: Theme.font-small;
+                    clicked => { root.open-album(); }
+                    context-requested(x, y) => { root.menu-at(x, y); }
+                }
+            }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 2px;
+            opacity: ta.has-hover || root.focused ? 1 : 0;
+            IconButton { y: 8px; glyph: Icons.queue; size: 32px; icon-size: 18px; label: "Add to queue"; tabbable: false; clicked => { root.enqueue(false); } }
+            IconButton { y: 8px; glyph: Icons.plus; size: 32px; icon-size: 18px; label: "Play next"; tabbable: false; clicked => { root.enqueue(true); } }
+        }
+        // Technical details: quiet, right-aligned, one width for every row so they line up.
+        if root.show-details: Text {
+            width: 84px;
+            text: root.track.details;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            overflow: elide;
+            accessible-role: none;
+        }
+        if root.track.stars != "": Text {
+            text: root.track.stars;
+            vertical-alignment: center;
+            font-size: Theme.font-small;
+            color: Theme.text-dim;
+            letter-spacing: 1px;
+            accessible-role: none;
+        }
+        IconButton {
+            y: 8px;
+            glyph: root.track.favourite ? Icons.heart : Icons.heart-outline;
+            size: 32px;
+            icon-size: 18px;
+            active: root.track.favourite;
+            label: root.track.favourite ? "Remove from favourites" : "Add to favourites";
+            tabbable: false;
+            opacity: root.track.favourite || ta.has-hover || root.focused ? 1 : 0;
+            clicked => { root.favourite(); }
+        }
+        Text {
+            width: 48px;
+            text: root.track.duration;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: Theme.font-small;
+            color: Theme.text-dim;
+        }
+    }
+        }
+    }
+    FocusRing { shown: root.focused; radius: Theme.radius-control; inset: true; }
+}
+
+// Holds a text field's keys: what the field does not take stops here, so no shortcut
+// fires while typing (Space types a space, M an m). Only Tab and Shift+Tab (to the next
+// control) and Esc go on. (Alt+Left / Alt+Right, back and forward, the fields send on
+// themselves: a TextInput takes the arrows before they could get here.)
+component TypingScope inherits FocusScope {
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+    key-pressed(ev) => {
+        if ev.text == Key.Tab || ev.text == Key.Backtab || ev.text == Key.Escape { return reject; }
+        accept
+    }
+    focus-gained => { Focus.zone = ""; }
+}
+
+export component SearchField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder: "Search";
+    callback edited(string);
+    callback accepted(string);
+    callback escape();
+    public function focus-field() { input.focus(); input.select-all(); }
+    height: 44px;
+    border-radius: Theme.radius-pill;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 10px;
+        Icon { y: (parent.height - self.height) / 2; glyph: Icons.search; color: Theme.text-dim; }
+        Rectangle {
+            Text {
+                width: 100%;
+                height: 100%;
+                text: root.placeholder;
+                vertical-alignment: center;
+                color: Theme.text-faint;
+                font-size: Theme.font-title;
+                visible: input.text == "";
+            }
+            TypingScope {
+                input := TextInput {
+                    width: 100%;
+                    height: 100%;
+                    text <=> root.text;
+                    vertical-alignment: center;
+                    color: Theme.text;
+                    font-size: Theme.font-title;
+                    selection-background-color: Theme.accent.with-alpha(0.4);
+                    accessible-label: root.placeholder;
+                    edited => { root.edited(self.text); }
+                    accepted => { root.accepted(self.text); }
+                    key-pressed(ev) => {
+                        if ev.text == Key.Escape {
+                            root.escape();
+                            return accept;
+                        }
+                        if ev.modifiers.alt && !ev.modifiers.control && (ev.text == Key.LeftArrow || ev.text == Key.RightArrow) {
+                            return Actions.shortcut(ev.text, false, ev.modifiers.shift, true) ? accept : reject;
+                        }
+                        reject
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A simple single-line field for names (playlists, shelf titles).
+export component LineField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    // What a screen reader calls the field, when the placeholder does not say it.
+    in property <string> label;
+    // `password` hides what is typed (a shared secret).
+    in property <InputType> input-type: InputType.text;
+    callback accepted(string);
+    callback edited(string);
+    callback escape();
+    public function focus-field() { input.focus(); input.select-all(); }
+    out property <bool> focused: input.has-focus;
+    height: 36px;
+    border-radius: Theme.radius-control;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.border;
+    Text {
+        x: 12px;
+        width: parent.width - 24px;
+        height: 100%;
+        text: root.placeholder;
+        vertical-alignment: center;
+        color: Theme.text-faint;
+        font-size: Theme.font-body;
+        visible: input.text == "";
+    }
+    TypingScope {
+        input := TextInput {
+            x: 12px;
+            width: parent.width - 24px;
+            height: 100%;
+            text <=> root.text;
+            input-type: root.input-type;
+            vertical-alignment: center;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            selection-background-color: Theme.accent.with-alpha(0.4);
+            accessible-label: root.label != "" ? root.label : root.placeholder;
+            accepted => { root.accepted(self.text); }
+            edited => { root.edited(self.text); }
+            key-pressed(ev) => {
+                if ev.text == Key.Escape {
+                    root.escape();
+                    return accept;
+                }
+                if ev.modifiers.alt && !ev.modifiers.control && (ev.text == Key.LeftArrow || ev.text == Key.RightArrow) {
+                    return Actions.shortcut(ev.text, false, ev.modifiers.shift, true) ? accept : reject;
+                }
+                reject
+            }
+        }
+    }
+}
+
+// ---- Settings controls ---------------------------------------------------------
+//
+// Controls that show their state: a switch for on / off, a segmented control for a
+// small choice (every option visible, the chosen one filled), a stepper for a number.
+// Each is one Tab stop; Enter (or a click) acts, as on every button of the app (Space
+// stays play / pause).
+
+// On / off. Accent track with a dark knob at the right when on; a quiet outlined track
+// with the knob at the left when off.
+export component Switch inherits Rectangle {
+    in property <bool> checked;
+    // What a screen reader calls it (the setting's name).
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <string> zone;
+    // The row around it is hovered (the whole row toggles it).
+    in property <bool> hovered;
+    callback toggled();
+    width: 44px;
+    height: 24px;
+    border-radius: self.height / 2;
+    background: root.checked ? (ta.has-hover || root.hovered ? Theme.accent.brighter(8%) : Theme.accent)
+        : ta.has-hover || root.hovered ? Theme.press : Theme.hover;
+    border-width: root.checked ? 0px : 1px;
+    border-color: Theme.text-faint.with-alpha(0.55);
+    opacity: root.enabled ? 1 : 0.45;
+    animate background { duration: Theme.dur-hover; }
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
+    fs := FocusTarget {
+        enabled: root.enabled;
+        zone: root.zone;
+        activated => { root.toggled(); }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.toggled(); }
+    }
+    Rectangle {
+        x: root.checked ? parent.width - self.width - 3px : 3px;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.checked ? Theme.accent-text : Theme.text-dim;
+        animate x { duration: Theme.dur-hover; easing: ease-out; }
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// A small choice: the options side by side in a pill, the chosen one filled with the
+// accent. One Tab stop: Left / Right (or Up / Down, Home / End) choose the neighbour at
+// once, like radio buttons; a click chooses that option.
+export component Segmented inherits Rectangle {
+    in property <[string]> options;
+    in property <int> selected;
+    // What a screen reader calls the group (the setting's name).
+    in property <string> label;
+    in property <string> zone;
+    callback chosen(int);
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: self.height / 2;
+    background: Theme.hover;
+    border-width: 1px;
+    border-color: Theme.border;
+    accessible-role: radio-group;
+    accessible-label: root.label;
+    accessible-value: root.selected >= 0 && root.selected < root.options.length ? root.options[root.selected] : "";
+    accessible-description: "Left and Right choose";
+    accessible-action-increment => { root.pick(root.selected + 1); }
+    accessible-action-decrement => { root.pick(root.selected - 1); }
+    function pick(i: int) {
+        if i >= 0 && i < root.options.length && i != root.selected { root.chosen(i); }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.RightArrow || ev.text == Key.DownArrow { root.pick(root.selected + 1); return accept; }
+            if ev.text == Key.LeftArrow || ev.text == Key.UpArrow { root.pick(root.selected - 1); return accept; }
+            if ev.text == Key.Home { root.pick(0); return accept; }
+            if ev.text == Key.End { root.pick(root.options.length - 1); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = root.zone;
+            if reason == FocusReason.tab-navigation && root.zone == "" {
+                Actions.reveal(self.absolute-position.y, self.height);
+            }
+        }
+        focus-lost => {
+            if Focus.zone == root.zone { Focus.zone = ""; }
+        }
+    }
+    lay := HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        for o[i] in root.options: Rectangle {
+            property <bool> on: i == root.selected;
+            min-width: t.preferred-width + 28px;
+            border-radius: self.height / 2;
+            background: self.on ? Theme.accent : sta.has-hover ? Theme.hover : transparent;
+            animate background { duration: Theme.dur-hover; }
+            accessible-role: radio-button;
+            accessible-label: o;
+            accessible-checkable: true;
+            accessible-checked: self.on;
+            accessible-action-default => { root.pick(i); }
+            sta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.pick(i); }
+            }
+            t := Text {
+                text: o;
+                font-size: Theme.font-small;
+                font-weight: parent.on ? 700 : 500;
+                color: parent.on ? Theme.accent-text : sta.has-hover ? Theme.text : Theme.text-dim;
+                accessible-role: none;
+            }
+        }
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// A number stepped down and up: − value +. One Tab stop; the arrows step it (Up / Right
+// up, Down / Left down).
+export component Stepper inherits Rectangle {
+    in property <string> value;
+    in property <string> label;
+    in property <string> zone;
+    // The value's room, so the buttons stay put as it changes.
+    in property <length> value-width: 64px;
+    callback step(int);
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: self.height / 2;
+    background: Theme.hover;
+    border-width: 1px;
+    border-color: Theme.border;
+    accessible-role: spinbox;
+    accessible-label: root.label;
+    accessible-value: root.value;
+    accessible-action-increment => { root.step(1); }
+    accessible-action-decrement => { root.step(-1); }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.UpArrow || ev.text == Key.RightArrow { root.step(1); return accept; }
+            if ev.text == Key.DownArrow || ev.text == Key.LeftArrow { root.step(-1); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = root.zone;
+            if reason == FocusReason.tab-navigation && root.zone == "" {
+                Actions.reveal(self.absolute-position.y, self.height);
+            }
+        }
+        focus-lost => {
+            if Focus.zone == root.zone { Focus.zone = ""; }
+        }
+    }
+    lay := HorizontalLayout {
+        padding: 2px;
+        IconButton { glyph: Icons.minus; size: 28px; icon-size: 16px; tabbable: false; label: root.label + " down"; clicked => { root.step(-1); } }
+        Text {
+            width: root.value-width;
+            text: root.value;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        IconButton { glyph: Icons.plus; size: 28px; icon-size: 16px; tabbable: false; label: root.label + " up"; clicked => { root.step(1); } }
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// The hairline between a card's rows (and under its heading), inset like the rows.
+export component Hairline inherits Rectangle {
+    height: 1px;
+    Rectangle {
+        x: 20px;
+        width: parent.width - 40px;
+        height: 1px;
+        background: Theme.border;
+    }
+}
+
+// A group of related settings: a rounded card with its heading (and an optional quiet
+// line under it), the rows below, divided by hairlines.
+export component SettingCard inherits Rectangle {
+    in property <string> title;
+    in property <string> note;
+    height: lay.preferred-height;
+    border-radius: Theme.radius-card;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    lay := VerticalLayout {
+        padding-bottom: 2px;
+        if root.title != "": VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 16px;
+            padding-bottom: 12px;
+            spacing: 3px;
+            Text {
+                text: root.title;
+                font-size: Theme.font-title;
+                font-weight: 700;
+                color: Theme.text;
+                accessible-role: none;
+            }
+            if root.note != "": Text { text: root.note; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+        }
+        @children
+    }
+}
+
+// One setting in a card: its name, a short quiet line under it saying what it does, and
+// its control at the row's right edge. `more`, when set, is the longer explanation behind
+// a "More" disclosure. A row the filter box jumped to (SettingsView.highlight) scrolls
+// into view and is outlined for a moment.
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> hint;
+    in property <string> more;
+    // The name "Find a setting" knows the row by, when the label carries a value too
+    // ("Version 2026.11.15.3"); empty: the label.
+    in property <string> find-key;
+    // A hairline above the row.
+    in property <bool> divider: true;
+    // The whole row toggles (a switch's row): hover shows, a click anywhere toggles.
+    in property <bool> clickable;
+    out property <bool> hovered: rta.has-hover;
+    callback clicked();
+    private property <bool> expanded;
+    private property <bool> lit: root.label != "" && SettingsView.highlight == (root.find-key != "" ? root.find-key : root.label);
+    private property <bool> revealed;
+    changed lit => {
+        if !self.lit { self.revealed = false; }
+    }
+    // Scroll to the row once it is laid out, when the filter jumped to it.
+    Timer {
+        interval: 80ms;
+        running: root.lit && !root.revealed;
+        triggered => {
+            root.revealed = true;
+            Actions.reveal(root.absolute-position.y, root.height);
+        }
+    }
+    if root.divider: Hairline { y: 0; width: parent.width; }
+    Rectangle {
+        x: 6px;
+        y: 4px;
+        width: parent.width - 12px;
+        height: parent.height - 8px;
+        border-radius: Theme.radius-control;
+        background: root.clickable && rta.has-hover ? Theme.hover : transparent;
+        border-width: root.lit ? 2px : 0px;
+        border-color: Theme.accent;
+    }
+    rta := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    height: lay.preferred-height;
+    lay := HorizontalLayout {
+        padding-left: 20px;
+        padding-right: 20px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 24px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            Text {
+                text: root.label;
+                font-size: Theme.font-body;
+                font-weight: 600;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+            if root.hint != "": Text { text: root.hint; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+            if root.more != "": HorizontalLayout {
+                alignment: start;
+                LinkText {
+                    text: root.expanded ? "Less" : "More";
+                    font-size: Theme.font-small;
+                    base-color: Theme.text-dim;
+                    tabbable: true;
+                    accessible-label: (root.expanded ? "Less about " : "More about ") + root.label;
+                    accessible-expandable: true;
+                    accessible-expanded: root.expanded;
+                    clicked => { root.expanded = !root.expanded; }
+                }
+            }
+            if root.more != "" && root.expanded: Text { text: root.more; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            @children
+        }
+    }
+}
+
+// A switch's row: the name, the hint, the switch; a click anywhere on the row toggles.
+export component SwitchRow inherits SettingRow {
+    in property <bool> checked;
+    // Off: shown dimmed, and neither the row nor the switch toggles.
+    in property <bool> enabled: true;
+    callback toggled();
+    clickable: root.enabled;
+    clicked => { root.toggled(); }
+    Switch {
+        checked: root.checked;
+        label: root.label;
+        enabled: root.enabled;
+        hovered: root.hovered;
+        toggled => { root.toggled(); }
+    }
+}
+
+// How far something is (a scan), a thin line in the accent. `value` 0..1.
+export component ProgressLine inherits Rectangle {
+    in property <float> value;
+    in property <string> label;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.surface-hi;
+    accessible-role: progress-indicator;
+    accessible-label: root.label;
+    accessible-value: round(clamp(root.value, 0, 1) * 100) + "%";
+    Rectangle {
+        x: 0;
+        width: parent.width * clamp(root.value, 0, 1);
+        border-radius: 2px;
+        background: Theme.accent;
+        animate width { duration: 400ms; }
+    }
+}
+
+// What a section's state is (scanning, connected as, playing on), at its top; actions
+// go beside it. `attention` draws it in the accent, for something the user should act on.
+export component StatusNote inherits Rectangle {
+    in property <string> glyph: Icons.info;
+    in property <string> title;
+    in property <string> text;
+    // A quieter line under the text (Output: what reaches the device); "" for none.
+    in property <string> detail;
+    // How far, 0..1, as a line under the text (a scan); below 0 for none.
+    in property <float> progress: -1;
+    in property <bool> attention;
+    height: lay.preferred-height;
+    border-radius: Theme.radius-card;
+    background: root.attention ? Theme.accent.with-alpha(0.12) : Theme.surface;
+    border-width: 1px;
+    border-color: root.attention ? Theme.accent.with-alpha(0.55) : Theme.border;
+    accessible-role: groupbox;
+    accessible-label: root.title + (root.title != "" && root.text != "" ? ": " : "") + root.text + (root.detail != "" ? ". " + root.detail : "");
+    lay := HorizontalLayout {
+        padding-left: 18px;
+        padding-right: 18px;
+        padding-top: 14px;
+        padding-bottom: 14px;
+        spacing: 14px;
+        VerticalLayout {
+            alignment: start;
+            Icon { glyph: root.glyph; width: 20px; height: 20px; color: root.attention ? Theme.accent : Theme.text-dim; }
+        }
+        VerticalLayout {
+            alignment: start;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            if root.title != "": Text { text: root.title; font-size: Theme.font-body; font-weight: 600; color: Theme.text; wrap: word-wrap; accessible-role: none; }
+            if root.text != "": Text { text: root.text; font-size: Theme.font-small; color: root.title != "" ? Theme.text-dim : Theme.text; wrap: word-wrap; accessible-role: none; }
+            if root.detail != "": Text { text: root.detail; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; accessible-role: none; }
+            if root.progress >= 0: VerticalLayout {
+                padding-top: 6px;
+                ProgressLine { value: root.progress; label: root.title; }
+            }
+            // Its actions, under the text.
+            HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                padding-top: 7px;
+                @children
+            }
+        }
+    }
+}

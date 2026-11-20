@@ -1,0 +1,112 @@
+// The shelf editor (Home's shelves).
+
+import { Theme } from "../theme.slint";
+import { ShelfLayout } from "../types.slint";
+import { Nav, Home, Grid, ShelfEditor, Actions } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { Icons, IconButton, TextButton, SectionTitle, LineField } from "../widgets.slint";
+
+// ---- Shelf editor --------------------------------------------------------------
+
+export component ShelvesPage inherits Rectangle {
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text { text: "Home shelves"; font-size: Theme.font-display; font-weight: 800; color: Theme.text; }
+                HorizontalLayout { alignment: end; TextButton { y: 8px; text: "Reset to defaults"; clicked => { Actions.shelves-reset(); } } }
+            }
+            for s[i] in ShelfEditor.rows: Rectangle {
+                height: 60px;
+                border-radius: Theme.radius-control;
+                background: Theme.surface;
+                opacity: s.visible ? 1 : 0.55;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        IconButton { glyph: Icons.up; size: 26px; icon-size: 18px; label: "Move " + s.title + " up"; clicked => { Actions.shelf-move(i, -1); } }
+                        IconButton { glyph: Icons.down; size: 26px; icon-size: 18px; label: "Move " + s.title + " down"; clicked => { Actions.shelf-move(i, 1); } }
+                    }
+                    LineField {
+                        y: 12px;
+                        width: 260px;
+                        text: s.title;
+                        label: "Shelf title";
+                        accepted(t) => { Actions.shelf-title(i, t); }
+                    }
+                    Text { text: s.description; vertical-alignment: center; color: Theme.text-dim; font-size: Theme.font-small; overflow: elide; horizontal-stretch: 1; }
+                    TextButton {
+                        y: 12px;
+                        width: 84px;
+                        horizontal-stretch: 0;
+                        text: s.layout == ShelfLayout.row ? "Row" : s.layout == ShelfLayout.grid ? "Grid" : "Hero";
+                        label: "Layout: " + self.text;
+                        clicked => {
+                            Actions.shelf-layout(i, s.layout == ShelfLayout.row ? ShelfLayout.grid : s.layout == ShelfLayout.grid ? ShelfLayout.hero : ShelfLayout.row);
+                        }
+                    }
+                    IconButton { y: 12px; glyph: Icons.down; size: 36px; label: "Fewer albums"; clicked => { Actions.shelf-limit(i, s.limit - 6); } }
+                    Text { width: 30px; text: s.limit; vertical-alignment: center; horizontal-alignment: center; color: Theme.text; }
+                    IconButton { y: 12px; glyph: Icons.up; size: 36px; label: "More albums"; clicked => { Actions.shelf-limit(i, s.limit + 6); } }
+                    IconButton { y: 12px; glyph: s.visible ? Icons.eye : Icons.eye-off; size: 36px; label: s.visible ? "Hide " + s.title : "Show " + s.title; clicked => { Actions.shelf-toggle(i); } }
+                    IconButton { y: 12px; glyph: Icons.close; size: 36px; icon-size: 16px; label: "Remove " + s.title; clicked => { Actions.shelf-remove(i); } }
+                }
+            }
+            SectionTitle { text: "Add a shelf"; }
+            AutoFlickable { autoscroll-x: true; autoscroll-y: false;
+                height: 44px;
+                content-width: builtins.preferred-width + 8px;
+                builtins := HorizontalLayout {
+                    x: 4px;
+                    y: 4px;
+                    height: 36px;
+                    spacing: 8px;
+                    TextButton { text: "Recently added"; clicked => { Actions.shelf-add("recently_added", ""); } }
+                    TextButton { text: "Recently released"; clicked => { Actions.shelf-add("recently_released", ""); } }
+                    TextButton { text: "Recently played"; clicked => { Actions.shelf-add("recently_played", ""); } }
+                    TextButton { text: "Most played"; clicked => { Actions.shelf-add("most_played", ""); } }
+                    TextButton { text: "Random"; clicked => { Actions.shelf-add("random", ""); } }
+                    TextButton { text: "Favourites"; clicked => { Actions.shelf-add("favourites", ""); } }
+                }
+            }
+            if ShelfEditor.genres.length > 0: Text { text: "By genre"; color: Theme.text-dim; font-size: Theme.font-small; }
+            if ShelfEditor.genres.length > 0: AutoFlickable { autoscroll-x: true; autoscroll-y: false;
+                height: 44px;
+                content-width: genres.preferred-width + 8px;
+                genres := HorizontalLayout {
+                    x: 4px;
+                    y: 4px;
+                    height: 36px;
+                    spacing: 8px;
+                    for g in ShelfEditor.genres: TextButton { text: g.name + " (" + g.count + ")"; clicked => { Actions.shelf-add("genre", g.name); } }
+                }
+            }
+            if ShelfEditor.labels.length > 0: Text { text: "By label or circle"; color: Theme.text-dim; font-size: Theme.font-small; }
+            if ShelfEditor.labels.length > 0: AutoFlickable { autoscroll-x: true; autoscroll-y: false;
+                height: 44px;
+                content-width: labels.preferred-width + 8px;
+                labels := HorizontalLayout {
+                    x: 4px;
+                    y: 4px;
+                    height: 36px;
+                    spacing: 8px;
+                    for l in ShelfEditor.labels: TextButton { text: l.name + " (" + l.count + ")"; clicked => { Actions.shelf-add("label", l.name); } }
+                }
+            }
+            if ShelfEditor.playlists.length > 0: Text { text: "By playlist"; color: Theme.text-dim; font-size: Theme.font-small; }
+            if ShelfEditor.playlists.length > 0: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for p in ShelfEditor.playlists: TextButton { text: p.name; clicked => { Actions.shelf-add("playlist", p.id); } }
+            }
+        }
+    }
+}

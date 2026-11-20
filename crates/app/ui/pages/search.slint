@@ -1,0 +1,172 @@
+// Search: the results and the operators' help.
+
+import { Theme } from "../theme.slint";
+import { Nav, Search, Actions } from "../stores.slint";
+import { AutoFlickable, AutoscrollBlock } from "../autoscroll.slint";
+import { Icons, TipBubble, TextButton, SectionTitle, SearchField, FocusRing, FocusTarget } from "../widgets.slint";
+import { CoverGrid, SeeAll, TrackList } from "../lists.slint";
+
+// ---- Search --------------------------------------------------------------------
+
+// A search section's header: its title, and "See all" when there is more than it shows.
+component SectionHeader inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> more;
+    callback see-all();
+    height: 36px;
+    SectionTitle { text: root.text; horizontal-stretch: 0; vertical-alignment: center; }
+    HorizontalLayout {
+        alignment: end;
+        if root.more: SeeAll { label: "See all " + root.text; clicked => { root.see-all(); } }
+    }
+}
+
+// The "?" beside the search field: opens and closes the syntax help under it.
+component HelpToggle inherits Rectangle {
+    in property <bool> open;
+    callback clicked();
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    border-width: 1px;
+    border-color: root.open || ta.has-hover || fs.has-focus ? Theme.text-dim : Theme.border;
+    background: root.open ? Theme.surface-hi : ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.open ? "Hide the search syntax" : "Search syntax";
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget { activated => { root.clicked(); } }
+    Text {
+        text: "?";
+        font-size: Theme.font-body;
+        font-weight: 700;
+        color: root.open || ta.has-hover || fs.has-focus ? Theme.text : Theme.text-dim;
+        accessible-role: none;
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    FocusRing { shown: fs.has-focus; radius: 18px; }
+    if !root.open: Tooltip { TipBubble { text: "Search syntax"; } }
+}
+
+// The search operators in short (docs/features/navigation.md, "Search operators", has them in full).
+component SearchHelp inherits Rectangle {
+    border-radius: Theme.radius-card;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    accessible-role: groupbox;
+    accessible-label: "Search syntax";
+    VerticalLayout {
+        padding: 16px;
+        spacing: 6px;
+        Text { text: "Search syntax"; font-size: Theme.font-body; font-weight: 700; color: Theme.text; }
+        for row in [
+            { a: "artist:\"nina simone\" live", b: "a field, and words anywhere: artist, albumartist, album, title, genre, label, format, path (=x: exactly x)" },
+            { a: "year:1994   year:1990..1999", b: "numbers: year, rating, plays, length, bitrate, samplerate, bitdepth, disc, track" },
+            { a: "rating:>=4   plays:>10   length:<3:00", b: "compare with >, >=, <, <=; ranges a..b; lengths 3:30, 90s, 5m" },
+            { a: "added:<30d   played:>1y   added:2024", b: "dates: in the last (d, w, m, y), longer ago, or a year, month or day" },
+            { a: "is:favourite   is:local   is:remote", b: "also is:favalbum, lossless, lossy, played, unplayed, rated, unrated" },
+            { a: "playlist:\"Road trip\"", b: "in a playlist" },
+            { a: "-genre:live   -is:remote", b: "not" },
+            { a: "genre:jazz OR genre:soul", b: "either (OR in capitals); everything else must all match" },
+        ]: HorizontalLayout {
+            spacing: 16px;
+            Text { text: row.a; width: 300px; font-size: Theme.font-small; font-weight: 600; color: Theme.text; wrap: word-wrap; }
+            Text { text: row.b; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; horizontal-stretch: 1; }
+        }
+        Text {
+            text: "What is not understood is searched as text. With operators, \"Save as smart playlist\" keeps the search.";
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component SearchPage inherits Rectangle {
+    public function focus-field() { field.focus-field(); }
+    callback escaped();
+    field := SearchField {
+        x: Theme.page-margin;
+        y: Theme.page-top - 8px;
+        width: min(640px, parent.width - 2 * Theme.page-margin - 44px);
+        text <=> Search.query;
+        placeholder: "Albums, artists, tracks";
+        edited(q) => { Actions.search(q); }
+        escape => { root.escaped(); }
+    }
+    HelpToggle {
+        x: field.x + field.width + 8px;
+        y: field.y + (field.height - self.height) / 2;
+        open: Search.help-open;
+        clicked => { Search.help-open = !Search.help-open; }
+    }
+    // What was not understood in the query (searched as text).
+    hint := Text {
+        x: field.x + 16px;
+        y: field.y + field.height + 6px;
+        width: min(800px, root.width - self.x - Theme.page-margin);
+        height: Search.hint != "" ? 18px : 0px;
+        visible: Search.hint != "";
+        text: Search.hint;
+        font-size: Theme.font-small;
+        color: Theme.text-dim;
+        overflow: elide;
+    }
+    // The band of the search field: a middle press there is the field's, never a result row's
+    // scrolled up out of sight under it (the rows' claim tests their geometry, not the clip).
+    AutoscrollBlock {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: field.y + field.height + 16px + hint.height;
+        live: root.visible;
+    }
+    AutoFlickable {
+        autoscroll-live: root.visible;
+        content-y <=> Nav.page-scroll;
+        y: field.y + field.height + 16px + hint.height;
+        height: parent.height - self.y;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding-left: Theme.page-margin;
+            padding-right: Theme.page-margin;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 28px;
+            if Search.help-open: SearchHelp { }
+            if Search.operators: HorizontalLayout {
+                alignment: start;
+                TextButton { text: "Save as smart playlist"; glyph: Icons.smart; clicked => { Actions.search-save-smart(); } }
+            }
+            if Search.artists.length > 0: VerticalLayout {
+                spacing: 12px;
+                SectionHeader { text: "Artists"; more: Search.more-artists; see-all => { Actions.search-all("artists"); } }
+                AutoFlickable { autoscroll-x: true; autoscroll-y: false; autoscroll-live: root.visible;
+                    height: 44px;
+                    content-width: pills.preferred-width + 8px;
+                    pills := HorizontalLayout {
+                        x: 4px;
+                        y: 4px;
+                        height: 36px;
+                        spacing: 8px;
+                        for a in Search.artists: TextButton { text: a.text; glyph: Icons.person; label: "Artist " + a.text; clicked => { Actions.open-artist(a.key); } }
+                    }
+                }
+            }
+            if Search.albums.length > 0: VerticalLayout {
+                spacing: 16px;
+                SectionHeader { text: "Albums"; more: Search.more-albums; see-all => { Actions.search-all("albums"); } }
+                CoverGrid { albums: Search.albums; size: 160px; }
+            }
+            if Search.tracks.length > 0: VerticalLayout {
+                spacing: 8px;
+                SectionHeader { text: "Tracks"; more: Search.more-tracks; see-all => { Actions.search-all("tracks"); } }
+                TrackList { tracks: Search.tracks; ctx: "search"; show-cover: true; show-album: true; }
+            }
+            if Search.query != "" && Search.albums.length == 0 && Search.tracks.length == 0 && Search.artists.length == 0: Text {
+                text: "No results for “" + Search.query + "”";
+                font-size: Theme.font-title;
+                color: Theme.text-dim;
+            }
+        }
+    }
+}

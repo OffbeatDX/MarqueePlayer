@@ -1,0 +1,221 @@
+// The visualizer's stage: where it draws, on Now playing and in Settings > Visualizer's preview.
+
+import { Theme } from "theme.slint";
+import { Player, Actions, Visualizer } from "stores.slint";
+import { Cover } from "widgets.slint";
+
+// What a look draws in front of the cover (Saturn's near grains): over the cover, where the
+// stage itself is under it. Same box as the stage it belongs to.
+export component VisualizerFront inherits Rectangle {
+    accessible-role: none;
+    for s in [
+        { c: Visualizer.front-glow, b: Visualizer.sparks-glow-brush },
+        { c: Visualizer.front, b: Visualizer.sparks-brush },
+    ]: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: root.height / 1px;
+        visible: Visualizer.active;
+        commands: s.c;
+        fill: s.b;
+        stroke-width: 0;
+    }
+}
+
+// A visualizer's stage (visualizer/mod.rs runs it, visualizer/draw.rs draws it): the top box, where
+// the bars rise from its foot, and under it the reflection's box. Each layer is one path
+// in the box's logical pixels, with a brush Rust builds. Purely decorative: screen readers
+// skip it (the page and Settings say in words what it is).
+export component VisualizerStage inherits Rectangle {
+    // The ring's ripples and sparks travel a cover's radius and more. Where the stage is a
+    // box of its own (the panel's tab, the Settings preview) they leave it at its edge;
+    // where it is the page (`open`), they go on over it and fade.
+    in property <bool> open;
+    clip: Visualizer.ring && !root.open;
+    // The halo's hub, in the stage's middle: the cover it surrounds (its half size, its
+    // radius when round). Behind the page that is the page's own cover (`hub-size`, the
+    // stage laid around it); elsewhere a share of the stage (visualizer::draw::HUB, 0.58 of half its
+    // smaller side less 2 px), with the cover drawn here (`cover`).
+    in property <length> hub-size: 0px;
+    in property <bool> cover;
+    out property <length> hub: root.hub-size > 0 ? root.hub-size : max(6px, (min(root.width, root.height) / 2 - 2px) * 0.58);
+    accessible-role: none;
+    init => {
+        Visualizer.stage-width = self.width;
+        Visualizer.stage-height = self.height;
+        Visualizer.stage-hub = self.hub;
+        Actions.visualizer-wake();
+    }
+    changed width => {
+        Visualizer.stage-width = self.width;
+        Actions.visualizer-wake();
+    }
+    changed height => {
+        Visualizer.stage-height = self.height;
+        Actions.visualizer-wake();
+    }
+    changed hub => {
+        Visualizer.stage-hub = self.hub;
+        Actions.visualizer-wake();
+    }
+    // The bloom: light from behind the cover (the ring, Saturn), brighter with the low notes.
+    if Visualizer.ring: Rectangle {
+        width: root.width;
+        height: root.height;
+        visible: Visualizer.active;
+        background: Visualizer.bloom-brush;
+        opacity: Visualizer.pulse;
+    }
+    Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.fill;
+        anti-alias: !Visualizer.crisp;
+        fill: Visualizer.fill-brush;
+        stroke-width: 0;
+    }
+    // The line's glow: the same line, wide and faint, under it.
+    if Visualizer.glow-width > 0: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.line;
+        fill: transparent;
+        stroke: Visualizer.glow-brush;
+        stroke-width: Visualizer.glow-width;
+        stroke-line-join: round;
+        stroke-line-cap: round;
+    }
+    Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.line;
+        fill: transparent;
+        stroke: Visualizer.line-brush;
+        stroke-width: Visualizer.line-width;
+        stroke-line-join: round;
+        stroke-line-cap: round;
+    }
+    Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.caps;
+        anti-alias: !Visualizer.crisp;
+        fill: Visualizer.caps-brush;
+        stroke-width: 0;
+    }
+    // The reflection: one path, or strips each fainter (a gradient across the bars).
+    if Visualizer.refl-h > 1px: Rectangle {
+        x: 0;
+        y: Visualizer.top-h;
+        width: root.width;
+        height: Visualizer.refl-h;
+        visible: Visualizer.active;
+        for r in [
+            { c: Visualizer.refl0, b: Visualizer.refl-brush0 },
+            { c: Visualizer.refl1, b: Visualizer.refl-brush1 },
+            { c: Visualizer.refl2, b: Visualizer.refl-brush2 },
+            { c: Visualizer.refl3, b: Visualizer.refl-brush3 },
+            { c: Visualizer.refl4, b: Visualizer.refl-brush4 },
+            { c: Visualizer.refl5, b: Visualizer.refl-brush5 },
+        ]: Path {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: Visualizer.refl-h;
+            viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+            viewbox-height: Visualizer.refl-h / 1px;
+            commands: r.c;
+        anti-alias: !Visualizer.crisp;
+            fill: r.b;
+            stroke-width: 0;
+        }
+    }
+    // The ring's ripples: the contours that left the cover, fainter the farther out.
+    if Visualizer.ring: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        // The commands are in the element's own pixels: drawn as they are (a stroked
+        // path is otherwise inset by its width and scaled to fit).
+        fit: preserve;
+        viewbox-height: root.height / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.ripples;
+        fill: transparent;
+        stroke: Visualizer.ripples-brush;
+        stroke-width: Visualizer.ripples-width;
+    }
+    // Sparks (the ring's, the bonfire's): the discs of light, the old ones' dots, the young.
+    for s in [
+        { c: Visualizer.sparks-glow, b: Visualizer.sparks-glow-brush },
+        { c: Visualizer.sparks-old, b: Visualizer.sparks-old-brush },
+        { c: Visualizer.sparks, b: Visualizer.sparks-brush },
+    ]: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: root.height / 1px;
+        visible: Visualizer.active;
+        commands: s.c;
+        fill: s.b;
+        stroke-width: 0;
+    }
+    // The halo's hub: the playing cover, round (or its own rounded square), over the
+    // contour's foot; at rest the contour is a thin lit line around it.
+    if root.cover && Visualizer.ring: Cover {
+        size: root.hub * 2 * Visualizer.cover-scale;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        source: Player.full;
+        has-cover: Player.has-cover;
+        radius: Visualizer.square ? Theme.radius-card : self.width / 2;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000090;
+        drop-shadow-offset-y: 4px;
+    }
+    if root.cover && Visualizer.ring: VisualizerFront { x: 0; y: 0; width: root.width; height: root.height; }
+}

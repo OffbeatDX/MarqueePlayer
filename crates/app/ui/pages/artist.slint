@@ -1,0 +1,42 @@
+// An artist's page.
+
+import { Theme } from "../theme.slint";
+import { Nav, ArtistPage } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { SectionTitle } from "../widgets.slint";
+import { CoverGrid, TrackList } from "../lists.slint";
+
+// ---- Artist --------------------------------------------------------------------
+
+export component ArtistPageView inherits Rectangle {
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 28px;
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "ARTIST"; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; }
+                Text { text: ArtistPage.name; font-size: Theme.font-display; font-weight: 800; color: Theme.text; wrap: word-wrap; }
+            }
+            if ArtistPage.top.length > 0: VerticalLayout {
+                spacing: 8px;
+                SectionTitle { text: "Top tracks"; }
+                TrackList { tracks: ArtistPage.top; ctx: "artist"; show-cover: true; show-album: true; label: "Top tracks"; }
+            }
+            if ArtistPage.albums.length > 0: VerticalLayout {
+                spacing: 16px;
+                SectionTitle { text: "Albums"; }
+                CoverGrid { albums: ArtistPage.albums; }
+            }
+            if ArtistPage.appears.length > 0: VerticalLayout {
+                spacing: 16px;
+                SectionTitle { text: "Appears on"; }
+                CoverGrid { albums: ArtistPage.appears; label: "Appears on"; }
+            }
+        }
+    }
+}

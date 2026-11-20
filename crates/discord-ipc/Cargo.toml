@@ -1,0 +1,17 @@
+[package]
+name = "discord-ipc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Discord Rich Presence: the local IPC protocol of the Discord app running on this machine, and the thread that keeps the activity shown."
+
+[dependencies]
+serde_json.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+
+# The pipe opened for overlapped reads and writes, so that each can give up (`ipc::win`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }

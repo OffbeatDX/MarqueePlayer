@@ -1,0 +1,86 @@
+// Design tokens. Rust overwrites every `in-out` value from theme.toml in the config
+// folder (hot-reloaded), so these defaults only matter until that file is read.
+// Components use tokens, not literals. Deeper changes happen in source.
+export global Theme {
+    // ---- Colour ------------------------------------------------------------
+    in-out property <color> bg: #0c0b10;
+    in-out property <color> surface: #17151e;
+    in-out property <color> surface-hi: #221f2b;
+    in-out property <color> border: #ffffff14;
+    in-out property <color> text: #f3f0f7;
+    in-out property <color> text-dim: #a9a3b6;
+    in-out property <color> text-faint: #928da0;
+    in-out property <color> accent: #b4a6e8;
+    in-out property <color> accent-text: #1e182c;
+    in-out property <color> hover: #ffffff10;
+    in-out property <color> press: #ffffff1c;
+    // How much of the blurred art shows through behind pages (0 = none, 1 = full).
+    in-out property <float> backdrop-opacity: 0.55;
+    // The tint over the backdrop, mixed toward `bg`.
+    in-out property <color> backdrop-tint: #0c0b10b0;
+    in-out property <color> bar-tint: #0c0b10c8;
+
+    // ---- Glass (live blur of the content behind a panel) -------------------
+    // Blur strength (standard deviation). 0 turns the blur off: panels then draw
+    // opaque, and the player bar falls back to the pre-blurred album art.
+    in-out property <length> glass-blur: 28px;
+    // The tint over the blur. Its alpha sets how much of the content shows through.
+    in-out property <color> glass-tint: #17151ec2;
+    // False when the renderer cannot blur (Skia unavailable, software fallback).
+    in-out property <bool> glass-supported: true;
+    out property <bool> glass: glass-supported && glass-blur > 0px;
+    // Panel fill: the tint over the blur, or nearly opaque without it.
+    out property <color> glass-fill: glass ? glass-tint : surface.with-alpha(0.96);
+    out property <length> glass-radius-blur: glass ? glass-blur : 0px;
+
+    // ---- Shape -------------------------------------------------------------
+    in-out property <length> radius-cover: 8px;
+    in-out property <length> radius-card: 12px;
+    in-out property <length> radius-control: 8px;
+    in-out property <length> radius-pill: 999px;
+
+    // ---- Type --------------------------------------------------------------
+    in-out property <string> font-family: "Segoe UI Variable Text";
+    in-out property <length> font-small: 13px;
+    in-out property <length> font-body: 14px;
+    in-out property <length> font-title: 16px;
+    in-out property <length> font-heading: 22px;
+    in-out property <length> font-display: 40px;
+
+    // ---- Size --------------------------------------------------------------
+    in-out property <length> cover-size: 184px;
+    in-out property <length> sidebar-width: 232px;
+    in-out property <length> queue-width: 340px;
+    in-out property <length> bar-height: 88px;
+    in-out property <length> page-margin: 40px;
+    // Space above page content, under the navigation pill.
+    in-out property <length> page-top: 72px;
+    // The app-drawn caption strip (drag to move) and caption buttons at the top.
+    in-out property <length> caption-height: 32px;
+
+    // ---- Visualizer (now playing) -------------------------------------------
+    // The bars' strongest alpha (their tops); the reflection is dimmer still.
+    in-out property <float> viz-opacity: 0.4;
+    // The tallest a bar gets, above the baseline just over the player bar.
+    in-out property <length> viz-height: 200px;
+    in-out property <length> viz-bar-width: 10px;
+    in-out property <length> viz-bar-gap: 4px;
+    // The reflection's height as a share of the bars', and its alpha as a share of theirs.
+    // It lies behind the player bar's glass, which lets about a quarter through, so the
+    // share is above 1 for it to read as a dimmer copy.
+    in-out property <float> viz-reflection: 0.45;
+    in-out property <float> viz-reflection-opacity: 1.6;
+    // Peak caps above the bars.
+    in-out property <bool> viz-peaks: true;
+
+    // ---- Motion ------------------------------------------------------------
+    in-out property <duration> dur-hover: 120ms;
+    in-out property <duration> dur-sidebar: 220ms;
+    // Page change: the new page fades up and slides in this long. 0 turns it off.
+    in-out property <duration> dur-page: 180ms;
+    in-out property <duration> dur-backdrop: 600ms;
+    // Sidebar stays open this long after the pointer leaves it.
+    in-out property <duration> sidebar-linger: 250ms;
+    // An auto-hiding player bar stays this long once nothing holds it up.
+    in-out property <duration> bar-linger: 600ms;
+}

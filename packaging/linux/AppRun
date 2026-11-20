@@ -1,0 +1,45 @@
+#!/bin/sh
+# The AppImage's entry point (`cargo xtask release` puts it at the AppDir's root).
+#
+# The binary finds the few libraries the AppImage carries (usr/lib: xkbcommon) through its
+# own RUNPATH, so nothing here changes the library path of the programs it starts (the file
+# manager, the browser). Everything else comes from the system: glibc, libstdc++, PipeWire
+# and ALSA, fontconfig and freetype, Wayland and X11, EGL, OpenGL and Vulkan with the GPU
+# driver (docs/releases.md, "Linux AppImage").
+#
+# A fallback font: fontconfig reads the system's configuration and, after it, the DejaVu
+# fonts in the AppImage, so text shows even on a system with no fonts; the system's fonts
+# and its preferences come first.
+HERE="$(dirname "$(readlink -f "$0")")"
+BIN="$HERE/usr/bin/MarqueePlayer"
+if [ -z "$FONTCONFIG_FILE" ] && [ -f "$HERE/usr/share/marquee-player/fonts.conf" ]; then
+    FONTCONFIG_FILE="$HERE/usr/share/marquee-player/fonts.conf"
+    export FONTCONFIG_FILE
+fi
+
+# The system's libraries must load: a missing or too old PipeWire library (Ubuntu 22.04 has
+# 0.3.48; the app needs 0.3.50 or newer) is said plainly, not as a loader error.
+if ! out=$("$BIN" --version 2>&1); then
+    case "$out" in
+    *libpipewire*|*pw_*)
+        msg="Marquee Player needs PipeWire's library, libpipewire-0.3, version 0.3.50 or newer, and this system does not have it.
+
+Install the package libpipewire-0.3-0 (Debian, Ubuntu: libpipewire-0.3-0t64 on newer releases; Fedora, openSUSE: pipewire-libs or libpipewire-0_3-0). Ubuntu 22.04 and Linux Mint 21 come with 0.3.48, which is too old.
+
+$out" ;;
+    *)
+        msg="Marquee Player could not start: a library it needs from the system did not load.
+
+$out" ;;
+    esac
+    printf '%s\n' "$msg" >&2
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "Marquee Player" --error "$msg" 2>/dev/null
+    elif command -v zenity >/dev/null 2>&1; then
+        zenity --error --title="Marquee Player" --no-markup --text="$msg" 2>/dev/null
+    elif command -v notify-send >/dev/null 2>&1; then
+        notify-send "Marquee Player could not start" "$msg" 2>/dev/null
+    fi
+    exit 1
+fi
+exec "$BIN" "$@"

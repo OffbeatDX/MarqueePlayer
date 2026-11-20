@@ -1,0 +1,391 @@
+import { Theme } from "theme.slint";
+import { Page, AlbumCard, TrackRow, ShelfView, ShelfLayout, QueueRow, PlaylistRow, NamedCount, ShelfEdit } from "types.slint";
+import { Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions } from "stores.slint";
+import { HomePage } from "pages/home.slint";
+import { AlbumsPage, ShelfAllPage, ArtistsPage, GroupsPage, TracksPage } from "pages/browse.slint";
+import { AlbumPageView } from "pages/album.slint";
+import { ArtistPageView } from "pages/artist.slint";
+import { SearchPage } from "pages/search.slint";
+import { PlaylistsPage, PlaylistPage } from "pages/playlists.slint";
+import { NowPlayingPage } from "pages/nowplaying.slint";
+import { SettingsPage } from "pages/settings/settings.slint";
+import { ShelvesPage } from "pages/shelves.slint";
+import { Sidebar, PlayerBar, QueueSidebar, NavPill, CaptionButtons } from "chrome.slint";
+import { AppMenu } from "menu.slint";
+import { NamePrompt, ClashPrompt } from "dialogs.slint";
+import { MetadataPanel } from "metaview.slint";
+import { EqPreviewPanel } from "eq.slint";
+import { SmartEditorPage, SmartPlaylistPage, SmartPicker } from "smart.slint";
+import { Activity, MenuStore, Chrome, ShelfPage, Focus, Keys, Browse, TrackPage, Output, LastFm, ListenBrainz, Server, Discord, Lyrics, Visualizer, SettingsView, Dialog, Meta, AboutView, SmartList, SmartEdit, Picker, Equalizer, EqPreview, PlatformWords } from "stores.slint";
+import { Icons } from "widgets.slint";
+import { Autoscroll } from "stores.slint";
+import { AutoscrollMark, AutoscrollBlock } from "autoscroll.slint";
+
+export { Theme, Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions, Icons }
+export { Page, AlbumCard, TrackRow, ShelfView, ShelfLayout, QueueRow, PlaylistRow, NamedCount, ShelfEdit }
+export { Activity, MenuStore, Chrome, ShelfPage, Focus, Keys, Browse, TrackPage, Output, LastFm, ListenBrainz, Server, Discord, Lyrics, Visualizer, SettingsView, Autoscroll, Dialog, Meta, AboutView, SmartList, SmartEdit, Picker, Equalizer, EqPreview, PlatformWords }
+export { MenuItemData, KeyHelp, KeyRow, LyricLine, SettingHit, MetaRow, AboutFile, AboutCredit, SmartRow, SmartSlot, EqBandRow, EqNote, VizPresetRow } from "types.slint";
+
+export component AppWindow inherits Window {
+    title: "Marquee Player";
+    preferred-width: 1440px;
+    preferred-height: 900px;
+    // The design minimum, 960 x 620, smaller only where the interface size would not let it
+    // fit the monitor (zoom.rs).
+    min-width: Chrome.min-width;
+    min-height: Chrome.min-height;
+    background: Theme.bg;
+    default-font-family: Theme.font-family;
+    default-font-size: Theme.font-body;
+    in property <image> app-icon;
+    icon: app-icon;
+    // Slint applies this every time the window's properties change (the title with each
+    // track): without it, it asked for the system's decorations again right after the
+    // window was created frameless (on KDE a server-side title bar over the app's own).
+    no-frame: Chrome.frameless;
+
+    public function focus-search() {
+        search-page.focus-field();
+    }
+
+    // Player bar auto-hide (Settings): while playing, the bar slides away and comes back
+    // when the pointer reaches the bottom of the window. The pointer anywhere on the bar
+    // (on its buttons and sliders too: `bar-area` is their parent, so it sees the events
+    // they take), a slider of it being dragged, or the keyboard focus on one of its
+    // controls holds it up. Once nothing does, it stays for Theme.bar-linger, and also
+    // while a menu is open (the rating menu opens from it); then it goes.
+    private property <bool> bar-held: !Player.bar-autohide || !Player.playing || Nav.page == Page.now-playing
+        || bar-area.has-hover || bar-reveal.has-hover || player-bar.dragging || Focus.zone == "bar";
+    changed bar-held => {
+        if self.bar-held { Player.bar-up = true; }
+    }
+    Timer {
+        interval: Theme.bar-linger;
+        running: Player.bar-up && !root.bar-held && !MenuStore.open;
+        triggered => { Player.bar-up = false; }
+    }
+    // Whether the player bar is up (for the bench).
+    out property <bool> bar-visible: Player.bar-up;
+    // Where the player bar and the caption buttons are, and what the bar needs (for the
+    // interface size bench: everything inside the window at every size).
+    out property <length> bar-top: bar-area.y;
+    out property <length> bar-height: bar-area.height;
+    out property <length> bar-min-width: player-bar.min-width;
+    out property <length> caption-left: caption.x;
+    out property <length> caption-height: caption.height;
+
+    // Shortcuts live on `keys`, which holds the whole window: a key that the focused
+    // control (a button, a list, a slider) does not take comes up to it, so the shortcuts
+    // work wherever the keyboard focus is, but never from a text field (TypingScope keeps
+    // its keys). Give it the focus back whenever the page changes, so a click into the
+    // search field does not leave Space typing spaces on the next page, and Tab starts
+    // again from the top of the new page.
+    private property <Page> page: Nav.page;
+    changed page => {
+        if self.page != Page.search { keys.focus(); }
+    }
+    // Page change: the new page fades up from 35% and slides 28 px in from the side it
+    // comes from, over Theme.dur-page, eased out. Driven by the frame clock, so it never
+    // blocks input; a second navigation mid-way simply restarts from the new page.
+    private property <int> transition-seq: Nav.transition-seq;
+    private property <duration> transition-start;
+    private property <bool> transitioning;
+    changed transition-seq => {
+        if Theme.dur-page > 0ms {
+            self.transition-start = animation-tick();
+            self.transitioning = true;
+        }
+    }
+    private property <float> transition-t: self.transitioning
+        ? clamp((animation-tick() - self.transition-start) / Theme.dur-page, 0, 1) : 1;
+    private property <float> transition-e: 1 - pow(1 - self.transition-t, 3);
+    out property <float> page-fade: 0.35 + 0.65 * self.transition-e;
+    out property <length> page-shift: (1 - self.transition-e) * 28px * Nav.transition-dir;
+    Timer {
+        interval: 16ms;
+        running: root.transitioning;
+        triggered => {
+            if animation-tick() - root.transition-start >= Theme.dur-page { root.transitioning = false; }
+        }
+    }
+
+    // Shortcuts get the keyboard back when a context menu the pointer opened closes (one
+    // opened from a list's keys never took it: the list keeps it).
+    private property <bool> menu-open: MenuStore.open;
+    changed menu-open => {
+        // (Not when the menu's entry opened a dialog: that has the keyboard now.)
+        if !self.menu-open && !MenuStore.from-keys && !Dialog.open { keys.focus(); }
+    }
+    // A dialog closed: the list it was opened from takes the focus back (lists.slint);
+    // otherwise the shortcuts do.
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && !Dialog.returns { keys.focus(); }
+    }
+
+    // Middle-click scrolling ends when anything takes the user elsewhere: another page
+    // (or the same kind of page for another album), another Settings section, the other
+    // tab of now playing's panel (autoscroll.rs ends it on the window losing focus).
+    private property <int> away-seq: Nav.transition-seq;
+    private property <int> away-section: SettingsView.section;
+    private property <bool> away-lyrics: Lyrics.shown;
+    changed away-seq => { if Autoscroll.on { Autoscroll.stop(); } }
+    changed away-section => { if Autoscroll.on { Autoscroll.stop(); } }
+    changed away-lyrics => { if Autoscroll.on { Autoscroll.stop(); } }
+
+    // The page's width, for the track lists' details column (widgets.slint).
+    private property <length> content-width: content.width;
+    changed content-width => { Nav.content-width = self.content-width; }
+
+    // Give the shortcuts the focus (after a text field, or when the focused control went).
+    public function focus-shortcuts() { keys.focus(); }
+
+    keys := FocusScope {
+        width: 100%;
+        height: 100%;
+        focus-on-tab-navigation: false;
+        // The shortcuts are matched in Rust (keys/shortcuts.rs) against the keymap the user
+        // edits in Settings > Keys (keys/map.rs). The pin keys (Ctrl+B / Ctrl+Q unless
+        // remapped) are taken at the window, before focus (winmsg.rs), so they work in
+        // the search field too.
+        key-pressed(ev) => {
+            if Actions.shortcut(ev.text, ev.modifiers.control, ev.modifiers.shift, ev.modifiers.alt) {
+                return accept;
+            }
+            reject
+        }
+        focus-gained => { Focus.zone = ""; }
+
+        // Blurred art behind the page. The image is pre-blurred and small; stretched over
+        // the window it reads as a full-size blur.
+        Image {
+            width: 100%;
+            height: 100%;
+            source: Backdrop.image;
+            image-fit: cover;
+            visible: Backdrop.visible;
+            opacity: Theme.backdrop-opacity;
+        }
+        Rectangle {
+            background: @linear-gradient(180deg, Theme.backdrop-tint 0%, Theme.bg 70%);
+            visible: Backdrop.visible;
+        }
+
+        // Pages. The content shifts right only when the sidebar is pinned.
+        content := Rectangle {
+            // Pinned sidebars reserve their room; unpinned ones slide over the content.
+            x: Nav.sidebar-pinned ? Theme.sidebar-width : 0px;
+            width: parent.width - self.x - (Nav.queue-pinned ? Theme.queue-width : 0px);
+            height: parent.height;
+            animate x, width { duration: Theme.dur-sidebar; easing: ease-out; }
+            // The page itself, which moves during a page change; the frosted panels are not
+            // inside it, so their blur keeps sampling it as it draws.
+            stage := Rectangle {
+                x: root.page-shift;
+                width: parent.width;
+                height: parent.height;
+                opacity: root.page-fade;
+                if Nav.page == Page.home: HomePage { }
+                if Nav.page == Page.albums: AlbumsPage { }
+                if Nav.page == Page.album: AlbumPageView { }
+                if Nav.page == Page.artist: ArtistPageView { }
+                search-page := SearchPage {
+                    visible: Nav.page == Page.search;
+                    escaped => { keys.focus(); Nav.back(); }
+                }
+                if Nav.page == Page.playlists: PlaylistsPage { }
+                if Nav.page == Page.playlist: PlaylistPage { }
+                if Nav.page == Page.now-playing: NowPlayingPage { }
+                if Nav.page == Page.settings: SettingsPage { }
+                if Nav.page == Page.shelves: ShelvesPage { }
+                if Nav.page == Page.shelf: ShelfAllPage { }
+                if Nav.page == Page.artists: ArtistsPage { }
+                if Nav.page == Page.genres: GroupsPage { labels: false; }
+                if Nav.page == Page.labels: GroupsPage { labels: true; }
+                if Nav.page == Page.tracks: TracksPage { }
+                if Nav.page == Page.smart: SmartPlaylistPage { }
+                if Nav.page == Page.smart-edit: SmartEditorPage { }
+
+            }
+        }
+
+        // No Windows title bar (frame.rs): the page runs to the top edge, and this strip
+        // along it moves the window. It sits under the pill, the sidebars and the caption
+        // buttons, so it never takes their clicks; a plain click passes through to the
+        // page, only a drag moves the window (to a screen edge: snap). Double click
+        // maximizes or restores, right click opens the window menu.
+        WindowMoveArea {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: Theme.caption-height;
+            TouchArea {
+                double-clicked => { Chrome.toggle-maximize(); }
+                pointer-event(ev) => {
+                    if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up {
+                        Chrome.system-menu(self.mouse-x, self.mouse-y);
+                    }
+                }
+            }
+        }
+
+        NavPill {
+            // Clear of the system's caption buttons where they are over the page (macOS).
+            x: max(content.x + 12px, Chrome.caption-inset);
+            y: 14px;
+        }
+
+        // Diagnostics (Ctrl+Shift+D): the last side-button input and what it did.
+        if Nav.show-input-readout: Rectangle {
+            x: content.x + 12px;
+            y: 60px;
+            width: readout.preferred-width + 24px;
+            height: 30px;
+            border-radius: 8px;
+            background: #000000c0;
+            readout := Text {
+                text: "Side buttons: " + Nav.input-readout;
+                color: #ffffff;
+                font-size: Theme.font-small;
+            }
+        }
+
+        QueueSidebar {
+            y: 0;
+            window-width: root.width;
+            window-height: root.height;
+        }
+
+        Sidebar { x: 0; y: 0; window-height: root.height; }
+
+        // With auto-hide, the bar's place at the bottom: the pointer reaching it brings the
+        // bar back. Under the bar, so it only sees the pointer while the bar is away. It
+        // takes no wheel: the page beneath still scrolls.
+        bar-reveal := TouchArea {
+            y: parent.height - Theme.bar-height;
+            height: Theme.bar-height;
+            visible: Player.bar-autohide;
+        }
+        // The bar's empty parts take a click (it never falls through to the page under
+        // the bar); the wheel still scrolls the page.
+        bar-area := TouchArea {
+            y: Player.bar-up ? parent.height - self.height : parent.height;
+            height: Theme.bar-height;
+            animate y { duration: Theme.dur-sidebar; easing: ease-out; }
+            AutoscrollBlock { }
+            player-bar := PlayerBar { }
+        }
+
+        caption := CaptionButtons {
+            x: root.width - self.width;
+            y: 0;
+            visible: !Chrome.native-caption;
+        }
+
+        AppMenu {
+            window-width: root.width;
+            window-height: root.height;
+        }
+        SmartPicker {
+            window-width: root.width;
+            window-height: root.height;
+        }
+
+        if Dialog.prompt-open: NamePrompt {
+            window-width: root.width;
+            window-height: root.height;
+        }
+        if Dialog.meta-open: MetadataPanel {
+            window-width: root.width;
+            window-height: root.height;
+        }
+        if Dialog.eq-preview-open: EqPreviewPanel {
+            window-width: root.width;
+            window-height: root.height;
+        }
+        if Dialog.clash-open: ClashPrompt {
+            window-width: root.width;
+            window-height: root.height;
+        }
+
+        // Middle-click scrolling: the anchor and the scroll cursor, over everything.
+        AutoscrollMark {
+            window-width: root.width;
+            window-height: root.height;
+        }
+    }
+
+    // The clipboard where the app has no system call of its own for it (Linux): Slint's,
+    // through a text field no one sees or reaches (platform/linux/shell.rs). Paste inserts
+    // whatever the field's read-only says (Slint's `paste()` does not check it).
+    clip := TextInput {
+        x: 0;
+        y: 0;
+        width: 0;
+        height: 0;
+        opacity: 0;
+        enabled: false;
+        read-only: true;
+        // Pasted text keeps its lines (a single-line field would join them).
+        single-line: false;
+        accessible-role: none;
+    }
+    public function clipboard-copy(text: string) {
+        clip.text = text;
+        clip.select-all();
+        clip.copy();
+        clip.text = "";
+    }
+    public function clipboard-paste() -> string {
+        clip.text = "";
+        clip.paste();
+        return clip.text;
+    }
+
+    // Frameless (Linux), the desktop draws no shadow round the window on most compositors:
+    // a hairline marks its edge against what is behind it, while it is not maximized. It
+    // takes no input (the resize band along the edges is platform/linux/window.rs's).
+    if Chrome.frameless && !Chrome.maximized: Rectangle {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        border-width: 1px;
+        border-color: Theme.border;
+    }
+
+    init => {
+        Nav.content-width = content.width;
+        keys.focus();
+    }
+}
+
+export component Tray inherits SystemTrayIcon {
+    title: "Marquee Player";
+    in property <bool> playing;
+    // What plays, or the app and its version while nothing is loaded; the volume first
+    // just after the wheel changed it (tray/mod.rs).
+    in property <string> tip: "Marquee Player";
+    in property <image> tray-icon;
+    icon: tray-icon;
+    tooltip: tip;
+    callback toggle-play();
+    callback next();
+    callback previous();
+    callback show-window();
+    callback about();
+    callback quit();
+    // A left click, until the app takes the icon's mouse messages itself (platform/windows/tray.rs;
+    // from then on clicks, double clicks, the middle button and the wheel never come here).
+    callback activated();
+    clicked => { activated(); }
+    Menu {
+        MenuItem { title: playing ? "Pause" : "Play"; activated => { toggle-play(); } }
+        MenuItem { title: "Next"; activated => { next(); } }
+        MenuItem { title: "Previous"; activated => { previous(); } }
+        MenuSeparator { }
+        MenuItem { title: "Show Marquee Player"; activated => { show-window(); } }
+        MenuItem { title: "About Marquee Player"; activated => { about(); } }
+        MenuItem { title: "Quit"; activated => { quit(); } }
+    }
+}

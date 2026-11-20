@@ -1,0 +1,192 @@
+// The app's own context menu: frosted like the sidebars, the app's radii, type and
+// accent. One overlay for the whole window; Rust fills `MenuStore` (menus.rs) and runs
+// the chosen entry. Opens at the pointer and stays inside the window; closes on a click
+// outside, Esc or the mouse wheel; arrows, Enter, Right/Left (submenu) work. Opened from
+// the keyboard (a list's Menu key), it opens at the list's cursor with the first entry
+// highlighted, and the list keeps the focus and passes those keys on (lists.slint).
+import { Theme } from "theme.slint";
+import { MenuItemData } from "types.slint";
+import { MenuStore, Actions } from "stores.slint";
+import { Icon, Icons } from "widgets.slint";
+
+component MenuRow inherits Rectangle {
+    in property <MenuItemData> entry;
+    in property <bool> highlighted;
+    in property <int> index;
+    // Room on the left for a check mark (a menu of choices).
+    in property <bool> indent;
+    callback hovered();
+    callback activated();
+    height: entry.separator ? 9px : entry.heading ? 26px : 34px;
+    if root.entry.separator: Rectangle {
+        x: 10px;
+        width: parent.width - 20px;
+        y: 4px;
+        height: 1px;
+        background: Theme.border;
+    }
+    // A heading: what the entries under it are, in small dim capitals on their text's line.
+    if root.entry.heading: Text {
+        x: root.indent ? 34px : 12px;
+        y: 4px;
+        width: parent.width - (root.indent ? 46px : 24px);
+        height: parent.height - 4px;
+        text: root.entry.label;
+        vertical-alignment: center;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+        color: Theme.text-dim;
+        overflow: elide;
+    }
+    if !root.entry.separator && !root.entry.heading: Rectangle {
+        accessible-role: list-item;
+        accessible-label: root.entry.label + (root.entry.checked ? ", selected" : "") + (root.entry.submenu ? ", submenu" : "");
+        accessible-enabled: root.entry.enabled;
+        accessible-item-index: root.index;
+        accessible-item-selected: root.entry.checked;
+        accessible-action-default => { root.activated(); }
+        border-radius: Theme.radius-control - 2px;
+        background: root.highlighted && root.entry.enabled ? Theme.accent.with-alpha(0.22) : transparent;
+        animate background { duration: Theme.dur-hover; }
+        ta := TouchArea {
+            enabled: root.entry.enabled;
+            mouse-cursor: pointer;
+            changed has-hover => {
+                if self.has-hover { root.hovered(); }
+            }
+            clicked => { root.activated(); }
+        }
+        if root.entry.checked: Icon {
+            x: 10px;
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            glyph: Icons.check;
+            color: Theme.accent;
+        }
+        Text {
+            x: root.indent ? 34px : 12px;
+            width: parent.width - (root.indent ? 62px : 40px);
+            text: root.entry.label;
+            accessible-role: none;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            color: !root.entry.enabled ? Theme.text-faint : root.entry.danger ? #ff8a80 : Theme.text;
+            overflow: elide;
+        }
+        if root.entry.submenu: Icon {
+            x: parent.width - 26px;
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            glyph: Icons.chevron-right;
+            color: root.highlighted ? Theme.text : Theme.text-dim;
+        }
+    }
+}
+
+component MenuPanel inherits Rectangle {
+    in property <[MenuItemData]> entries;
+    in property <int> highlight;
+    in property <bool> indent;
+    callback hover(int);
+    callback activate(int);
+    width: MenuStore.wide ? 380px : 248px;
+    height: lay.preferred-height;
+    border-radius: Theme.radius-card;
+    accessible-role: list;
+    accessible-delegate-focus: root.highlight;
+    accessible-item-count: root.entries.length;
+    background: Theme.glass-fill;
+    backdrop-blur: Theme.glass-radius-blur;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 6px;
+    // Clicks between rows must not reach the catcher behind.
+    TouchArea { }
+    lay := VerticalLayout {
+        padding: 6px;
+        for e[i] in root.entries: MenuRow {
+            entry: e;
+            index: i;
+            indent: root.indent;
+            highlighted: i == root.highlight;
+            hovered => { root.hover(i); }
+            activated => { root.activate(i); }
+        }
+    }
+}
+
+export component AppMenu inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: window-width;
+    height: window-height;
+    if MenuStore.open: Rectangle {
+        // Anywhere outside the menu: a press or the wheel closes it.
+        TouchArea {
+            pointer-event(ev) => {
+                if ev.kind == PointerEventKind.down { MenuStore.open = false; }
+            }
+            scroll-event(ev) => {
+                MenuStore.open = false;
+                accept
+            }
+        }
+        keys := FocusScope {
+            // Opened by the pointer: the menu takes the keys. From the keyboard, the list
+            // that opened it keeps the focus and passes them on.
+            init => { if !MenuStore.from-keys { self.focus(); } }
+            key-pressed(ev) => {
+                if ev.text == Key.Escape { Actions.menu-key("escape"); return accept; }
+                if ev.text == Key.DownArrow { Actions.menu-key("down"); return accept; }
+                if ev.text == Key.UpArrow { Actions.menu-key("up"); return accept; }
+                if ev.text == Key.RightArrow { Actions.menu-key("right"); return accept; }
+                if ev.text == Key.LeftArrow { Actions.menu-key("left"); return accept; }
+                if ev.text == Key.Return || ev.text == " " { Actions.menu-key("enter"); return accept; }
+                accept
+            }
+        }
+        main := MenuPanel {
+            // At the pointer, flipped or nudged to stay inside the window.
+            x: max(8px, min(MenuStore.x, root.window-width - self.width - 8px));
+            y: MenuStore.y + self.height > root.window-height - 8px ? max(8px, MenuStore.y - self.height) : MenuStore.y;
+            entries: MenuStore.items;
+            highlight: MenuStore.highlight;
+            indent: MenuStore.checks;
+            hover(i) => {
+                MenuStore.highlight = i;
+                if MenuStore.items[i].submenu {
+                    // Its own rows (a menu may have several submenus).
+                    Actions.menu-sub(i);
+                    MenuStore.sub-highlight = -1;
+                } else {
+                    MenuStore.sub-of = -1;
+                }
+            }
+            activate(i) => {
+                if MenuStore.items[i].submenu {
+                    Actions.menu-sub(i);
+                } else {
+                    Actions.menu-activate(i, -1);
+                }
+            }
+        }
+        if MenuStore.sub-of >= 0: MenuPanel {
+            // Beside the entry, on the right, or on the left when there is no room.
+            x: main.x + main.width + self.width - 4px <= root.window-width - 8px ? main.x + main.width - 4px : max(8px, main.x - self.width + 4px);
+            y: max(8px, min(main.y + MenuStore.sub-row-y - 6px, root.window-height - self.height - 8px));
+            entries: MenuStore.sub;
+            // A submenu of choices (the visualizer's styles) has its check marks too.
+            indent: MenuStore.checks;
+            highlight: MenuStore.sub-highlight;
+            hover(j) => { MenuStore.sub-highlight = j; }
+            activate(j) => { Actions.menu-activate(MenuStore.sub-of, j); }
+        }
+    }
+}

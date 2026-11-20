@@ -1,0 +1,16 @@
+[package]
+name = "http-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A small blocking HTTP client (WinHTTP on Windows, ureq with rustls elsewhere): text, bytes and streamed downloads, shared by Last.fm, the lyrics lookup and the Subsonic client."
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Networking_WinHttp"] }
+
+# Elsewhere: a pure-Rust client with rustls (the ring provider) and the system's roots; 3.5
+# for its per-read timeout, which streamed downloads need. None of it reaches the Windows build.
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier"] }

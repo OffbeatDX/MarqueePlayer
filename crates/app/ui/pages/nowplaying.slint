@@ -1,0 +1,512 @@
+// Now playing: the art, the panel beside it (queue, lyrics, visualizer) and the lyrics' controls.
+
+import { Theme } from "../theme.slint";
+import { Player, Actions, Lyrics, Visualizer } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { Icons, IconButton, Cover, LinkText, ArtistLinks, FocusRing, FocusTarget } from "../widgets.slint";
+import { ListKeys, QueueList } from "../lists.slint";
+import { VisualizerFront, VisualizerStage } from "../vizstage.slint";
+
+// A tab of a panel ("Up next" / "Lyrics" on now playing): text, the chosen one bright.
+component PanelTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked();
+    height: 32px;
+    width: t.preferred-width + 20px;
+    border-radius: Theme.radius-pill;
+    background: root.selected ? Theme.surface-hi : ta.has-hover ? Theme.hover : transparent;
+    accessible-role: tab;
+    accessible-label: root.text;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    animate background { duration: Theme.dur-hover; }
+    fs := FocusTarget { activated => { root.clicked(); } }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    t := Text {
+        text: root.text;
+        font-size: Theme.font-title;
+        font-weight: 700;
+        color: root.selected ? Theme.text : Theme.text-dim;
+        accessible-role: none;
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// The playing track's lyrics. Synced: the line being sung is bright and kept in view
+// (unless the list was just scrolled by hand); a click, or Enter on the keyboard cursor,
+// plays from that line. Unsynced: plain text to scroll.
+component LyricsView inherits Rectangle {
+    private property <int> cursor: -1;
+    // Scrolled by hand: stop following the song for a few seconds.
+    private property <bool> follow: true;
+    function scroll-to(y: length, h: length) {
+        if root.follow {
+            list.content-y = min(0px, max(list.height - list.content-height, -(y - (list.height - h) / 2)));
+        }
+    }
+    accessible-role: AccessibleRole.list;
+    accessible-label: "Lyrics";
+    accessible-item-count: Lyrics.lines.length;
+    accessible-delegate-focus: max(0, root.cursor);
+    Timer {
+        interval: 4s;
+        running: !root.follow && !list.autoscrolling;
+        triggered => { root.follow = true; }
+    }
+    // Middle-click scrolling counts as scrolling by hand.
+    private property <bool> autoscrolled: list.autoscrolling;
+    changed autoscrolled => { root.follow = false; }
+    fs := FocusScope {
+        enabled: Lyrics.lines.length > 0;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ListKeys.to-menu(ev) { return accept; }
+            if ListKeys.menu-key(ev) {
+                Actions.lyrics-menu(self.absolute-position.x + 40px, self.absolute-position.y + 40px, true);
+                return accept;
+            }
+            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+            if ListKeys.enter(ev) && Lyrics.synced && root.cursor >= 0 {
+                Actions.lyrics-seek(root.cursor);
+                return accept;
+            }
+            let n = Actions.list-key(ev.text, max(0, root.cursor), Lyrics.lines.length, 0, 1, 8);
+            if n >= 0 { root.cursor = n; root.follow = false; return accept; }
+            reject
+        }
+        focus-gained => { if root.cursor < 0 { root.cursor = max(0, Lyrics.current); } }
+    }
+    list := AutoFlickable {
+        content-height: col.preferred-height;
+        animate content-y { duration: list.autoscrolling ? 0ms : 360ms; easing: ease-out; }
+        flicked => { root.follow = false; }
+        col := VerticalLayout {
+            padding-top: 8px;
+            padding-bottom: 40px;
+            spacing: 2px;
+            for l[i] in Lyrics.lines: Rectangle {
+                property <bool> sung: Lyrics.synced && i == Lyrics.current;
+                changed sung => { if self.sung { root.scroll-to(self.y, self.height); } }
+                height: max(Lyrics.synced ? 36px : 24px, line.preferred-height + (Lyrics.synced ? 12px : 4px));
+                border-radius: Theme.radius-control;
+                background: Lyrics.synced && lta.has-hover ? Theme.hover : transparent;
+                accessible-role: list-item;
+                accessible-label: l.text;
+                accessible-item-index: i;
+                accessible-item-selected: self.sung;
+                accessible-action-default => { if Lyrics.synced { Actions.lyrics-seek(i); } }
+                lta := TouchArea {
+                    enabled: Lyrics.synced && l.time >= 0;
+                    mouse-cursor: self.enabled ? pointer : default;
+                    clicked => { Actions.lyrics-seek(i); }
+                }
+                line := Text {
+                    x: 10px;
+                    width: parent.width - 20px;
+                    text: l.text;
+                    wrap: word-wrap;
+                    vertical-alignment: center;
+                    font-size: Lyrics.synced ? Theme.font-title : Theme.font-body;
+                    font-weight: parent.sung ? 700 : 400;
+                    color: !Lyrics.synced ? Theme.text : parent.sung ? Theme.accent : i < Lyrics.current ? Theme.text-faint : Theme.text-dim;
+                    animate color { duration: 200ms; }
+                }
+                FocusRing { shown: fs.has-focus && i == root.cursor; radius: Theme.radius-control; inset: true; }
+            }
+        }
+    }
+    // What there is instead of lyrics, and, after an online lookup that found nothing or
+    // could not be made, a way to ask again.
+    if Lyrics.status != "": VerticalLayout {
+        x: 10px;
+        y: 8px;
+        width: parent.width - 20px;
+        height: parent.height - 8px;
+        alignment: start;
+        spacing: 10px;
+        Text {
+            text: Lyrics.status;
+            color: Theme.text-dim;
+            font-size: Theme.font-body;
+            wrap: word-wrap;
+        }
+        if Lyrics.online == "not-found" || Lyrics.online == "offline" || Lyrics.online == "failed" || Lyrics.online == "rejected": HorizontalLayout {
+            alignment: start;
+            LinkText {
+                text: Lyrics.online == "rejected" ? "Look up again" : "Try again";
+                font-size: Theme.font-body;
+                base-color: Theme.text;
+                tabbable: true;
+                accessible-label: Lyrics.online == "rejected" ? "Look up lyrics for this track online again" : "Try looking up lyrics online again";
+                clicked => { Actions.lyrics-retry(); }
+            }
+        }
+    }
+}
+
+// A timing button of the Lyrics tab: a step on a click (or Enter, Space), and while held, a
+// step every 70 ms after the first 450 ms (the click that ends a hold adds none).
+component NudgeButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <int> by;
+    private property <bool> repeated;
+    private property <bool> held: b.pressed;
+    width: b.width;
+    height: b.height;
+    changed held => { if self.held { root.repeated = false; } }
+    b := IconButton {
+        glyph: root.glyph;
+        size: 28px;
+        icon-size: 16px;
+        label: root.label;
+        tooltip: root.label;
+        clicked => {
+            if root.repeated {
+                root.repeated = false;
+            } else {
+                Actions.lyrics-nudge(root.by);
+            }
+        }
+    }
+    Timer {
+        interval: root.repeated ? 70ms : 450ms;
+        running: b.pressed;
+        triggered => {
+            root.repeated = true;
+            Actions.lyrics-nudge(root.by);
+        }
+    }
+}
+
+// Under synced lyrics: their timing for this track (kept for it), earlier or later a tenth
+// of a second a step (also G and H), and back to as the lyrics have it.
+component LyricsTiming inherits HorizontalLayout {
+    spacing: 2px;
+    padding-left: 10px;
+    padding-right: 10px;
+    alignment: start;
+    accessible-role: groupbox;
+    accessible-label: "Lyrics timing: " + (Lyrics.offset == 0 ? "as the lyrics have it" : Lyrics.offset-text);
+    Text { text: "Timing"; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; accessible-role: none; }
+    Rectangle { width: 6px; }
+    NudgeButton { glyph: Icons.minus; by: -1; label: "Lyrics 0.1 s earlier"; }
+    Text {
+        text: Lyrics.offset-text;
+        min-width: 52px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        font-size: Theme.font-small;
+        font-weight: Lyrics.offset == 0 ? 400 : 700;
+        color: Lyrics.offset == 0 ? Theme.text-dim : Theme.text;
+    }
+    NudgeButton { glyph: Icons.plus; by: 1; label: "Lyrics 0.1 s later"; }
+    Rectangle { width: 6px; }
+    if Lyrics.offset != 0: LinkText {
+        text: "Reset";
+        font-size: Theme.font-small;
+        vertical-alignment: center;
+        base-color: Theme.text-dim;
+        tabbable: true;
+        accessible-label: "Reset the lyrics timing";
+        clicked => { Actions.lyrics-reset-offset(); }
+    }
+}
+
+// Under the lyrics after Copy or Save: what happened (where the file went), or a question
+// (a file is there already: replace it? into the tags?).
+component LyricsNotice inherits VerticalLayout {
+    padding-left: 10px;
+    padding-right: 10px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+    spacing: 4px;
+    Text {
+        text: Lyrics.notice;
+        wrap: word-wrap;
+        font-size: Theme.font-small;
+        color: Lyrics.notice-attention ? Theme.accent : Theme.text-dim;
+    }
+    HorizontalLayout {
+        alignment: start;
+        spacing: 14px;
+        if Lyrics.ask == "replace": LinkText {
+            text: "Replace";
+            font-size: Theme.font-small;
+            base-color: Theme.text;
+            tabbable: true;
+            accessible-label: "Replace the file with these lyrics";
+            clicked => { Actions.lyrics-answer("replace"); }
+        }
+        if Lyrics.ask == "tags": LinkText {
+            text: "Save into the tags";
+            font-size: Theme.font-small;
+            base-color: Theme.text;
+            tabbable: true;
+            clicked => { Actions.lyrics-answer("tags"); }
+        }
+        LinkText {
+            text: Lyrics.ask == "" ? "OK" : "Cancel";
+            font-size: Theme.font-small;
+            base-color: Theme.text-dim;
+            tabbable: true;
+            accessible-label: Lyrics.ask == "" ? "Dismiss the note" : "Cancel";
+            clicked => { Actions.lyrics-answer(Lyrics.ask == "" ? "ok" : "cancel"); }
+        }
+    }
+}
+
+// Under lyrics found online: where they came from, and a way to say they are wrong.
+component LyricsSource inherits HorizontalLayout {
+    spacing: 6px;
+    padding-left: 10px;
+    padding-right: 10px;
+    alignment: start;
+    Text { text: "Lyrics from LRCLIB"; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; }
+    Text { text: "\u{00b7}"; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; accessible-role: none; }
+    LinkText {
+        text: "Wrong lyrics?";
+        font-size: Theme.font-small;
+        vertical-alignment: center;
+        base-color: Theme.text-dim;
+        tabbable: true;
+        accessible-label: "These lyrics are wrong: remove them and do not look this track up again";
+        clicked => { Actions.lyrics-reject(); }
+    }
+}
+
+// ---- Now playing ---------------------------------------------------------------
+
+export component NowPlayingPage inherits Rectangle {
+    // The technical details' two lines under the title take their room from the cover.
+    private property <length> details-room: Player.show-details && Player.details-full != "" ? (Player.details-output != "" ? 44px : 22px) : 0px;
+    private property <length> art: min(self.height - 260px - self.details-room, (self.width - 480px) * 0.9, 620px);
+    // Where the visualizer shows (Settings > Visualizer, or the menu of the button at the
+    // top right): behind the page, as a tab of the panel, or the full page.
+    private property <bool> behind: Player.visualizer && Visualizer.placement == 0;
+    private property <bool> in-panel: Player.visualizer && Visualizer.placement == 1;
+    private property <bool> full: Player.visualizer && Visualizer.placement == 2;
+    private property <bool> viz-tab: root.in-panel && Visualizer.tab;
+    private property <length> thumb: clamp(root.height * 0.11, 64px, 112px);
+    // The halo (the ring style) surrounds a cover: behind the page, the page's own (drawn
+    // round, the halo under it, in the room around it); in the panel and on the full page,
+    // the cover in its stage's middle (on the full page, instead of the one in the corner).
+    private property <bool> halo-behind: root.behind && Visualizer.ring;
+    private property <bool> ring: root.full && Visualizer.ring;
+    private property <length> cover-size: max(200px, root.art);
+    // Behind the page the cover gives the halo some of its room (the title stays where it
+    // was), and its ripples go on past it for most of its radius, fading out behind the page.
+    private property <length> halo-cover: root.halo-behind ? round(root.cover-size * 0.82 / 2px) * 2px : root.cover-size;
+    private property <length> halo-room: max(24px, root.cover-size * 0.3);
+    // A right click on the page itself (not a control): the visualizer's menu.
+    TouchArea {
+        pointer-event(ev) => {
+            if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                Actions.viz-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
+            }
+        }
+    }
+    // Behind everything on the page, a band above the player bar: the bars, and under them
+    // their reflection, which ends where the bar begins. Nothing on the page moves for it.
+    // The bars are Theme.viz-height tall, less on a short window (a quarter of the page).
+    if root.behind && !Visualizer.ring: VisualizerStage {
+        x: 0;
+        width: root.width;
+        // A band along the foot; the bonfire's sparks rise up the whole page.
+        height: Visualizer.tall ? root.height - Theme.bar-height : min(Theme.viz-height, root.height * 0.24) * (1 + Visualizer.refl-share);
+        y: root.height - Theme.bar-height - self.height;
+    }
+    if !root.full: HorizontalLayout {
+        padding: Theme.page-margin;
+        padding-top: Theme.page-top;
+        padding-bottom: Theme.bar-height + 24px;
+        spacing: 48px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 24px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle {
+                    width: root.cover-size;
+                    height: root.cover-size;
+                    // Behind the page: the halo around the cover, under it and the page.
+                    if root.halo-behind: VisualizerStage {
+                        x: -root.halo-room;
+                        y: -root.halo-room;
+                        width: parent.width + 2 * root.halo-room;
+                        height: parent.height + 2 * root.halo-room;
+                        hub-size: root.halo-cover / 2;
+                        open: true;
+                    }
+                    Cover {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        size: root.halo-cover * (root.halo-behind ? Visualizer.cover-scale : 1);
+                        source: Player.full;
+                        has-cover: Player.has-cover;
+                        radius: root.halo-behind && !Visualizer.square ? self.width / 2 : Theme.radius-card;
+                        drop-shadow-blur: 40px;
+                        drop-shadow-color: #000000c0;
+                        drop-shadow-offset-y: 12px;
+                    }
+                    // What the look draws in front of the cover (Saturn's near grains).
+                    if root.halo-behind: VisualizerFront {
+                        x: -root.halo-room;
+                        y: -root.halo-room;
+                        width: parent.width + 2 * root.halo-room;
+                        height: parent.height + 2 * root.halo-room;
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: Player.title; horizontal-alignment: center; font-size: Theme.font-heading * 1.3; font-weight: 800; color: Theme.text; overflow: elide; }
+                HorizontalLayout {
+                    alignment: center;
+                    ArtistLinks { text: Player.artist; ref-id: Player.track-id; font-size: Theme.font-title; tabbable: true; }
+                    if Player.album != "": Text { text: "  ·  "; font-size: Theme.font-title; color: Theme.text-faint; accessible-role: none; }
+                    if Player.album != "": LinkText {
+                        text: Player.album;
+                        font-size: Theme.font-title;
+                        tabbable: true;
+                        clicked => { Actions.open-album(Player.album-id); }
+                    }
+                }
+                // Technical details: what the file is, then what reaches the device.
+                if Player.show-details && Player.details-full != "": Text {
+                    text: Player.details-full;
+                    horizontal-alignment: center;
+                    font-size: Theme.font-small;
+                    color: Theme.text-faint;
+                    overflow: elide;
+                    accessible-label: Player.details-spoken;
+                }
+                if Player.show-details && Player.details-output != "": Text {
+                    text: Player.details-output;
+                    horizontal-alignment: center;
+                    font-size: Theme.font-small;
+                    color: Theme.text-faint;
+                    overflow: elide;
+                }
+            }
+        }
+        // The queue, beside the art.
+        Rectangle {
+            width: min(420px, root.width * 0.34);
+            border-radius: Theme.radius-card;
+            background: #00000040;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    accessible-role: tab-list;
+                    PanelTab {
+                        text: "Up next";
+                        selected: !root.viz-tab && !Lyrics.shown;
+                        clicked => {
+                            Lyrics.shown = false;
+                            Visualizer.tab = false;
+                            Actions.visualizer-wake();
+                        }
+                    }
+                    PanelTab {
+                        text: "Lyrics";
+                        selected: !root.viz-tab && Lyrics.shown;
+                        clicked => {
+                            Lyrics.shown = true;
+                            Visualizer.tab = false;
+                            Actions.visualizer-wake();
+                        }
+                    }
+                    if root.in-panel: PanelTab {
+                        text: "Visualizer";
+                        selected: root.viz-tab;
+                        clicked => {
+                            Visualizer.tab = true;
+                            Actions.visualizer-wake();
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if !root.viz-tab && !Lyrics.shown: IconButton { glyph: Icons.shuffle; size: 32px; icon-size: 18px; active: Player.shuffle; label: Player.shuffle ? "Shuffle on" : "Shuffle off"; clicked => { Actions.toggle-shuffle(); } }
+                    // The lyrics' menu: copy, save beside the track or into its tags, reset the timing.
+                    if !root.viz-tab && Lyrics.shown && Lyrics.lines.length > 0: IconButton {
+                        glyph: Icons.more;
+                        size: 32px;
+                        icon-size: 18px;
+                        label: "Lyrics options: copy, save";
+                        tooltip: "Copy or save the lyrics";
+                        clicked => { Actions.lyrics-menu(self.absolute-position.x + self.width - 236px, self.absolute-position.y + self.height + 6px, false); }
+                    }
+                }
+                if root.viz-tab: VisualizerStage { vertical-stretch: 1; cover: true; }
+                if !root.viz-tab && !Lyrics.shown: QueueList { vertical-stretch: 1; }
+                if !root.viz-tab && Lyrics.shown: LyricsView { vertical-stretch: 1; max-height: 100000px; }
+                if !root.viz-tab && Lyrics.shown && Lyrics.notice != "": LyricsNotice { vertical-stretch: 0; }
+                if !root.viz-tab && Lyrics.shown && Lyrics.synced && Lyrics.lines.length > 0: LyricsTiming { vertical-stretch: 0; height: 30px; }
+                if !root.viz-tab && Lyrics.shown && (Lyrics.online == "found" || Lyrics.online == "instrumental"): LyricsSource { vertical-stretch: 0; height: 28px; }
+            }
+        }
+    }
+    // The full page: the cover and the title in the corner, the visualizer everywhere else.
+    if root.full: HorizontalLayout {
+        x: Theme.page-margin;
+        y: Theme.page-top;
+        width: root.width - 2 * Theme.page-margin - 48px;
+        height: root.thumb;
+        spacing: 20px;
+        alignment: start;
+        // The ring has the cover in its middle instead.
+        if !root.ring: Cover {
+            size: root.thumb;
+            source: Player.full;
+            has-cover: Player.has-cover;
+            radius: Theme.radius-control;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000090;
+            drop-shadow-offset-y: 6px;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            Text { text: Player.title; font-size: Theme.font-heading; font-weight: 800; color: Theme.text; overflow: elide; }
+            HorizontalLayout {
+                alignment: start;
+                ArtistLinks { text: Player.artist; ref-id: Player.track-id; font-size: Theme.font-body; tabbable: true; }
+                if Player.album != "": Text { text: "  ·  "; font-size: Theme.font-body; color: Theme.text-faint; accessible-role: none; }
+                if Player.album != "": LinkText {
+                    text: Player.album;
+                    font-size: Theme.font-body;
+                    tabbable: true;
+                    clicked => { Actions.open-album(Player.album-id); }
+                }
+            }
+            if Player.show-details && Player.details-full != "": Text {
+                text: Player.details-full;
+                font-size: Theme.font-small;
+                color: Theme.text-faint;
+                overflow: elide;
+                accessible-label: Player.details-spoken;
+            }
+        }
+    }
+    full-stage := Rectangle {
+        x: Theme.page-margin;
+        y: Theme.page-top + root.thumb + 28px;
+        width: root.width - 2 * Theme.page-margin;
+        height: root.height - self.y - Theme.bar-height - 20px;
+        if root.full: VisualizerStage { x: 0; y: 0; width: parent.width; height: parent.height; cover: true; open: true; }
+    }
+    // The visualizer's menu: on and off, the style, the presets, where it shows.
+    IconButton {
+        x: root.width - Theme.page-margin - self.width + 4px;
+        y: 36px;
+        glyph: Icons.equalizer;
+        size: 32px;
+        icon-size: 18px;
+        active: Player.visualizer;
+        label: "Visualizer: " + (Player.visualizer ? Visualizer.look-name + ", " + (Visualizer.placement == 0 ? "behind the page" : Visualizer.placement == 1 ? "in the panel" : "full page") : "off") + ". Options";
+        clicked => { Actions.viz-menu(self.absolute-position.x + self.width - 236px, self.absolute-position.y + self.height + 6px, false); }
+    }
+}

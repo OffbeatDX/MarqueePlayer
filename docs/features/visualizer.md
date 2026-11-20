@@ -1,0 +1,271 @@
+# Visualizer
+
+Now playing shows the music moving (`visualizer/mod.rs` runs it, `visualizer/draw.rs` draws it,
+`visualizer/look.rs` is its look and its settings; the engine's tap and the analysis are
+`player_core::spectrum`). By default it is the look it always had, Classic: faint bars in the
+playing cover's accent along the bottom of the page, behind the cover and the panel, with peak
+caps and their mirrored reflection, which now sits between the bars and the player bar where it
+can be seen (it used to lie entirely behind the bar's frosted glass, where nothing of it
+showed). Settings > Visualizer, or `V`, turns it on and off (on by default).
+
+**Styles** (`visualizer::look::Style`), each drawn by a few `Path`s rebuilt per frame:
+
+| Style | What | Drawn as |
+| --- | --- | --- |
+| Bars | Rounded bars, caps above, a scaled mirror below | one path of rectangles (and one for the caps, one for the reflection), on whole pixels without anti-aliasing |
+| Line | A smooth curve (Catmull-Rom as cubic Béziers) over a filled area, faint at its foot; its reflection a mirrored area brighter toward its edge | an area path and a 2 px stroke |
+| Ring, as Ripples | The cover as a drum skin (`visualizer::draw::radial`). The spectrum is a glowing contour around it: the low notes (the lowest eighth of the bands) swell the whole ring at once, the rest of the spectrum shapes it, low mids at the top to highs at the bottom, the two halves mirrored (no seam where 20 Hz meets 20 kHz: the lows are not on the ring at all, the highs meet themselves); smoothed around, moving as fast as bars do (slowed down, as it once was, it hardly moved). **Intensity** (50% to 200%, this kind only) is how far it swings for the same music, bent toward its reach rather than clipped at it. Between the cover and the contour, its corona: light at the cover's edge thinning outward; behind the cover a bloom that brightens with the low notes. On each beat (the low notes, and a little of everything, rising above where they have been: told when the rise tops out, `Beat`) the contour as it is then leaves the cover as a **ripple**: out a whole cover's radius at 95 px a second, its shape kept half again as pronounced, lower and softer the farther it is, turned a little round as it goes (0.34 rad over its way), through the look's colours and fading out. With sound and no beat, one leaves after a rest. As many at once as there is room for (one per 36 px of the way out, three to five), the time between two a ripple's life shared among them, so none is cut short. And **sparks** (`Sparks`): a few leave the contour all the time, where it is loudest, and every beat throws a burst; each flies outward, slowing, and goes out as it ages (it shrinks: one path cannot fade each dot by its age), with a soft disc of light round the young ones; as many as the way out has room for (60 to 240). Peak caps do not apply. A still frame (the preview with nothing playing) shows a few ripples and sparks as a moment would leave them | the contour as one closed curve (stroked twice: glow and line), the corona as that curve with the cover's place left out of it, the ripples as one path of closed curves a third as detailed as the contour, three paths of dots for the sparks (young, old, discs), each with a radial brush that fades with the distance, and a radial-gradient rectangle for the bloom |
+| Ring, its other kinds | Everything drawn around the cover is one style, **Ring** (`Style::RING`; Settings' second choice, "Around the cover"), its kinds sharing the round cover, the bloom behind it and a thin contour or rim. **Saturn** (`saturn`): a tilted ring of dust in orbit (its short axis 0.3 of its long one, turned 18 degrees), the grains on its far side drawn under the cover and those on the near side over it (`VisualizerFront`), each as big as its note is loud, the inner ones faster than the outer; the bass makes the ring swell and a beat pushes it out. **Galaxy** (`galaxy`): two spiral arms of dust seen from above, the low notes by the cover and the high ones at the arms' ends; the bass winds them tighter and turns them faster. **Swarm** (`swarm`): dust in a whirl, each grain lit by its own note, circling faster the louder it is; every beat blows it outward and each grain springs back to the distance it keeps. **Eclipse** (`eclipse`): a glow at the rim, and on each beat a flare of sparks leaving where the music is loudest, leaning one way, pulled back into the cover in an arc; a harder beat throws two. All of them fade to nothing in silence. **Pulse the cover** (on by default; `Look::cover_pulse`): the ring's cover is drawn 2.5% larger at the top of a beat (`Paths::punch`, an eighth of a second), whatever its kind | dots in three paths (bright or young, dim or old, and discs of light), Saturn's near grains in two more over the cover, a thin stroked contour |
+| Bonfire | The ring's sparks without the circle (`visualizer::draw::bonfire`): the spectrum as a low glowing line along the stage's foot (its coals: low notes on the left, a sixth of the height at most, its area faintly filled), and sparks rising from it where the music is loudest, slowing and swaying a little as they go, each going out as it ages; a few all the time, a burst on every beat; as many as the stage has room for (60 to 420). Behind the page its stage is the whole page (`Visualizer.tall`), not the band along the foot: the sparks rise behind the cover and the panel. Coloured across the page (by frequency) or up it (by height: a spark turns through the colours as it rises). No reflection, no peak caps | an area path and a 2 px stroke for the coals, three paths of dots for the sparks |
+
+**The halo's cover.** The ring is always around a cover (`VisualizerStage.hub`): behind the
+page, around the page's own cover, drawn round at 82% of its box so the contour fits the room
+the square had; its ripples and sparks go on past it for most of its radius (the stage reaches
+three tenths of the cover beyond it), fading out behind the title, which does not move; all of
+it under the cover and the text; in the panel's tab and on the full page, around a round copy of the playing cover at its
+stage's middle (0.58 of half the stage's smaller side; on the full page the corner thumbnail
+gives way to it); in Settings' preview the same. Following the cover's rounded square instead
+was tried and looked like a bristly frame (`MP_HALO_SHAPE=square` still draws it, for
+comparing). The contour stays inside its stage and reaches out half the cover's radius at
+most: a ring, not a blob. The ripples and sparks travel a whole radius: where the stage is a
+box of its own (the panel's tab, the Settings preview) they leave it at its edge (it clips);
+where it is the page (behind it, and the full page, `VisualizerStage.open`) they go on and fade.
+Colours: the Halo preset takes the cover's palette around the ring (Colour by frequency: the
+first colour at the top, the last at the bottom, both sides alike); by height, outward. The
+corona and the ripples always run outward through the colours: one brush cannot both turn with
+the ring and fade with the distance, and the fade is what they are.
+
+Taken out after being offered: **Shockwave** (a kind of ring: each beat a whole ring of
+sparks) and **Fireworks** (a burst of sparks somewhere on the page on each beat), with the
+Fireworks preset. A settings file, a preset of the user's or a shared line that names one
+reads as its nearest relative (`#[serde(alias)]` on `Style`; `vizshare`): Shockwave as
+Ripples, Fireworks as the bonfire.
+
+Left out: "lumi" and outline bars and stereo layouts (parameter variants of
+bars rather than looks of their own). A mirrored layout (low notes in the middle) is an option
+of Bars and Line rather than a style. Taken out again after being built: LED bars and the
+waveform (an oscilloscope, with `spectrum::Scope` behind it) and their presets Retro and Glow,
+and a Horizon (one line with pulses running along it). A settings file or a shared preset that
+names one of them is not read as that style: the settings fall back to Classic, and such a
+preset of the user's is kept in the file untouched and not listed.
+
+**Colours** (`Colours`): Accent (the cover's colour, fainter at the foot: Classic), Cover (a
+gradient of up to three of the cover's own colours, `library::accent::palette`: the same hue
+vote as the accent, read further down, each made light and vivid enough for the dark theme; a
+one-colour cover gets its hue turned a little each way), Classic (green, yellow, red, a meter's
+colours), Prism, Rainbow, Ember, Ice, Sunset, and Custom (three of sixteen named colours).
+Colour by height (the gradient runs up the bars; for the halo, out from the cover) or by
+frequency (across; around the halo). All brushes are built in Rust when the look, the stage or
+the colours change, not per frame. The cover's palette is worked out off the UI thread when a
+track starts, only while a look uses it (a 360 px thumbnail decoded and voted, a few ms).
+
+**The beat** (`visualizer/beat.rs`, `beat::Tracker`): the ring and the bonfire move with the kicks, not
+with a rise in the spectrum they draw (a 170 ms window, smoothed again: a kick in it is a slow
+swell, told late). The tracker listens to the newest 35 ms of the sound itself each frame.
+*Kicks*: the energy at five frequencies from 45 to 110 Hz (Goertzel under a Hann window, no
+state between frames); a kick is that energy rising sharply, told the moment the rise passes
+what a kick needs (a frame or two after the kick starts), no weaker than 42% of recent kicks'
+rises, within 7 dB of the loudest the band has lately been, and, for 0.3 s after a kick, only
+if it is as loud as that one (a kick's tail swelling back against a bass note is not a second
+kick). *Snaps*: the same for the sound's sharp end (the energy of its sample-to-sample
+change): a snare, a clap. *Tempo*: the kicks and snaps of the last 8 s, each a point on a
+circle turned once per candidate beat (68 to 184 a minute, in halves): for the right period
+they pile up on one side, and where is the beat's phase; kicks between the beats count on the
+circle turned twice and four times, for less; a period is also judged by how many of its beats
+have something on them, by whether what was heard comes round again four beats later (a bar),
+and by how usual it is (84 to 152: of a tempo and its double, the one in that range). A small
+change is eased in, a large one must be heard twice; four seconds after the last kick the tempo
+is let go. *Beats without a kick*: with a tempo that fits well, a beat whose kick is missing is
+still shown, softer, while a kick was heard lately. What the looks do with it
+(`visualizer::draw::Pulse`): each kick is a jump of the whole ring (dying away in an eighth of a
+second), a ripple and a burst of sparks, larger for a harder kick; a snap is a smaller burst
+and no ripple; with the tempo known a ripple's way out takes as many beats as there is room for
+ripples and one leaves on each beat, so those on their way are a beat apart and move in time.
+Unit tests on made-up tracks (a kick on every beat from 84 to 174 a minute at 30, 60 and 144
+frames a second, each kick heard once and within 70 ms; a hip-hop bar with its second kick half
+a beat late; a missing kick; a breakdown; a bass note between kicks; no kicks at all), and
+`viz-look` on the fixtures: 124.2 heard for the house track's 124 with 17 beats shown of 17
+played in 8 s, 87.8 for the hip-hop track's 88.
+
+**Where it shows** (`Placement`): behind the page (a band along the bottom; the bars at most a
+quarter of the page tall, `[visualizer] height` at most), as a Visualizer tab of Now playing's
+panel beside Up next and Lyrics (`Y` gives way to the lyrics), or the full page (the cover and
+title in the top left corner, the stage everywhere else). `Shift+V` (remappable: "Where the
+visualizer shows") moves it to the next (`visualizer::look::cycle_placement`).
+
+**Opacity** (Settings > Visualizer > Opacity, and the quick menu's Opacity ▸, 10% to 100%):
+how strongly it is drawn where it shows. Behind the page and elsewhere (the panel, the full
+page) each keep their own (`Look::prominence`, saved under its old name "prominence", and
+`Look::opacity`): a look behind the page is faint so the page reads over it, and the same look
+in the panel is the content. The control edits the one where it shows now; its line says the
+other. It replaces "Strength behind the page", whose value is the behind-the-page opacity as it
+was: nobody's look changed (the panel and full page, never adjustable before, start at 100%,
+as they were drawn). Every built-in preset keeps its own behind the page and 100% elsewhere.
+
+**Presets** (`Preset`), each a whole look (not the placement): Classic (as before), Prism (the
+bold one: a bright line in a soft spectrum over its reflection, at 85% behind the page; see
+below),
+Skyline (fine mirrored bars over a clear mirror), Calm (a slow, soft line in the accent, for
+a quiet room or less motion), Bonfire (sparks rising from a glowing line, in the cover's
+colours, 80% behind the page), Halo (the ring, as Ripples, in the cover's colours, 85% behind
+the page), and one for each other look drawn around the cover, the halo's look with its own
+drawing: Saturn, Galaxy, Swarm, Eclipse. In that order everywhere they are listed. Changing
+anything makes the look Custom (or the preset it then equals). `C` (remappable: "Next
+visualizer look") shows the next look, the built-in presets then the user's in their order,
+and says its name in the pill. Reset goes back to Classic, behind the page; the user's presets
+stay.
+
+**The user's presets** (`visualizer/presets.rs`, the Presets button's menu in Settings > Visualizer):
+Save as preset… (the name prompt; a built-in name is refused, a taken one offers Replace),
+Rename… and Delete for the one in use, Update to this look once it has changed since it was
+chosen (`VizSettings::based_on`), Copy this look as text, Paste a preset…, Export as a file…,
+Import a file…. They show after the built-in ones in Settings' picker (a row of their own, a
+small mark on each), in the quick menu (Your presets ▸) and in `C`'s round. A preset is the look
+only: not where it shows, not whether it is on. Choosing one stores its look in full
+(`preset: "custom"`), so an older build shows it as it is. Saved in settings.json as
+`"visualizer_presets"` (`visualizer::look::UserPresets`), apart from `"visualizer_look"`, read entry by
+entry: one this build cannot read (a newer build's style, a damaged one) is kept as it was and
+written back so, never costing the others; the file without any is as before.
+
+**Sharing** (`visualizer/share.rs`): one line of text, versioned, every value by name, so it survives a
+chat message and can be read:
+
+    MarqueeViz/1 name="Night halo" style=ring colours=cover by=frequency detail=medium motion=normal sensitivity=0 intensity=100% peaks=on mirror=off reflection=off reflection-height=45% reflection-strength=55% opacity=100% behind=85% custom=3c64ff,a050f0,ff6eaa
+
+Copy puts it on the clipboard (Ctrl+C on the page too); a `.mpviz` file holds a comment line
+and it. Reading finds the line anywhere in the text (a message around it), takes keys in any
+order and case, smart quotes too, a missing key the default look's value; an unknown key is
+left out and said, a number out of range brought in and said, a key given twice keeps the
+first. Refused, said plainly in the pill and nothing changed: text with no preset ("Nothing to
+paste: no visualizer preset on the clipboard"), more than 16 KB (a file over 64 KB is not read),
+a NUL or another control character, a newer format ("it is from a newer version of Marquee
+Player (format 2); this version reads format 1"), a style, colour scheme, detail or speed this
+build does not have, a value that is not a number or a colour, an unclosed quote. A later build
+that only adds keys keeps format 1 (this one leaves them out); one that changes a key's meaning
+raises it. Pasted or imported, a preset plays in Settings' preview (the look in use stays
+under it, the controls still show it) with the question under the preview: Add preset; Replace
+or Keep both (as "Name (2)") when one of the user's has that name; Use it when that is the same
+preset already; Cancel or Esc. Leaving the section, changing the look or Reset cancels it. A
+built-in name is never taken over (the shared one becomes "Halo (2)").
+
+**Now playing's menu**: the button at the top right of the page (or a right click on the page
+itself) opens on and off, Opacity ▸ (100% to 10%, where it shows now), then under the heading
+**Presets** the ten built-in ones and Your presets ▸ (when there are any), under **Where it
+shows** the three placements, and Visualizer settings…, all checked as they are; the keyboard
+works in it (the arrows, Right into a submenu, Enter). A look is chosen whole here: what it is
+made of (its style, its colours) is Settings' business, so the menu has no Style ▸ (it had,
+and nothing said how a style differed from the presets under it). A heading
+(`menus::Entry::Heading`) is a small dim caption over the entries it names, 26 px tall, which
+the pointer and the arrows pass over. A menu may have several submenus (`menus::open_sub`
+fills each when it opens).
+
+**Settings > Visualizer** (`VisualizerSection` in `ui/pages/settings/visualizer.slint`): a live preview (the real
+analysis while music plays; with nothing playing, one still frame of made-up music,
+`visualizer::still_levels`, drawn once) that stays in view while the settings scroll (see
+[Settings](settings.md#settings)), on and off, where, opacity, the presets (one Tab stop, the arrows choose; the
+user's after the built-in ones), Your presets (the menu) and Reset, then the style, the colours
+(swatches of each gradient, one Tab stop), the custom colours, colour by, detail (fine, medium,
+coarse: the bars' size or the curve's points), mirror, peak caps, the reflection (on, its
+height and strength), the speed (smooth, normal, snappy: the analyser's attack and decay, the
+peaks' hold and fall), the sensitivity (±12 dB in 3 dB steps) and the frame rate. "Find a
+setting" knows each. Every control is keyboard reachable with the focus ring; the stage is
+decorative (`accessible-role: none`), the preview says in words what it shows.
+
+**Saved** in settings.json as `"visualizer_look"` (`visualizer::look::VizSettings`: `preset`, `look`
+in full when Custom, `placement`, `fps`, `based_on` while the look is one of the user's), every field defaulted, unknown values brought into
+range, an unknown preset (a newer build's) read as Classic. It is absent until the user chooses
+anything; then the default follows Windows' "Show animations in Windows"
+(`SPI_GETCLIENTAREAANIMATION`): on, Classic; off, Calm (read once at start;
+`MP_REDUCED_MOTION=1` or `0` stands in for it). **Precedence with theme.toml**: Settings choose
+the style, colours, reflection, motion and placement; `[visualizer] height` is the band's height
+behind the page and `bar_width` / `bar_gap` the bars at Medium detail, for every look; `opacity`,
+`reflection`, `reflection_opacity` and `peaks` are Classic's values (so a theme tuned before
+keeps Classic as it was tuned, and editing them redraws it). A change in Settings wins: the look
+becomes Custom and is saved in full. `reflection_opacity` now means the reflection's alpha where
+it meets the bars as a share of theirs (0 to 1); a file still holding the old default 1.6 (which
+made up for the glass it hid behind) is moved to 0.55, a tuned value kept (clamped to 1).
+
+**The tap and the analysis.** The engine taps the samples as they are written to the device,
+after ReplayGain, the equalizer, a crossfade's mix and the limiter, and before volume and fades
+(`player_core::spectrum::Tap`): what is shown is what is heard (with the equalizer's boosts and
+cuts), it does not shrink with the volume slider, works in shared and exclusive mode at every
+sample rate, and is still while paused. Nothing about the tap changed for the new styles: the
+wave reads the same ring (the newest 70 ms) the spectrum does. It is a ring of atomics the
+output thread writes without allocating or locking, and only while someone watches; otherwise
+one relaxed load per write. The reader takes the window being heard now (what the device has
+queued plus its latency is published with the position). The analysis (`Analyzer`) is a
+Hann-windowed FFT of about 170 ms (8192 points at 44.1 and 48 kHz, more at higher rates), bars
+spaced logarithmically from 30 Hz to 16 kHz (bands narrower than a bin evaluated exactly at
+their centre), at most one band per 1/24 octave, in dB from -72 to -12 tilted +3 dB per octave
+around 1 kHz, shifted by the sensitivity. **Auto level** (on for every look): the scale slides,
+within -15 to +12 dB, so the loudest bands of the last few seconds (the 85th percentile) sit at
+about three quarters of the height, up within a quarter of a second, down over two and a half;
+loud masters no longer pin the bars to the top, a quiet passage still moves, a drop of 20 dB
+still shows as one, and near silence is never lifted. A level is then shaped (`visualizer::draw::shape`:
+straight to 0.8, then bending toward 1 without reaching it). Each style has its own timing
+(`visualizer::look::analysis`): the line falls 30% slower; Smooth, Normal and Snappy set
+the attack (70, 25, 8 ms), the decay (420, 220, 110 ms) and the peaks' hold and fall. All
+smoothing is by elapsed time, so it moves the same at any frame rate.
+
+**When it runs.** Only while its stage is on screen: the visualizer on and Now playing shown
+with that placement (the panel's tab chosen, for the panel), or Settings > Visualizer shown;
+the window shown and not minimized; music playing. Then a timer at the display's refresh rate,
+at most 60 a second (or 30, Settings > Frame rate) reads the tap, analyses and draws. Paused or
+stopped, the bars fall to rest, and then the timer, the analysis and the tap stop (the preview
+goes back to its still frame); leaving the page or the section, Up next or Lyrics in the panel,
+hiding or minimizing the window stops them at once. `MP_BENCH=viz-styles` checks each of these.
+
+**Measured** on the development PC (1920 x 1032, Skia on wgpu, `MP_BENCH=viz-cost`, 5 s a case on
+the "Night Shift" fixtures; process CPU, so it includes the window redrawing at 60 fps at all,
+about 4% there, and the engine; playing on Now playing with the visualizer off is 0.9%).
+Every case held 60 fps, frame intervals p50 16.2-16.3 ms and p95 16.5 ms; the work per frame is
+the analysis and path building in Rust. Repeated runs differ by about two points either way.
+
+| Style | Behind the page | In the panel | Full page | Work per frame (full page, p50) |
+| --- | ---: | ---: | ---: | ---: |
+| Bars (Classic) | 11.9% | 8.1% | 10.0% | 0.58 ms |
+| Fine mirrored bars (Skyline) | | | 8.4% | 0.46 ms |
+| Line (Prism) | 14.1% | 6.9% | 15.9% | 0.42 ms |
+| Ring: Ripples (Halo) | 24.2% | 14.1% | 18.0% | 0.44 ms |
+| Ring: Saturn | 14.1% | 10.2% | 14.1% | 0.33 ms |
+| Ring: Galaxy | 20.3% | 12.5% | 13.3% | 0.40 ms |
+| Ring: Swarm | 21.8% | 10.2% | 18.0% | 0.38 ms |
+| Ring: Eclipse | 20.3% | 13.3% | 19.5% | 0.41 ms |
+| Bonfire | 27.3% | 14.1% | 25.0% | 0.79 ms |
+
+The rows from the ring down are one run of 2 s a case on the `fast` profile with a game running
+on the same PC (the drawing is Skia's either way), where the line measured 14.8% behind the
+page, 9.4% in the panel and 17.2% on the full page: they are to be read against that, and
+within three or four points.
+
+The ring and the bonfire cost more than the other styles, most of all behind the page (three
+runs each of 2 s a case on the `fast` profile, `MP_BENCH_VIZ_CASES=halo,bonfire`, with a game
+running on the same PC: the same conditions put the line at 13-16% behind the page and 13-17%
+on the full page). What costs is how much of the window they redraw: behind the page the
+ring's stage is the cover and three tenths of it each way, and the bonfire's the whole page,
+with the page's own content drawn over it every frame. Their own drawing was measured layer by
+layer on the ring before it had sparks (`MP_BENCH_VIZ_CASES=halo`, each layer left out in
+turn): the ripples were most of it (10.2% without them against 15.6-19.5% with), so they are a
+third of the contour's points each and at most five at once; the corona and the bloom were
+within the noise. The ring before its ripples travelled a whole radius and before it had sparks
+measured 10.9-19.5% (median 14.1%) behind the page; the first halo (rays around the cover)
+13.4-14.7%, and the plain ring before that 5.9-6.9%.
+
+At 30 frames a second: the line on the full page 6.6%, bars behind the page 6.2%. Before this
+work the one look, Classic, measured 13.6-14.3% in `viz-idle`'s running phase (now 11.7-12.8%)
+and 13.7% on the 96 kHz sweep of `visualizer`. What was tried and measured on the way: 300 fine bars with anti-aliasing 30%, on whole pixels without it 11%; the line's cost was
+its strokes: with a mirrored stroke of the line in its reflection it took 21-24% on the full
+page, without it 14-16% (left out; the mirrored area carries the shape), while its points 5 or
+12 px apart, a faint glow under it (left out) and straight segments
+sampled in Rust instead of curves each changed little by themselves. Paused and hidden after
+running, the app is idle as before (`MP_BENCH=viz-idle`): 0.0 ms of CPU in 45 s in the final
+runs before and after (one run of the new build saw a single 15.6 ms scheduler tick), and in a
+paired run 2 context switches in 35 s before and after (counted outside, from the threads' raw
+performance counters; another run of the old build saw 27). With the software renderer every style draws (gradients, the
+ring's radial and conic gradients), and the reflection, now above the opaque bar,
+shows there too.
+
+**Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
+prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the
+auto level and the +3 dB tilt. It is at its best on the full page. Skyline is the bar
+counterpart: fine bars over a clear mirror.

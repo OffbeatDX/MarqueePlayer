@@ -1,0 +1,674 @@
+// The lists more than one page shows: covers in a grid, track lists (short and virtualised),
+// the queue, and the keys every list takes (ListKeys).
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AlbumCard, TrackRow } from "types.slint";
+import { Nav, Queue, Actions, MenuStore, Focus, Dialog, SmartList } from "stores.slint";
+import { AutoFlickable, ScrollDriver } from "autoscroll.slint";
+import { Icons, IconButton, Cover, AlbumTile, RemoteMark, TrackListRow, RowLook, LinkText, ArtistLinks, FocusRing, FocusTarget } from "widgets.slint";
+
+// ---- Keyboard lists ----------------------------------------------------------------
+//
+// A list (covers or tracks) takes the keyboard focus as one control and moves a cursor
+// over its items: the arrows (shortcuts::list_key), Enter opens or plays, the Menu key or
+// Shift+F10 opens the item's menu, which then takes the arrows itself while the list keeps
+// the focus. Items are only drawn with the cursor; they never hold the focus, so rows
+// that scroll away and come back (virtualised lists) cannot lose it.
+//
+// Track lists and the queue also have a selection (selected.rs): a click chooses a row (and
+// gives the list the keyboard, its ring shown only once a key is used there), Ctrl+click
+// toggles one, Shift+click takes the range from the anchor, Ctrl+A all, Esc none; the arrows
+// move it, Shift and the arrows stretch it. Rust keeps it; the rows only draw `selected`.
+
+// Whether a key opens the context menu.
+export global ListKeys {
+    public pure function menu-key(ev: KeyEvent) -> bool {
+        return ev.text == Key.Menu || (ev.modifiers.shift && ev.text == Key.F10);
+    }
+    public pure function enter(ev: KeyEvent) -> bool {
+        return ev.text == Key.Return && !ev.modifiers.control && !ev.modifiers.alt && !ev.modifiers.shift;
+    }
+    public pure function select-all(ev: KeyEvent) -> bool {
+        return ev.modifiers.control && !ev.modifiers.alt && !ev.modifiers.shift && (ev.text == "a" || ev.text == "A");
+    }
+    public pure function plain(ev: KeyEvent, key: string) -> bool {
+        return ev.text == key && !ev.modifiers.control && !ev.modifiers.alt && !ev.modifiers.shift;
+    }
+    // Ctrl+A and Esc on a list's selection (not while a menu is open: its keys). True when taken.
+    public function selection(ev: KeyEvent, ctx: string) -> bool {
+        if MenuStore.open {
+            return false;
+        }
+        if self.select-all(ev) {
+            Actions.select-all(ctx);
+            return true;
+        }
+        if self.plain(ev, Key.Escape) {
+            return Actions.select-clear(ctx);
+        }
+        return false;
+    }
+    // A menu opened from the keyboard: the list passes its keys on. True when taken.
+    public function to-menu(ev: KeyEvent) -> bool {
+        if !MenuStore.open || !MenuStore.from-keys {
+            return false;
+        }
+        if ev.text == Key.Escape {
+            Actions.menu-key("escape");
+        } else if ev.text == Key.DownArrow {
+            Actions.menu-key("down");
+        } else if ev.text == Key.UpArrow {
+            Actions.menu-key("up");
+        } else if ev.text == Key.RightArrow {
+            Actions.menu-key("right");
+        } else if ev.text == Key.LeftArrow {
+            Actions.menu-key("left");
+        } else if ev.text == Key.Return || ev.text == " " {
+            Actions.menu-key("enter");
+        }
+        return true;
+    }
+}
+
+// Covers laid out left to right, wrapping, with the given column count. Arrow keys move
+// over them when the grid has the focus.
+export component CoverGrid inherits Rectangle {
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    in property <[AlbumCard]> albums;
+    in property <length> size: Theme.cover-size;
+    in property <length> gap: 24px;
+    // What a screen reader calls the list.
+    in property <string> label: "Albums";
+    private property <int> cols: max(1, floor((self.width + gap) / (size + gap)));
+    private property <length> step: (self.width + gap) / cols;
+    private property <length> row-h: size + 50px + gap;
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, root.albums.length - 1);
+    height: ceil(albums.length / cols) * row-h;
+    accessible-role: AccessibleRole.list;
+    accessible-label: root.label;
+    accessible-delegate-focus: root.at;
+    accessible-item-count: root.albums.length;
+    function reveal() {
+        Actions.reveal(self.absolute-position.y + floor(root.at / root.cols) * root.row-h - 4px, root.size + 50px);
+    }
+    fs := FocusScope {
+        focus-lost => {
+            if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+        }
+        enabled: root.albums.length > 0;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ListKeys.to-menu(ev) { return accept; }
+            if root.albums.length == 0 { return reject; }
+            if ListKeys.enter(ev) { Actions.open-album(root.albums[root.at].id); return accept; }
+            if ListKeys.menu-key(ev) {
+                Actions.menu-request-keys("album", "", 0, root.albums[root.at].id,
+                    self.absolute-position.x + mod(root.at, root.cols) * root.step + root.size / 2,
+                    self.absolute-position.y + floor(root.at / root.cols) * root.row-h + root.size / 2);
+                return accept;
+            }
+            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+            let n = Actions.list-key(ev.text, root.at, root.albums.length, 2, root.cols, 2);
+            if n >= 0 { root.cursor = n; root.reveal(); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            root.cursor = root.at;
+            if reason == FocusReason.tab-navigation { root.reveal(); }
+        }
+    }
+    for album[i] in albums: AlbumTile {
+        x: mod(i, root.cols) * root.step;
+        y: floor(i / root.cols) * root.row-h;
+        size: root.size;
+        album: album;
+        index: i;
+        focused: fs.has-focus && i == root.at;
+        open => { Actions.open-album(album.id); }
+        play => { Actions.play-album(album.id); }
+        open-artist => { Actions.open-artist(album.artist); }
+    }
+}
+
+// "See all" at the right of a shelf's header: a small outlined pill.
+export component SeeAll inherits Rectangle {
+    // What a screen reader says ("See all albums").
+    in property <string> label: "See all";
+    callback clicked();
+    width: label.preferred-width + 28px;
+    height: 30px;
+    y: 3px;
+    border-radius: 15px;
+    border-width: 1px;
+    border-color: ta.has-hover || fs.has-focus ? Theme.text-dim : Theme.border;
+    background: ta.has-hover ? Theme.hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget { activated => { root.clicked(); } }
+    label := Text {
+        text: "See all";
+        font-size: Theme.font-small;
+        font-weight: 600;
+        color: ta.has-hover || fs.has-focus ? Theme.text : Theme.text-dim;
+        accessible-role: none;
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    FocusRing { shown: fs.has-focus; radius: 15px; }
+}
+
+// ---- Track list helper ---------------------------------------------------------
+
+// A track list in a page that scrolls as one (album, artist, search). Up and Down move
+// its cursor, Enter plays, the Menu key opens the track's menu.
+export component TrackList inherits Rectangle {
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    in property <[TrackRow]> tracks;
+    in property <string> ctx;
+    in property <bool> show-cover;
+    in property <bool> show-album;
+    in property <string> label: "Tracks";
+    // A technical details column (album pages leave it out when the summary says it).
+    in property <bool> details-column: true;
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, root.tracks.length - 1);
+    // The cursor row's y less the page scroll (fixed while the page scrolls), for the menu.
+    private property <length> at-y;
+    // The list took the keyboard by a click: no ring until a key is used there.
+    private property <bool> pointer-focus;
+    height: lay.preferred-height;
+    accessible-role: AccessibleRole.list;
+    accessible-label: root.label;
+    accessible-delegate-focus: root.at;
+    accessible-item-count: root.tracks.length;
+    fs := FocusScope {
+        focus-lost => {
+            root.pointer-focus = false;
+            if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+        }
+        enabled: root.tracks.length > 0;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ListKeys.to-menu(ev) { return accept; }
+            if root.tracks.length == 0 { return reject; }
+            if ListKeys.enter(ev) { Actions.play-in(root.ctx, root.at); return accept; }
+            if ListKeys.menu-key(ev) {
+                Actions.menu-request-keys("track", root.ctx, root.at, root.tracks[root.at].id,
+                    self.absolute-position.x + 160px, root.at-y + Nav.page-scroll + 30px);
+                return accept;
+            }
+            if ListKeys.selection(ev, root.ctx) { return accept; }
+            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+            let n = Actions.list-key(ev.text, root.at, root.tracks.length, 0, 1, 8);
+            if n >= 0 {
+                Actions.select-cursor(root.ctx, root.at, n, ev.modifiers.shift);
+                root.cursor = n;
+                root.pointer-focus = false;
+                return accept;
+            }
+            reject
+        }
+        focus-gained => {
+            Focus.zone = "";
+            root.cursor = max(0, root.at);
+        }
+        lay := VerticalLayout {
+            width: parent.width;
+            spacing: 0px;
+            for t[i] in root.tracks: VerticalLayout {
+                if t.disc-header != "": Text {
+                    height: 44px;
+                    vertical-alignment: bottom;
+                    text: t.disc-header;
+                    font-size: Theme.font-small;
+                    font-weight: 700;
+                    color: Theme.text-faint;
+                }
+                TrackListRow {
+                    track: t;
+                    ctx: root.ctx;
+                    index: i;
+                    show-cover: root.show-cover;
+                    show-album: root.show-album;
+                    details-column: root.details-column;
+                    focused: fs.has-focus && i == root.at && !root.pointer-focus;
+                    changed focused => {
+                        if self.focused {
+                            root.at-y = self.absolute-position.y - Nav.page-scroll;
+                            Actions.reveal(self.absolute-position.y, self.height);
+                        }
+                    }
+                    select-press(ctrl, shift) => {
+                        root.cursor = i;
+                        root.at-y = self.absolute-position.y - Nav.page-scroll;
+                        root.pointer-focus = true;
+                        fs.focus();
+                        Actions.select-press(root.ctx, i, ctrl, shift);
+                    }
+                    select-release => { Actions.select-release(root.ctx, i); }
+                    play => { Actions.play-in(root.ctx, i); }
+                    enqueue(next) => { Actions.enqueue-in(root.ctx, i, next); }
+                    favourite => { Actions.favourite-in(root.ctx, i); }
+                    add-to-playlist(pid) => { Actions.add-to-playlist(root.ctx, i, pid); }
+                    open-album => { Actions.open-album(t.album-id); }
+                    open-artist => { Actions.open-artist(t.artist); }
+                }
+            }
+        }
+    }
+}
+
+// A long track list, its header above it in one page scroll (@children: the header's
+// rows). Virtualised by hand: the page scrolls as one (the header with the tracks, its
+// height exact, so Back restores the scroll exactly), but only the track rows on screen
+// exist. `first` follows the scroll and the same few rows show the tracks from there, so
+// a list of thousands of tracks costs what a screenful does. (A ListView would estimate
+// the height from its rows, and a header row taller than the tracks throws the estimate,
+// and with it the restored scroll, off.) The keyboard cursor is an index, so it holds
+// whatever rows exist. `editable` (a playlist): rows can be dragged to a new place, or
+// moved with Alt+Up / Alt+Down, and Delete removes the one under the cursor. `computed` (a
+// smart playlist): none of that, and Delete or Alt+Up / Down say why instead of nothing.
+export component LongTrackList inherits Rectangle {
+    in property <bool> computed;
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    in property <[TrackRow]> tracks;
+    in property <string> ctx;
+    in property <string> label;
+    in property <bool> editable;
+    private property <int> n: root.tracks.length;
+    // A track row and the 20 px above it (the spacing between rows).
+    private property <length> row-h: 72px;
+    private property <length> rows-top: head.preferred-height + 20px;
+    private property <int> first: max(0, floor((-flick.content-y - root.rows-top) / root.row-h) - 1);
+    private property <int> shown: max(0, min(root.n - root.first, ceil(flick.height / root.row-h) + 3));
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, root.n - 1);
+    // The list took the keyboard by a click: no ring until a key is used there.
+    private property <bool> pointer-focus;
+    // Drag reorder: the line a drop lands before, and where the pointer is.
+    private property <int> drop-index: -1;
+    private property <length> drag-y;
+    // The cursor's row, in window coordinates.
+    private property <length> at-y: flick.absolute-position.y + flick.content-y + root.rows-top + root.at * root.row-h;
+    function reveal() {
+        Actions.reveal(root.at-y, 52px);
+    }
+    function move-to(to: int) {
+        // The line before `to` going up, after it going down (dnd::move_target).
+        Actions.playlist-move(root.at, to > root.at ? to + 1 : to);
+        root.cursor = to;
+        root.reveal();
+    }
+    drop := DropArea {
+        width: 100%;
+        height: 100%;
+        can-drop(ev) => {
+            if !root.editable || !Actions.is-playlist-row(ev.data) { return DragAction.none; }
+            root.drag-y = ev.position.y;
+            root.drop-index = max(0, min(root.n, floor((ev.position.y - flick.content-y - root.rows-top - 26px) / root.row-h) + 1));
+            return DragAction.copy;
+        }
+        dropped(ev) => {
+            if root.drop-index >= 0 { Actions.playlist-reorder(ev.data, root.drop-index); }
+            root.drop-index = -1;
+            return DragAction.copy;
+        }
+        flick := AutoFlickable {
+            content-y <=> Nav.page-scroll;
+            content-height: root.rows-top + root.n * root.row-h - 20px + Theme.bar-height + 32px;
+            head := VerticalLayout {
+                x: Theme.page-margin;
+                y: 0;
+                width: parent.width - 2 * Theme.page-margin;
+                height: self.preferred-height;
+                padding-top: Theme.page-top;
+                spacing: 20px;
+                @children
+            }
+            for k in root.shown: HorizontalLayout {
+                property <int> i: root.first + k;
+                x: Theme.page-margin;
+                y: root.rows-top + self.i * root.row-h;
+                width: parent.width - 2 * Theme.page-margin;
+                height: 52px;
+                row := TrackListRow {
+                    track: root.tracks[parent.i];
+                    ctx: root.ctx;
+                    index: parent.i;
+                    show-cover: true;
+                    show-album: true;
+                    details-column: true;
+                    focused: fs.has-focus && parent.i == root.at && !root.pointer-focus;
+                    select-press(ctrl, shift) => {
+                        root.cursor = parent.i;
+                        root.pointer-focus = true;
+                        fs.focus();
+                        Actions.select-press(root.ctx, parent.i, ctrl, shift);
+                    }
+                    select-release => { Actions.select-release(root.ctx, parent.i); }
+                    play => { Actions.play-in(root.ctx, parent.i); }
+                    enqueue(next) => { Actions.enqueue-in(root.ctx, parent.i, next); }
+                    favourite => { Actions.favourite-in(root.ctx, parent.i); }
+                    add-to-playlist(pid) => { Actions.add-to-playlist(root.ctx, parent.i, pid); }
+                    open-album => { Actions.open-album(self.track.album-id); }
+                    open-artist => { Actions.open-artist(self.track.artist); }
+                }
+                // Remove from the playlist; shown on hover, like the row's other actions.
+                if root.editable: IconButton {
+                    y: 10px;
+                    glyph: Icons.close;
+                    size: 32px;
+                    icon-size: 16px;
+                    label: "Remove from playlist";
+                    tabbable: false;
+                    opacity: row.hovered || self.has-hover || row.focused ? 1 : 0;
+                    clicked => { Actions.playlist-remove(parent.i); }
+                }
+            }
+        }
+        // After the rows in the tree, so Tab reaches the header's buttons first; it takes
+        // no clicks (they go on to the rows below).
+        fs := FocusScope {
+            focus-lost => {
+                root.pointer-focus = false;
+                if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+            }
+            width: 100%;
+            height: 100%;
+            enabled: root.n > 0;
+            focus-on-click: false;
+            key-pressed(ev) => {
+                if ListKeys.to-menu(ev) { return accept; }
+                if root.n == 0 { return reject; }
+                if ListKeys.enter(ev) { Actions.play-in(root.ctx, root.at); return accept; }
+                if ListKeys.menu-key(ev) {
+                    Actions.menu-request-keys("track", root.ctx, root.at, root.tracks[root.at].id, flick.absolute-position.x + Theme.page-margin + 160px, root.at-y + 30px);
+                    return accept;
+                }
+                if ListKeys.selection(ev, root.ctx) { return accept; }
+                // Delete: the rows chosen, else the one at the cursor (never from the library).
+                if root.editable && ListKeys.plain(ev, Key.Delete) {
+                    Actions.delete-selected(root.ctx, root.at);
+                    return accept;
+                }
+                if root.computed && !ev.modifiers.control && ((ev.text == Key.Delete && !ev.modifiers.alt && !ev.modifiers.shift) || (ev.modifiers.alt && (ev.text == Key.UpArrow || ev.text == Key.DownArrow))) {
+                    SmartList.hint();
+                    return accept;
+                }
+                if root.editable && ev.modifiers.alt && !ev.modifiers.control && ev.text == Key.UpArrow {
+                    if root.at > 0 { root.move-to(root.at - 1); }
+                    return accept;
+                }
+                if root.editable && ev.modifiers.alt && !ev.modifiers.control && ev.text == Key.DownArrow {
+                    if root.at < root.n - 1 { root.move-to(root.at + 1); }
+                    return accept;
+                }
+                if ev.modifiers.control || ev.modifiers.alt { return reject; }
+                let next = Actions.list-key(ev.text, root.at, root.n, 0, 1, max(1, floor(flick.height / root.row-h) - 1));
+                if next >= 0 {
+                    Actions.select-cursor(root.ctx, root.at, next, ev.modifiers.shift);
+                    root.cursor = next;
+                    root.pointer-focus = false;
+                    root.reveal();
+                    return accept;
+                }
+                reject
+            }
+            focus-gained => {
+                Focus.zone = "";
+                root.cursor = max(0, root.at);
+            }
+            accessible-role: AccessibleRole.list;
+            accessible-label: root.label;
+            accessible-delegate-focus: root.at;
+            accessible-item-count: root.n;
+        }
+    }
+    // Where a drop will land.
+    if drop.has-drag && root.drop-index >= 0: Rectangle {
+        x: Theme.page-margin + 6px;
+        width: root.width - 2 * Theme.page-margin - 12px;
+        y: flick.content-y + root.rows-top + root.drop-index * root.row-h - 10px - 1.5px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    // Scroll while a drag hovers near the top or bottom edge.
+    Timer {
+        interval: 16ms;
+        running: drop.has-drag && (root.drag-y < Theme.page-top || root.drag-y > root.height - Theme.bar-height - 40px);
+        triggered => {
+            if root.drag-y < Theme.page-top {
+                flick.content-y = min(0px, flick.content-y + 12px);
+            } else {
+                flick.content-y = max(min(0px, flick.height - flick.content-height), flick.content-y - 12px);
+            }
+        }
+    }
+}
+
+// The queue: drag rows to reorder, drop albums and tracks from the page to insert them
+// where the line shows, × to remove, double-click to play. Titles and artists are links.
+// From the keyboard: Up / Down move the cursor, Enter plays, Delete removes, the Menu key
+// opens the row's menu.
+export component QueueList inherits Rectangle {
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    // Where it is: "queue" in the queue sidebar, "" on the now-playing page.
+    in property <string> zone;
+    // Reached with Tab (off while the queue sidebar is hidden).
+    in property <bool> enabled: true;
+    // 2 in the queue sidebar (over the page), 0 on now playing.
+    in property <int> autoscroll-layer: 0;
+    // Being autoscrolled (the sidebar holds itself open meanwhile).
+    out property <bool> autoscrolling: driver.active;
+    private property <length> row-h: 52px;
+    // Insertion point while a drag hovers: the row index the drop lands before.
+    private property <int> drop-index: -1;
+    private property <length> drag-y;
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, Queue.rows.length - 1);
+    // The list took the keyboard by a click: no ring until a key is used there.
+    private property <bool> pointer-focus;
+    private property <bool> ring: fs.has-focus && !root.pointer-focus;
+    out property <bool> dragging-over: drop.has-drag;
+    function reveal() {
+        let top = root.at * root.row-h;
+        if top + list.content-y < 0 {
+            list.content-y = -top;
+        } else if top + root.row-h + list.content-y > list.visible-height {
+            list.content-y = min(0px, list.visible-height - top - root.row-h);
+        }
+    }
+    accessible-role: AccessibleRole.list;
+    accessible-label: "Queue";
+    accessible-delegate-focus: root.at;
+    accessible-item-count: Queue.rows.length;
+    fs := FocusScope {
+        enabled: root.enabled && Queue.rows.length > 0;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ListKeys.to-menu(ev) { return accept; }
+            if Queue.rows.length == 0 { return reject; }
+            if ListKeys.enter(ev) { Actions.queue-play(root.at); return accept; }
+            if ListKeys.menu-key(ev) {
+                Actions.menu-request-keys("queue", "", root.at, 0, self.absolute-position.x + 60px, list.absolute-position.y + list.content-y + root.at * root.row-h + 30px);
+                return accept;
+            }
+            if ListKeys.selection(ev, "queue") { return accept; }
+            // Delete: the rows chosen, else the one at the cursor.
+            if ListKeys.plain(ev, Key.Delete) {
+                Actions.delete-selected("queue", root.at);
+                return accept;
+            }
+            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+            let n = Actions.list-key(ev.text, root.at, Queue.rows.length, 0, 1, max(1, floor(list.visible-height / root.row-h) - 1));
+            if n >= 0 {
+                Actions.select-cursor("queue", root.at, n, ev.modifiers.shift);
+                root.cursor = n;
+                root.pointer-focus = false;
+                root.reveal();
+                return accept;
+            }
+            reject
+        }
+        focus-gained => {
+            Focus.zone = root.zone;
+            root.cursor = max(0, root.at);
+            root.reveal();
+        }
+        focus-lost => {
+            root.pointer-focus = false;
+            if Focus.zone == root.zone { Focus.zone = ""; }
+            if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+        }
+    }
+    drop := DropArea {
+        can-drop(ev) => {
+            root.drag-y = ev.position.y;
+            root.drop-index = max(0, min(Queue.rows.length, round((ev.position.y - list.content-y) / root.row-h)));
+            return Actions.accepts(ev.data) ? DragAction.copy : DragAction.none;
+        }
+        dropped(ev) => {
+            Actions.queue-drop(ev.data, root.drop-index);
+            root.drop-index = -1;
+            return DragAction.copy;
+        }
+        list := ListView {
+            for q[i] in Queue.rows: Rectangle {
+                height: root.row-h;
+                border-radius: Theme.radius-control;
+                background: q.selected ? RowLook.background(true, qta.has-hover) : q.current ? Theme.accent.with-alpha(0.14) : RowLook.background(false, qta.has-hover);
+                accessible-role: list-item;
+                accessible-label: q.title + ", " + q.artist + ", " + q.duration + (q.current ? ", playing" : "") + (q.remote ? ", from the server" : "");
+                accessible-item-index: i;
+                accessible-item-selectable: true;
+                accessible-item-selected: q.selected;
+                accessible-action-default => { Actions.queue-play(i); }
+                DragArea {
+                    data: Actions.queue-payload(i);
+                    allow-copy: true;
+                    opacity: self.dragging ? 0.4 : 1;
+                    qta := TouchArea {
+                        double-clicked => { Actions.queue-play(i); }
+                        clicked => { Actions.select-release("queue", i); }
+                        pointer-event(ev) => {
+                            if ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down {
+                                root.cursor = i;
+                                root.pointer-focus = true;
+                                fs.focus();
+                                Actions.select-press("queue", i, ev.modifiers.control, ev.modifiers.shift);
+                            }
+                            if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                                Actions.menu-request("queue", "", i, 0, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                            }
+                        }
+                // Inside the row's TouchArea, as TrackListRow's (widgets.slint): the row keeps
+                // its hover while the title, the artist or the Remove button has the pointer.
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 4px;
+                    spacing: 12px;
+                    Cover { y: 8px; size: 36px; radius: 4px; source: q.cover; has-cover: q.has-cover; tint: q.tint; }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            alignment: start;
+                            spacing: 6px;
+                            LinkText {
+                                text: q.title;
+                                font-size: Theme.font-body;
+                                base-color: q.current ? Theme.accent : Theme.text;
+                                clicked => { Actions.open-album(q.album-id); }
+                                context-requested(x, y) => { Actions.menu-request("queue", "", i, 0, x, y); }
+                            }
+                            if q.remote: RemoteMark { }
+                        }
+                        ArtistLinks { text: q.artist; ref-id: q.track-id; context-requested(x, y) => { Actions.menu-request("queue", "", i, 0, x, y); } }
+                    }
+                    Text { width: 40px; text: q.duration; vertical-alignment: center; horizontal-alignment: right; font-size: Theme.font-small; color: Theme.text-dim; }
+                    IconButton { y: 10px; glyph: Icons.close; size: 32px; icon-size: 16px; label: "Remove from queue"; tabbable: false; opacity: qta.has-hover || (root.ring && i == root.at) ? 1 : 0; clicked => { Actions.queue-remove(i); } }
+                }
+                    }
+                }
+                FocusRing { shown: root.ring && i == root.at; radius: Theme.radius-control; inset: true; }
+            }
+        }
+    }
+    driver := ScrollDriver {
+        area-x: list.absolute-position.x;
+        area-y: list.absolute-position.y;
+        area-width: list.visible-width;
+        area-height: list.visible-height;
+        content-width: list.content-width;
+        content-height: list.content-height;
+        content-y <=> list.content-y;
+        layer: root.autoscroll-layer;
+    }
+    // Where a drop will land.
+    if drop.has-drag && root.drop-index >= 0: Rectangle {
+        x: 6px;
+        width: parent.width - 12px;
+        y: root.drop-index * root.row-h + list.content-y - 1.5px;
+        height: 3px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+    // Scroll while a drag hovers near the top or bottom edge.
+    Timer {
+        interval: 16ms;
+        running: drop.has-drag && (root.drag-y < 40px || root.drag-y > root.height - 40px);
+        triggered => {
+            if root.drag-y < 40px {
+                list.content-y = min(0px, list.content-y + 10px);
+            } else {
+                list.content-y = max(min(0px, root.height - list.content-height), list.content-y - 10px);
+            }
+        }
+    }
+    if Queue.rows.length == 0: Text {
+        y: 8px;
+        text: "Nothing queued. Drag albums or tracks here.";
+        color: Theme.text-dim;
+        font-size: Theme.font-body;
+        wrap: word-wrap;
+    }
+}

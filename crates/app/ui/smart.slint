@@ -1,0 +1,600 @@
+// Smart playlists (playlists/smart.rs, playlists/smartedit.rs): a smart playlist's page, the editor where its
+// rules are made, and the list a choice of the editor opens (`SmartPicker`, over the window).
+//
+// The editor reads as sentences: "Tracks that match [all] of these rules", then a line per
+// rule, "[Genre] [is] [Jazz]", "[Rating] [is at least] [★★★★☆]", "[Last played] [is not in
+// the last] [6] [months]", and under the rules "Sort by [Play count] [most first]" and
+// "[○] Limit to [50] [tracks] chosen by [Random]". Every control is one Tab stop: a choice
+// opens its list with Enter (or Down, or a click), a typed value is a field, stars step with
+// the arrows. What a line cannot be yet is said under it.
+import { Theme } from "theme.slint";
+import { SmartRow, SmartSlot, TrackRow } from "types.slint";
+import { SmartEdit, SmartList, Picker, Nav, Focus, Actions, Playlists } from "stores.slint";
+import { Icon, Icons, IconButton, TextButton, LineField, Switch, Stepper, FocusRing, SectionTitle, SettingCard } from "widgets.slint";
+import { TrackList, LongTrackList } from "lists.slint";
+import { AutoFlickable } from "autoscroll.slint";
+
+// A choice: what is chosen, and a chevron. Enter, Down or F4 (or a click) opens its list.
+component ChoiceButton inherits Rectangle {
+    in property <string> text;
+    in property <string> label;
+    in property <bool> invalid;
+    in property <int> key;
+    in property <int> role;
+    height: 36px;
+    min-width: lay.preferred-width;
+    border-radius: Theme.radius-control;
+    background: ta.pressed ? Theme.press : ta.has-hover ? Theme.surface-hi : Theme.surface;
+    border-width: 1px;
+    border-color: root.invalid ? #ff8a80a0 : fs.has-focus ? Theme.accent : Theme.border;
+    animate background { duration: Theme.dur-hover; }
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.text;
+    accessible-expandable: true;
+    accessible-expanded: Picker.open && SmartEdit.focus-key == root.key && SmartEdit.focus-role == root.role;
+    accessible-action-default => { root.open(); }
+    function open() {
+        SmartEdit.open-choice(root.key, root.role, self.absolute-position.x, self.absolute-position.y + self.height + 4px);
+    }
+    private property <int> seq: SmartEdit.focus-seq;
+    changed seq => {
+        if SmartEdit.focus-key == root.key && SmartEdit.focus-role == root.role && !fs.has-focus {
+            fs.focus();
+        }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.shift { return reject; }
+            if (ev.text == Key.Return && !ev.modifiers.alt) || ev.text == Key.DownArrow || ev.text == Key.F4 {
+                root.open();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation { Actions.reveal(self.absolute-position.y, self.height); }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
+    }
+    lay := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 4px;
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        Icon { y: (parent.height - self.height) / 2; glyph: Icons.down; width: 18px; height: 18px; color: Theme.text-dim; }
+    }
+    FocusRing { shown: fs.has-focus; radius: Theme.radius-control; }
+}
+
+// A typed value: a field of the width the value needs.
+component SlotText inherits Rectangle {
+    in property <SmartSlot> slot;
+    in property <int> key;
+    width: root.slot.width;
+    height: 36px;
+    private property <int> seq: SmartEdit.focus-seq;
+    changed seq => {
+        if SmartEdit.focus-key == root.key && SmartEdit.focus-role == root.slot.role && !f.focused {
+            f.focus-field();
+        }
+    }
+    f := LineField {
+        width: 100%;
+        text: root.slot.text;
+        placeholder: root.slot.placeholder;
+        label: root.slot.label;
+        edited(t) => { SmartEdit.text-edited(root.key, root.slot.role, t); }
+    }
+    if root.slot.invalid && !f.focused: Rectangle {
+        border-radius: Theme.radius-control;
+        border-width: 1px;
+        border-color: #ff8a80a0;
+    }
+}
+
+// One control of a line, by its kind.
+component SlotControl inherits HorizontalLayout {
+    in property <SmartSlot> slot;
+    in property <int> key;
+    // As wide as what it shows: a line reads left to right, its actions at its end.
+    horizontal-stretch: 0;
+    if root.slot.kind == 0: ChoiceButton { text: root.slot.text; label: root.slot.label; invalid: root.slot.invalid; key: root.key; role: root.slot.role; }
+    if root.slot.kind == 1: SlotText { slot: root.slot; key: root.key; }
+    if root.slot.kind == 2: Text {
+        text: root.slot.text;
+        vertical-alignment: center;
+        font-size: Theme.font-body;
+        color: Theme.text-dim;
+        accessible-role: none;
+    }
+    if root.slot.kind == 3: VerticalLayout {
+        alignment: center;
+        Stepper {
+            value: root.slot.text;
+            label: root.slot.label;
+            value-width: 88px;
+            step(d) => { SmartEdit.stars(root.key, root.slot.role, d); }
+        }
+    }
+    if root.slot.kind == 4: VerticalLayout {
+        alignment: center;
+        Switch {
+            checked: root.slot.on;
+            label: root.slot.label;
+            toggled => { SmartEdit.toggle(root.key, root.slot.role); }
+        }
+    }
+}
+
+// One line of the editor: a rule, a group's heading, a rule from a newer version, the order
+// or the limit. A group's rules are indented under its heading, with a line down their left.
+component RuleLine inherits Rectangle {
+    in property <SmartRow> line;
+    in property <int> key;
+    height: lay.preferred-height;
+    accessible-role: groupbox;
+    accessible-label: root.line.label;
+    if root.line.depth > 0: Rectangle {
+        x: 26px + (root.line.depth - 1) * 32px;
+        width: 2px;
+        height: 100%;
+        background: Theme.border;
+    }
+    lay := VerticalLayout {
+        padding-left: 20px + root.line.depth * 32px;
+        padding-right: 12px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 4px;
+        HorizontalLayout {
+            spacing: 8px;
+            for s in root.line.slots: SlotControl { slot: s; key: root.key; }
+            if root.line.kind == 2: Text {
+                text: root.line.note;
+                vertical-alignment: center;
+                font-size: Theme.font-small;
+                color: Theme.text-dim;
+                wrap: word-wrap;
+                horizontal-stretch: 1;
+            }
+            if root.line.kind == 1: TextButton {
+                horizontal-stretch: 0;
+                text: "Rule";
+                glyph: Icons.plus;
+                label: "Add a rule to this group";
+                clicked => { SmartEdit.add-rule(root.key); }
+            }
+            Rectangle { horizontal-stretch: 1; min-width: 0px; }
+            if root.line.removable: HorizontalLayout {
+                spacing: 0px;
+                IconButton {
+                    y: 2px;
+                    glyph: Icons.up;
+                    size: 32px;
+                    icon-size: 20px;
+                    enabled: root.line.can-up;
+                    label: "Move up: " + root.line.label;
+                    clicked => { SmartEdit.move(root.key, -1); }
+                }
+                IconButton {
+                    y: 2px;
+                    glyph: Icons.down;
+                    size: 32px;
+                    icon-size: 20px;
+                    enabled: root.line.can-down;
+                    label: "Move down: " + root.line.label;
+                    clicked => { SmartEdit.move(root.key, 1); }
+                }
+                IconButton {
+                    y: 2px;
+                    glyph: Icons.close;
+                    size: 32px;
+                    icon-size: 16px;
+                    label: "Remove: " + root.line.label;
+                    clicked => { SmartEdit.remove(root.key); }
+                }
+            }
+        }
+        if root.line.error != "": Text {
+            text: root.line.error;
+            font-size: Theme.font-small;
+            color: #ff8a80;
+            wrap: word-wrap;
+        }
+        if root.line.note != "" && root.line.kind != 2: Text {
+            text: root.line.note;
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component SmartEditorPage inherits Rectangle {
+    private property <int> name-seq: SmartEdit.name-focus-seq;
+    changed name-seq => { name.focus-field(); }
+    // A new playlist starts with its name to type.
+    init => {
+        if SmartEdit.is-new && SmartEdit.name == "" { name.focus-field(); }
+    }
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: outer.preferred-height;
+        outer := HorizontalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            alignment: start;
+            col := VerticalLayout {
+                max-width: 1000px;
+                preferred-width: 1000px;
+                spacing: 20px;
+                HorizontalLayout {
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 8px;
+                        Text { text: SmartEdit.is-new ? "NEW SMART PLAYLIST" : "EDIT SMART PLAYLIST"; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; }
+                        name := LineField {
+                            width: 440px;
+                            text <=> SmartEdit.name;
+                            placeholder: "Name the playlist";
+                            label: "Name of the smart playlist";
+                            edited(t) => { SmartEdit.name-edited(t); }
+                            accepted => { SmartEdit.save(); }
+                        }
+                        if SmartEdit.name-error != "": Text { text: SmartEdit.name-error; font-size: Theme.font-small; color: #ff8a80; wrap: word-wrap; }
+                    }
+                    VerticalLayout {
+                        alignment: start;
+                        padding-top: 26px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: end;
+                            TextButton { text: "Cancel"; label: "Cancel: leave without saving"; clicked => { SmartEdit.cancel(); } }
+                            if SmartEdit.can-duplicate: TextButton { text: "Duplicate"; label: "Duplicate: a new smart playlist from these rules"; clicked => { SmartEdit.duplicate(); } }
+                            TextButton { text: "Save"; glyph: Icons.check; primary: true; label: "Save the smart playlist"; clicked => { SmartEdit.save(); } }
+                        }
+                    }
+                }
+                if SmartEdit.save-error != "": Text { text: SmartEdit.save-error; font-size: Theme.font-body; color: #ff8a80; wrap: word-wrap; }
+                // What the rules hold now, at a glance while they are edited.
+                HorizontalLayout {
+                    spacing: 10px;
+                    accessible-role: text;
+                    accessible-label: SmartEdit.count;
+                    Icon { y: (parent.height - self.height) / 2; glyph: Icons.smart; color: SmartEdit.count-attention ? #ff8a80 : Theme.accent; }
+                    Text { text: SmartEdit.count; vertical-alignment: center; font-size: Theme.font-title; font-weight: 600; color: SmartEdit.count-attention ? #ff8a80 : Theme.text; wrap: word-wrap; }
+                }
+                // Starting points, in two rows (they fit beside each other at the smallest window).
+                if SmartEdit.is-new && SmartEdit.templates.length > 0: VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "Start from one of these, then change it as you like:"; font-size: Theme.font-small; color: Theme.text-dim; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for t[i] in SmartEdit.templates: TextButton { text: t; label: "Start from: " + t; clicked => { SmartEdit.template(i); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for t[i] in SmartEdit.templates-more: TextButton { text: t; label: "Start from: " + t; clicked => { SmartEdit.template(SmartEdit.templates.length + i); } }
+                    }
+                }
+                SettingCard {
+                    accessible-label: "Rules";
+                    for r[i] in SmartEdit.rows: RuleLine { line: r; key: i; }
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-top: 6px;
+                        padding-bottom: 14px;
+                        spacing: 10px;
+                        alignment: start;
+                        TextButton { text: "Add rule"; glyph: Icons.plus; clicked => { SmartEdit.add-rule(-1); } }
+                        TextButton { text: "Add group"; glyph: Icons.plus; label: "Add a group: rules joined the other way"; clicked => { SmartEdit.add-group(); } }
+                    }
+                }
+                SettingCard {
+                    accessible-label: "Order and limit";
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        for r[i] in SmartEdit.tail: RuleLine { line: r; key: 1000 + i; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    SectionTitle { text: "Preview"; }
+                    if SmartEdit.preview-note != "": Text { text: SmartEdit.preview-note; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+                    TrackList { tracks: SmartEdit.preview; ctx: "preview"; show-cover: true; show-album: true; label: "Preview of the smart playlist"; }
+                }
+            }
+        }
+    }
+}
+
+// A smart playlist's page: its rules in words, what they hold now (a track list like any
+// other: play, shuffle, queue, favourite...), and Edit. Its order is the rules': rows are not
+// dragged, moved or removed here (Delete says why).
+export component SmartPlaylistPage inherits Rectangle {
+    private property <bool> renaming;
+    private property <string> draft;
+    // Delete asks once: the first click arms it for a few seconds.
+    private property <bool> confirm-delete;
+    private property <int> rename-seq: SmartList.rename-seq;
+    changed rename-seq => {
+        root.draft = SmartList.name;
+        root.renaming = true;
+    }
+    Timer {
+        interval: 4s;
+        running: root.confirm-delete;
+        triggered => { root.confirm-delete = false; }
+    }
+    LongTrackList {
+        tracks: SmartList.tracks;
+        ctx: "smart";
+        label: SmartList.name;
+        computed: true;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Icon { y: (parent.height - self.height) / 2; glyph: Icons.smart; width: 16px; height: 16px; color: Theme.text-dim; }
+            Text { text: "SMART PLAYLIST"; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; }
+        }
+        if !root.renaming: Text { text: SmartList.name; font-size: Theme.font-display; font-weight: 800; color: Theme.text; wrap: word-wrap; }
+        if root.renaming: LineField {
+            width: 400px;
+            text <=> root.draft;
+            label: "Playlist name";
+            init => { self.focus-field(); }
+            accepted(t) => { SmartList.rename(t); root.renaming = false; }
+            escape => { root.renaming = false; }
+        }
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: SmartList.summary; font-size: Theme.font-title; color: Theme.text; wrap: word-wrap; }
+            Text { text: SmartList.info; font-size: Theme.font-body; color: Theme.text-dim; }
+        }
+        for p in SmartList.problems: HorizontalLayout {
+            spacing: 8px;
+            Icon { glyph: Icons.warning; width: 18px; height: 18px; color: #ff8a80; }
+            Text { text: p; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            TextButton { text: "Play"; glyph: Icons.play; primary: true; clicked => { SmartList.play(false); } }
+            TextButton { text: "Shuffle"; glyph: Icons.shuffle; clicked => { SmartList.play(true); } }
+            TextButton { text: "Edit rules"; glyph: Icons.edit; label: "Edit the rules of this smart playlist"; clicked => { SmartList.edit(); } }
+            if SmartList.random: TextButton { text: "Reshuffle"; glyph: Icons.refresh; label: "Reshuffle: a new random order"; clicked => { SmartList.reshuffle(); } }
+            IconButton {
+                glyph: Icons.more;
+                tooltip: "More";
+                label: "More: rename, duplicate, save as an ordinary playlist, export";
+                clicked => { SmartList.more(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+            TextButton {
+                text: root.confirm-delete ? (Playlists.used-by == "" ? "Click again to delete" : "Click again: " + Playlists.used-by) : "Delete";
+                glyph: Icons.close;
+                label: root.confirm-delete ? "Delete the smart playlist: press again to confirm" + (Playlists.used-by == "" ? "" : ". " + Playlists.used-by + ": its rule about this playlist will then match nothing") : "Delete the smart playlist";
+                clicked => {
+                    if root.confirm-delete {
+                        root.confirm-delete = false;
+                        SmartList.delete();
+                    } else {
+                        root.confirm-delete = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One entry of the list a choice opens.
+component PickerRow inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    in property <bool> highlighted;
+    in property <int> index;
+    callback hovered();
+    callback chosen();
+    height: 34px;
+    border-radius: Theme.radius-control - 2px;
+    background: root.highlighted ? Theme.accent.with-alpha(0.22) : transparent;
+    accessible-role: list-item;
+    accessible-label: root.text + (root.checked ? ", chosen" : "");
+    accessible-item-index: root.index;
+    accessible-item-selected: root.checked;
+    accessible-action-default => { root.chosen(); }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        changed has-hover => {
+            if self.has-hover { root.hovered(); }
+        }
+        clicked => { root.chosen(); }
+    }
+    if root.checked: Icon {
+        x: 8px;
+        y: (parent.height - self.height) / 2;
+        width: 16px;
+        height: 16px;
+        glyph: Icons.check;
+        color: Theme.accent;
+    }
+    Text {
+        x: 32px;
+        width: parent.width - 40px;
+        text: root.text;
+        vertical-alignment: center;
+        font-size: Theme.font-body;
+        color: Theme.text;
+        overflow: elide;
+        accessible-role: none;
+    }
+}
+
+// The list a choice of the editor opens, under it: typing filters it (folded as search
+// folds), Up and Down move, Enter takes the entry, Esc or a click outside closes it. It has
+// the keyboard while open; the choice has it back after. Only the rows on screen exist, so a
+// list of thousands of artists opens at once.
+export component SmartPicker inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: root.window-width;
+    height: root.window-height;
+    if Picker.open: box := Rectangle {
+        private property <length> row-h: 34px;
+        private property <int> n: Picker.items.length;
+        private property <length> head: Picker.filterable ? 44px : 0px;
+        private property <length> below: root.window-height - Picker.y - 12px;
+        private property <length> above: Picker.y - 56px;
+        private property <length> wanted: max(self.row-h, min(self.n * self.row-h, 340px));
+        // Under the control, or over it when there is more room there.
+        private property <bool> up: self.below < self.wanted + self.head + 16px && self.above > self.below;
+        private property <length> list-h: max(self.row-h, min(self.wanted, (self.up ? self.above : self.below) - self.head - 16px));
+        private property <int> first: max(0, floor(-list.content-y / self.row-h));
+        private property <int> shown: max(0, min(self.n - self.first, ceil(self.list-h / self.row-h) + 1));
+        function key(ev: KeyEvent) -> bool {
+            if ev.text == Key.Escape || ev.text == Key.Tab || ev.text == Key.Backtab {
+                Picker.close();
+                return true;
+            }
+            if ev.text == Key.Return {
+                if self.n > 0 { Picker.pick(Picker.highlight); }
+                return true;
+            }
+            let step = ev.text == Key.DownArrow ? 1 : ev.text == Key.UpArrow ? -1 : ev.text == Key.PageDown ? 8 : ev.text == Key.PageUp ? -8 : 0;
+            if step != 0 {
+                if self.n > 0 {
+                    Picker.highlight = max(0, min(self.n - 1, Picker.highlight + step));
+                    self.reveal();
+                }
+                return true;
+            }
+            false
+        }
+        function reveal() {
+            let top = Picker.highlight * self.row-h;
+            if top < -list.content-y { list.content-y = -top; }
+            if top + self.row-h > -list.content-y + self.list-h { list.content-y = -(top + self.row-h - self.list-h); }
+        }
+        init => { self.reveal(); }
+        // Anywhere outside: a press closes it; the wheel does nothing under it.
+        TouchArea {
+            pointer-event(ev) => {
+                if ev.kind == PointerEventKind.down { Picker.close(); }
+            }
+            scroll-event(ev) => { accept }
+        }
+        keys := FocusScope {
+            init => {
+                if !Picker.filterable { self.focus(); }
+            }
+            key-pressed(ev) => {
+                if box.key(ev) { return accept; }
+                accept
+            }
+        }
+        panel := Rectangle {
+            width: max(260px, Picker.min-width);
+            height: lay.preferred-height;
+            x: max(8px, min(Picker.x, root.window-width - self.width - 8px));
+            y: box.up ? max(8px, Picker.y - 44px - self.height) : Picker.y;
+            border-radius: Theme.radius-card;
+            background: Theme.glass-fill;
+            backdrop-blur: Theme.glass-radius-blur;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: #00000080;
+            drop-shadow-offset-y: 6px;
+            accessible-role: AccessibleRole.list;
+            accessible-label: Picker.title;
+            accessible-delegate-focus: Picker.highlight;
+            accessible-item-count: box.n;
+            // Clicks between rows must not reach the catcher behind.
+            TouchArea { }
+            lay := VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                if Picker.filterable: Rectangle {
+                    height: 40px;
+                    border-radius: Theme.radius-control;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    Text {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: 100%;
+                        text: "Type to filter";
+                        vertical-alignment: center;
+                        color: Theme.text-faint;
+                        font-size: Theme.font-body;
+                        visible: input.text == "";
+                    }
+                    input := TextInput {
+                        x: 12px;
+                        width: parent.width - 24px;
+                        height: 100%;
+                        text <=> Picker.filter;
+                        vertical-alignment: center;
+                        color: Theme.text;
+                        font-size: Theme.font-body;
+                        selection-background-color: Theme.accent.with-alpha(0.4);
+                        accessible-label: "Filter: " + Picker.title;
+                        init => { self.focus(); }
+                        edited => {
+                            Picker.filter-edited(self.text);
+                            list.content-y = 0;
+                        }
+                        key-pressed(ev) => {
+                            if box.key(ev) { return accept; }
+                            reject
+                        }
+                    }
+                }
+                list := Flickable {
+                    height: box.list-h;
+                    content-height: box.n * box.row-h;
+                    for k in box.shown: PickerRow {
+                        property <int> i: box.first + k;
+                        y: self.i * box.row-h;
+                        width: list.width;
+                        text: Picker.items[self.i];
+                        index: self.i;
+                        checked: self.i == Picker.checked;
+                        highlighted: self.i == Picker.highlight;
+                        hovered => { Picker.highlight = self.i; }
+                        chosen => { Picker.pick(self.i); }
+                    }
+                }
+            }
+            if box.n == 0: Text {
+                y: lay.preferred-height - 40px;
+                height: 34px;
+                width: parent.width;
+                text: "Nothing matches";
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                font-size: Theme.font-small;
+                color: Theme.text-dim;
+            }
+        }
+    }
+}

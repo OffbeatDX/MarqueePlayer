@@ -1,0 +1,161 @@
+// Playlists: the list of them, and one playlist's page.
+
+import { Theme } from "../theme.slint";
+import { Nav, Playlists, Actions } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { Icon, Icons, IconButton, TextButton, LineField, FocusRing, FocusTarget } from "../widgets.slint";
+import { LongTrackList } from "../lists.slint";
+
+// ---- Playlists -----------------------------------------------------------------
+
+export component PlaylistsPage inherits Rectangle {
+    private property <string> new-name;
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 20px;
+            Text { text: "Playlists"; font-size: Theme.font-display; font-weight: 800; color: Theme.text; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+                LineField {
+                    width: 280px;
+                    text <=> root.new-name;
+                    placeholder: "New playlist name";
+                    accepted(t) => { if t != "" { Actions.create-playlist(t); root.new-name = ""; } }
+                }
+                TextButton {
+                    text: "Create";
+                    glyph: Icons.plus;
+                    label: "Create playlist";
+                    clicked => { if root.new-name != "" { Actions.create-playlist(root.new-name); root.new-name = ""; } }
+                }
+                TextButton {
+                    text: "Import\u{2026}";
+                    glyph: Icons.folder;
+                    label: "Import a playlist file (M3U or M3U8)";
+                    clicked => { Actions.import-playlist(); }
+                }
+                TextButton {
+                    text: "New smart playlist\u{2026}";
+                    glyph: Icons.smart;
+                    label: "New smart playlist: one that fills itself by rules";
+                    clicked => { Actions.new-smart-playlist(); }
+                }
+            }
+            if Playlists.import-summary != "": Rectangle {
+                border-radius: Theme.radius-control;
+                background: Theme.surface;
+                height: imp.preferred-height;
+                imp := VerticalLayout {
+                    padding: 14px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: Playlists.import-summary; font-size: Theme.font-body; color: Theme.text; wrap: word-wrap; vertical-alignment: center; }
+                        IconButton { horizontal-stretch: 0; glyph: Icons.close; size: 32px; icon-size: 16px; label: "Dismiss"; clicked => { Actions.import-playlist-dismiss(); } }
+                    }
+                    for m in Playlists.import-missing: Text { text: m; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; }
+                }
+            }
+            if Playlists.list.length == 0: Text {
+                text: "No playlists yet. Name one above, then add tracks from any track's right-click menu, or drag them onto it in the sidebar. A smart playlist fills itself: say what belongs in it, like a genre or the tracks you rate highest, and it keeps up with your library.";
+                font-size: Theme.font-body;
+                color: Theme.text-dim;
+                wrap: word-wrap;
+            }
+            for p in Playlists.list: Rectangle {
+                height: 56px;
+                border-radius: Theme.radius-control;
+                background: pta.has-hover ? Theme.hover : transparent;
+                accessible-role: button;
+                accessible-label: p.smart ? p.name + ", smart playlist: " + p.summary + (p.info != "" ? ", " + p.info : "") : p.name + ", " + p.info;
+                accessible-action-default => { Actions.open-playlist(p.id); }
+                pfs := FocusTarget { activated => { Actions.open-playlist(p.id); } }
+                pta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Actions.open-playlist(p.id); }
+                    pointer-event(ev) => {
+                        if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                            Actions.menu-request("playlist", "", 0, p.id, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 8px;
+                    spacing: 14px;
+                    Icon { y: (parent.height - self.height) / 2; glyph: p.smart ? Icons.smart : Icons.playlist; color: Theme.text-dim; }
+                    if !p.smart: Text { text: p.name; vertical-alignment: center; font-size: Theme.font-title; color: Theme.text; overflow: elide; }
+                    // A smart playlist: its rules in plain words under its name.
+                    if p.smart: VerticalLayout {
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: p.name; font-size: Theme.font-title; color: Theme.text; overflow: elide; }
+                        Text { text: p.summary; font-size: Theme.font-small; color: Theme.text-faint; overflow: elide; }
+                    }
+                    Text { text: p.info; vertical-alignment: center; horizontal-alignment: right; horizontal-stretch: 0; min-width: 72px; font-size: Theme.font-small; color: Theme.text-dim; }
+                }
+                FocusRing { shown: pfs.has-focus; radius: Theme.radius-control; inset: true; }
+            }
+        }
+    }
+}
+
+export component PlaylistPage inherits Rectangle {
+    private property <bool> renaming;
+    private property <string> draft;
+    // Delete asks once: the first click arms it for a few seconds.
+    private property <bool> confirm-delete;
+    Timer {
+        interval: 4s;
+        running: root.confirm-delete;
+        triggered => { root.confirm-delete = false; }
+    }
+    LongTrackList {
+        tracks: Playlists.tracks;
+        ctx: "playlist";
+        label: Playlists.current-name;
+        editable: true;
+        Text { text: "PLAYLIST"; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; }
+        if !root.renaming: Text { text: Playlists.current-name; font-size: Theme.font-display; font-weight: 800; color: Theme.text; }
+        Text { text: Playlists.current-info; font-size: Theme.font-body; color: Theme.text-dim; }
+        if root.renaming: LineField {
+            width: 400px;
+            text <=> root.draft;
+            label: "Playlist name";
+            accepted(t) => { Actions.rename-playlist(Playlists.current-id, t); root.renaming = false; }
+            escape => { root.renaming = false; }
+        }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            TextButton { text: "Play"; glyph: Icons.play; primary: true; clicked => { Actions.play-in("playlist", 0); } }
+            TextButton { text: "Shuffle"; glyph: Icons.shuffle; clicked => { Actions.shuffle-in("playlist"); } }
+            TextButton { text: "Rename"; clicked => { root.draft = Playlists.current-name; root.renaming = !root.renaming; } }
+            TextButton {
+                text: "Export\u{2026}";
+                label: "Export the playlist as a file";
+                clicked => { Actions.playlist-export-menu(Playlists.current-id, self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+            TextButton {
+                text: root.confirm-delete ? (Playlists.used-by == "" ? "Click again to delete" : "Click again: " + Playlists.used-by) : "Delete";
+                glyph: Icons.close;
+                label: root.confirm-delete ? "Delete the playlist: press again to confirm" + (Playlists.used-by == "" ? "" : ". " + Playlists.used-by + ": its rule about this playlist will then match nothing") : "Delete the playlist";
+                clicked => {
+                    if root.confirm-delete {
+                        root.confirm-delete = false;
+                        Actions.delete-playlist(Playlists.current-id);
+                    } else {
+                        root.confirm-delete = true;
+                    }
+                }
+            }
+        }
+    }
+}

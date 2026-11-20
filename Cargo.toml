@@ -1,0 +1,143 @@
+[workspace]
+resolver = "3"
+members = ["crates/player-core", "crates/library", "crates/http", "crates/md5", "crates/subsonic", "crates/lastfm", "crates/listenbrainz", "crates/discord-ipc", "crates/lrclib", "crates/ui", "crates/app", "crates/bench-runner", "crates/xtask"]
+# Patched copies of dependencies (crates/patches/README.md), not members.
+exclude = ["crates/patches"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Offbeat"]
+license = "GPL-3.0-or-later"
+# Where the source is published: About shows it, as the GPL asks of every binary copy. The one
+# place to set it.
+repository = "https://github.com/OffbeatDX/MarqueePlayer"
+publish = false
+
+[workspace.dependencies]
+symphonia = { version = "0.6.1", default-features = false, features = ["flac", "mp3", "mp2", "ogg", "vorbis", "wav", "aiff", "pcm", "isomp4", "aac", "alac"] }
+opusic-sys = "0.7.7"
+wasapi = "0.27.0"
+crossbeam-channel = "0.5.17"
+log = "0.4"
+rusqlite = { version = "0.42.0", features = ["bundled", "functions", "collation"] }
+lofty = "0.25.5"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+walkdir = "2.5.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Slint master, pinned at 84e288a (2026-11-13), for `backdrop-blur` (live frosted glass; the
+# Skia renderer the app uses draws it, and so does FemtoVG, the software renderer not) and the
+# pixel-buffer window icon fix (#13615). Both came after 1.18.1 and are in the 1.19 pre-release
+# branch; this commit is past that branch (its crates say 1.20.0, as Cargo.lock does), so it
+# also carries 1.20 development work. Switch to the 1.19 release once it ships, checking the
+# app against it, as it does not have what came after the branch.
+# Skia's OpenGL surface (`renderer-skia-opengl`) is only for the frame-timing benches:
+# the app's `bench-opengl` feature (crates/app/Cargo.toml) adds it.
+slint = { git = "https://github.com/slint-ui/slint", rev = "84e288a16657bfd8b2b33b3ae2d1067f4fee8cda", default-features = false, features = ["std", "backend-winit", "renderer-skia", "renderer-software", "accessibility", "system-tray", "compat-1-18", "unstable-winit-030"] }
+slint-build = { git = "https://github.com/slint-ui/slint", rev = "84e288a16657bfd8b2b33b3ae2d1067f4fee8cda" }
+
+# Release: whole-program LTO and one codegen unit for the smallest, fastest exe; symbols
+# stripped (the exe ships without a PDB). opt-level stays 3: decoding speed comes first.
+# panic stays "unwind": the scanner catches a panic in one file's tag or art reading
+# (library::scan) and reports it instead of losing the whole scan.
+#
+# The app crate (marquee-player) must stay at 3: with fat LTO its opt-level sets the
+# whole-program optimization pass, and "s" or "z" there turns off loop and SLP
+# vectorization everywhere, decoding and image resizing included (measured: 20-30% more
+# CPU scrolling, scanning and drawing the visualizer). Size is saved per crate
+# below instead, only where no hot path runs (docs/releases.md, "Exe size").
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
+
+# The generated UI (crates/ui): a quarter of the exe at opt-level 3. At "z" the exe is
+# 4.8 MB smaller, with the same frame times scrolling the album grid, sliding the
+# sidebar, opening a long playlist and drawing the visualizer.
+[profile.release.package.marquee-ui]
+opt-level = "z"
+
+# Crates that never run while scrolling, playing or scanning, optimized for size
+# (0.9 MB together): SVG icons are rasterized once and cached; naga translates wgpu's
+# few shaders at start; the software renderer is only the fallback when Skia cannot
+# start; settings and theme files are read at start and saved on change; menus, file
+# dialogs and the media-key session wait for the user. Not here: text layout and
+# shaping (parley, harfrust, skrifa, swash, zeno), wgpu-core and wgpu-hal, winit and
+# accesskit, which at "z" together made scrolling the album grid measurably slower
+# (frame p95 19.5 -> 26.5 ms); and Slint's own crates, whose generic code is compiled
+# into the UI crate, so at "z" they made the exe bigger, not smaller.
+[profile.release.package.naga]
+opt-level = "z"
+[profile.release.package.usvg]
+opt-level = "z"
+[profile.release.package.resvg]
+opt-level = "z"
+[profile.release.package.tiny-skia]
+opt-level = "z"
+[profile.release.package.tiny-skia-path]
+opt-level = "z"
+[profile.release.package.roxmltree]
+opt-level = "z"
+[profile.release.package.simplecss]
+opt-level = "z"
+[profile.release.package.svgtypes]
+opt-level = "z"
+[profile.release.package.kurbo]
+opt-level = "z"
+[profile.release.package.gif]
+opt-level = "z"
+[profile.release.package.i-slint-renderer-software]
+opt-level = "z"
+[profile.release.package.softbuffer]
+opt-level = "z"
+[profile.release.package.serde_json]
+opt-level = "z"
+[profile.release.package.toml]
+opt-level = "z"
+[profile.release.package.toml_parser]
+opt-level = "z"
+[profile.release.package.toml_writer]
+opt-level = "z"
+[profile.release.package.toml_datetime]
+opt-level = "z"
+[profile.release.package.serde_spanned]
+opt-level = "z"
+[profile.release.package.muda]
+opt-level = "z"
+[profile.release.package.rfd]
+opt-level = "z"
+[profile.release.package.souvlaki]
+opt-level = "z"
+
+# The packaged release (`cargo xtask release`): the release profile, plus line tables (on
+# Windows in a PDB beside the exe), kept in dist\symbols\<version>\ (never shipped: they
+# hold this machine's paths) so a crash address from a user's report can be resolved to a line.
+# On MSVC the debug info goes to the PDB, not the exe, which carries only the PDB's file
+# name (rustc links with /PDBALTPATH:%_PDB%); the exe's code is the same. Its own folder
+# (target\dist) also keeps the release's remapped build apart from the
+# target\release of `cargo xtask build`, so neither rebuilds everything after the other.
+[profile.dist]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+# Working builds (`--profile fast`, in target\fast): the release profile's optimization
+# without the whole-program link step, in parallel and incremental, so a one-line change
+# rebuilds in 10 to 20 seconds instead of 3 to 5 minutes (measured). For trying a change
+# and for the benches that check behaviour (`cargo xtask bench --profile fast`) and the
+# checks before a push (`cargo xtask check`). Never shipped: the exe is about 5 MB
+# larger, and timings, the exe size and the bit-exact audio tests
+# are only meaningful on the release profile, which `cargo xtask release` uses.
+[profile.fast]
+inherits = "release"
+lto = "off"
+codegen-units = 16
+incremental = true
+
+
+# A dependency fixed here until upstream is (crates/patches/README.md). Linux only in effect:
+# nothing in the Windows build depends on it.
+[patch.crates-io]
+blocking = { path = "crates/patches/blocking" }

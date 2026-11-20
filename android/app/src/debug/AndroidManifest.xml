@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug only: plain http to this device's loopback, for the local LRCLIB stand-in (adb reverse),
+     and the Android Auto stand-in (a MediaBrowser harness started with adb). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config">
+        <activity
+            android:name=".harness.AutoHarnessActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- A crash on purpose, for checking the crash handler (see CrashTestReceiver). -->
+        <receiver
+            android:name=".harness.CrashTestReceiver"
+            android:exported="true" />
+    </application>
+</manifest>

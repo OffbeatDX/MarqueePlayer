@@ -1,0 +1,179 @@
+# The desktop app (crates/): `cargo xtask check`, what a push must pass (docs/building.md,
+# "Checks before a push"): the whitespace of the commits, rustfmt (reported only), clippy with
+# -D warnings without and with the bench harness, and the workspace's tests, on the `fast`
+# profile.
+#
+# Nothing here runs for a push or a pull request: contributors run the command themselves.
+# It runs when a version is tagged, as the release workflow's first job, on the systems the
+# release builds, and by hand (Actions > Desktop > Run workflow, choosing the systems).
+name: Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      systems:
+        description: "The systems to check"
+        type: choice
+        options:
+          - windows,linux,macos
+          - macos
+          - windows,linux
+          - windows
+          - linux
+        default: windows,linux,macos
+  workflow_call:
+    inputs:
+      systems:
+        description: "The systems to check: windows, linux and macos, separated by commas"
+        type: string
+        default: windows,linux
+
+permissions:
+  contents: read
+
+# A second run asked for by hand on the same ref replaces the first.
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The `fast` profile is incremental; a CI build starts from the cache, never from its own
+  # incremental state, which would only make the cache bigger.
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The runners for the systems asked for (a caller that names none: Windows and
+  # Linux), as the matrix of the job below.
+  systems:
+    name: Systems
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      os: ${{ steps.m.outputs.os }}
+    steps:
+      - id: m
+        env:
+          SYSTEMS: ${{ inputs.systems || 'windows,linux' }}
+        run: |
+          os=()
+          for s in ${SYSTEMS//,/ }; do
+            case "$s" in
+              windows) os+=('"windows-latest"') ;;
+              linux) os+=('"ubuntu-24.04"') ;;
+              macos) os+=('"macos-latest"') ;;
+              *) echo "::error::$s is not a system (windows, linux, macos)"; exit 1 ;;
+            esac
+          done
+          if [ ${#os[@]} -eq 0 ]; then
+            echo "::error::no system to check"; exit 1
+          fi
+          list=$(IFS=,; echo "[${os[*]}]")
+          echo "os=$list" >> "$GITHUB_OUTPUT"
+          echo "Checking on $list"
+
+  check:
+    name: Checks (${{ matrix.os }})
+    needs: systems
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.systems.outputs.os) }}
+    runs-on: ${{ matrix.os }}
+    # A cold build (no cache) downloads Skia's prebuilt binaries, fetches Slint from git and
+    # compiles the workspace three times (clippy twice, the tests).
+    timeout-minutes: 120
+    steps:
+      # The whole history, so that the whitespace step finds the commit it starts from.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The toolchain rust-toolchain.toml names, with its components.
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --component clippy,rustfmt
+          rustup default "$toolchain"
+          rustc --version
+
+      # docs/linux.md, "Building"; 24.04's libpipewire-0.3-dev (1.0.5) is new enough to build
+      # against. ffmpeg makes the tests' audio fixtures (tests skip without it).
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libasound2-dev \
+            libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
+            ffmpeg
+
+      # The MSVC toolchain, Visual Studio's C++ tools and CMake (libopus) are on the image.
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+
+      # docs/macos.md, "Building": the Xcode command line tools are on the image; CMake
+      # (libopus) is too, installed if a later image drops it; ffmpeg makes the tests' fixtures.
+      # Homebrew's `ffmpeg` has no libvorbis encoder, which the Ogg Vorbis fixtures need:
+      # `ffmpeg-full` has it, and is not linked into the PATH by Homebrew (keg-only).
+      - name: CMake and ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          has() { command -v ffmpeg >/dev/null && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "$1"; }
+          if ! has libvorbis; then
+            brew install ffmpeg-full
+            bin="$(brew --prefix ffmpeg-full)/bin"
+            echo "$bin" >> "$GITHUB_PATH"
+            export PATH="$bin:$PATH"
+          fi
+          cmake --version | head -n 1
+          ffmpeg -version | head -n 1
+          for e in libvorbis libopus libmp3lame; do
+            has "$e" || { echo "::error::this ffmpeg has no $e encoder, which the tests' fixtures need"; exit 1; }
+          done
+
+      # Dependencies (Skia's download and Slint's git checkout among them) and their build
+      # outputs; saved only by runs started by hand on a branch (a tag's cache could be read by
+      # no later run).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/heads/') }}
+
+      # The commits to check for whitespace: a pull request's own (its merge commit's first
+      # parent is the base), a push's (from what the branch was before), else the last commit
+      # (a new branch, a forced push whose old head is gone, a release run).
+      - name: Commits to check
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=HEAD~1
+          if [ "$EVENT" = pull_request ]; then
+            base=HEAD^1
+          elif [ "$EVENT" = push ] && [ -n "$BEFORE" ] && ! [[ "$BEFORE" =~ ^0+$ ]] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            base=$BEFORE
+          fi
+          # The repository's first commit has no parent: the empty tree, so all of it is checked.
+          if ! git rev-parse -q --verify "$base^{commit}" >/dev/null; then
+            base=$(git hash-object -t tree /dev/null)
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "Whitespace checked from $base"
+
+      - name: cargo xtask check
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+        run: cargo xtask check --base "$BASE"

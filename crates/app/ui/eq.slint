@@ -1,0 +1,852 @@
+// Settings > Equalizer (eq.rs): the curve that plays, drawn from the filters themselves;
+// ten sliders under it, each under its own octave, or the bands in full; the preset
+// picker, Copy and Paste, the preamp, and a setting of the playing device's own. Also the
+// preview that pasted or imported settings show before they apply (EqPreviewPanel).
+//
+// Keys: the sliders are one Tab stop (Left and Right choose a band, Up and Down move it by
+// 0.5 dB, Page Up and Page Down by 3, Home and End to the ends, 0 or Delete to 0 dB); every
+// other control is a Tab stop of its own, as everywhere in Settings. Ctrl+C and Ctrl+V
+// (unless remapped) copy and paste the setting anywhere on the page but in a text field.
+import { Theme } from "theme.slint";
+import { Equalizer, EqPreview, Actions, Focus, Keys, SettingsView } from "stores.slint";
+import { EqBandRow, EqNote } from "types.slint";
+import { Icon, Icons, IconButton, TextButton, FocusRing, Segmented, Stepper, SettingCard, SettingRow, SwitchRow, Hairline } from "widgets.slint";
+import { Panel } from "dialogs.slint";
+import { AutoFlickable } from "autoscroll.slint";
+
+// The frequency response: the bands combined (filled to 0 dB), with the preamp added (a
+// thin line), a grid at 0, +-6 and +-12 dB and at 100 Hz, 1 kHz and 10 kHz, and in the
+// parametric view each band's place, numbered. Ten octaves wide, centred on the sliders'.
+component EqCurve inherits Rectangle {
+    height: 168px;
+    border-radius: Theme.radius-control;
+    background: Theme.bg.with-alpha(0.45);
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+    accessible-role: image;
+    accessible-label: "The equalizer's curve: " + Equalizer.preset + (Equalizer.on ? "" : ", off") + ", preamp " + Equalizer.preamp;
+    // dB lines (the curve spans +-15 dB).
+    for db in [12, 6, 0, -6, -12]: Rectangle {
+        y: (0.5 - db / 30) * root.height;
+        height: 1px;
+        width: root.width;
+        background: db == 0 ? Theme.text-faint.with-alpha(0.35) : Theme.border;
+    }
+    // 100 Hz, 1 kHz, 10 kHz: log2(f / 22.27) / 10 of the width.
+    for f[i] in [{ x: 0.21666, t: "100" }, { x: 0.54885, t: "1k" }, { x: 0.88104, t: "10k" }]: Rectangle {
+        x: f.x * root.width;
+        width: 1px;
+        height: root.height;
+        background: Theme.border;
+        Text {
+            x: 4px;
+            y: root.height - self.height - 4px;
+            text: f.t;
+            font-size: 11px;
+            color: Theme.text-faint;
+            accessible-role: none;
+        }
+    }
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: Equalizer.curve-fill;
+        fill: Equalizer.on ? Theme.accent.with-alpha(0.16) : Theme.text-faint.with-alpha(0.07);
+        stroke-width: 0;
+    }
+    if Equalizer.curve-total != "": Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: Equalizer.curve-total;
+        stroke: Theme.text-dim.with-alpha(Equalizer.on ? 0.55 : 0.3);
+        stroke-width: 1px;
+        fill: transparent;
+    }
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: Equalizer.curve;
+        stroke: Equalizer.on ? Theme.accent : Theme.text-faint;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+    // The dB labels over the fill and the curve (a bass curve passes right by them), each on a
+    // small backing of the panel's colour.
+    for db in [12, 6, 0, -6, -12]: Rectangle {
+        x: 4px;
+        y: (0.5 - db / 30) * root.height + (db < 0 ? 2px : -self.height - 1px);
+        width: t.preferred-width + 4px;
+        height: t.preferred-height;
+        border-radius: 3px;
+        background: Theme.surface.with-alpha(0.75);
+        t := Text {
+            x: 2px;
+            text: db > 0 ? "+" + db : db == 0 ? "0 dB" : "\u{2212}" + abs(db);
+            font-size: 11px;
+            color: Theme.text-faint;
+            accessible-role: none;
+        }
+    }
+    if !Equalizer.graphic: Rectangle {
+        for b in Equalizer.bands: Rectangle {
+            x: b.x * root.width - 9px;
+            y: clamp(b.y * root.height, 9px, root.height - 9px) - 9px;
+            width: 18px;
+            height: 18px;
+            border-radius: 9px;
+            background: Equalizer.on ? Theme.accent : Theme.text-faint;
+            Text {
+                text: b.number;
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.accent-text;
+                accessible-role: none;
+            }
+        }
+    }
+    if Equalizer.curve-total != "": Text {
+        x: parent.width - self.width - 8px;
+        y: 6px;
+        text: "\u{2014} with the preamp, " + Equalizer.preamp;
+        font-size: 11px;
+        color: Theme.text-faint;
+        accessible-role: none;
+    }
+}
+
+// One slider: its gain above, the track, its frequency below. Drawn from 0 dB (the middle)
+// up or down to its gain.
+component EqSlider inherits Rectangle {
+    in property <int> index;
+    in property <float> value;
+    in property <string> value-text;
+    in property <string> label;
+    in property <string> spoken;
+    in property <bool> focused;
+    callback picked();
+    private property <length> track-top: 22px;
+    private property <length> track-h: self.height - 44px;
+    private property <float> share: clamp((value + 12) / 24, 0, 1);
+    accessible-role: slider;
+    accessible-label: root.spoken;
+    accessible-value: value-text + " dB";
+    accessible-value-minimum: -12;
+    accessible-value-maximum: 12;
+    accessible-value-step: 0.5;
+    accessible-action-increment => { Actions.eq-gain(root.index, root.value + 0.5); }
+    accessible-action-decrement => { Actions.eq-gain(root.index, root.value - 0.5); }
+    Text {
+        y: 0;
+        height: 18px;
+        width: parent.width;
+        text: root.value-text;
+        horizontal-alignment: center;
+        font-size: Theme.font-small;
+        font-weight: root.value != 0 ? 600 : 400;
+        color: root.value != 0 && Equalizer.on ? Theme.text : Theme.text-faint;
+        accessible-role: none;
+    }
+    // The track, 0 dB marked across it.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.track-top;
+        width: 4px;
+        height: root.track-h;
+        border-radius: 2px;
+        background: #ffffff1c;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.track-top + root.track-h / 2;
+        width: 14px;
+        height: 1px;
+        background: Theme.text-faint.with-alpha(0.6);
+    }
+    // From 0 dB to the gain.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.track-top + root.track-h * min(1 - root.share, 0.5);
+        width: 4px;
+        height: root.track-h * abs(root.share - 0.5);
+        border-radius: 2px;
+        background: Equalizer.on ? Theme.accent : Theme.text-dim;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.track-top + root.track-h * (1 - root.share) - self.height / 2;
+        width: ta.has-hover || ta.pressed || root.focused ? 16px : 12px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: ta.pressed ? Theme.accent : Theme.text;
+        animate width { duration: Theme.dur-hover; }
+        FocusRing { shown: root.focused; radius: parent.border-radius; }
+    }
+    Text {
+        y: parent.height - self.height;
+        height: 18px;
+        width: parent.width;
+        text: root.label;
+        horizontal-alignment: center;
+        font-size: Theme.font-small;
+        color: root.focused ? Theme.text : Theme.text-dim;
+        accessible-role: none;
+    }
+    function to-db(y: length) -> float {
+        return 12 - clamp((y - root.track-top) / root.track-h, 0, 1) * 24;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left {
+                root.picked();
+                Actions.eq-gain(root.index, root.to-db(self.mouse-y));
+            }
+        }
+        moved => {
+            if self.pressed { Actions.eq-gain(root.index, root.to-db(self.mouse-y)); }
+        }
+        double-clicked => { Actions.eq-gain(root.index, 0); }
+    }
+}
+
+// The ten sliders: one Tab stop, a cursor over them.
+component EqSliders inherits Rectangle {
+    height: 186px;
+    in property <[string]> labels: ["31", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+    in property <[string]> spoken: ["31 Hz", "63 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"];
+    private property <int> cursor;
+    accessible-role: groupbox;
+    accessible-label: "Equalizer bands";
+    accessible-description: "Left and Right choose a band, Up and Down change it";
+    function nudge(by: float) {
+        Actions.eq-gain(root.cursor, Equalizer.gains[root.cursor] + by);
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+            if ev.text == Key.LeftArrow { root.cursor = max(0, root.cursor - 1); return accept; }
+            if ev.text == Key.RightArrow { root.cursor = min(9, root.cursor + 1); return accept; }
+            if ev.text == Key.UpArrow { root.nudge(0.5); return accept; }
+            if ev.text == Key.DownArrow { root.nudge(-0.5); return accept; }
+            if ev.text == Key.PageUp { root.nudge(3); return accept; }
+            if ev.text == Key.PageDown { root.nudge(-3); return accept; }
+            if ev.text == Key.Home { Actions.eq-gain(root.cursor, -12); return accept; }
+            if ev.text == Key.End { Actions.eq-gain(root.cursor, 12); return accept; }
+            if ev.text == "0" || ev.text == Key.Delete { Actions.eq-gain(root.cursor, 0); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation {
+                Actions.reveal(self.absolute-position.y, self.height);
+            }
+        }
+    }
+    HorizontalLayout {
+        for g[i] in Equalizer.gains: EqSlider {
+            index: i;
+            value: g;
+            value-text: Equalizer.gain-texts[i];
+            label: root.labels[i];
+            spoken: root.spoken[i];
+            focused: fs.has-focus && root.cursor == i;
+            picked => { root.cursor = i; }
+        }
+    }
+}
+// One band of the parametric list: its number and kind (a button opening the kinds), then
+// its frequency, its gain (peaks and shelves only) and its width (a Q, a bandwidth in
+// octaves, or a shelf's slope: whichever the band has).
+component EqBandEditor inherits Rectangle {
+    in property <EqBandRow> band;
+    in property <int> index;
+    height: lay.preferred-height;
+    lay := VerticalLayout {
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 12px;
+            Rectangle {
+                width: 22px;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 22px;
+                    height: 22px;
+                    border-radius: 11px;
+                    background: Equalizer.on ? Theme.accent : Theme.text-faint;
+                    Text { text: root.band.number; font-size: 12px; font-weight: 700; color: Theme.accent-text; accessible-role: none; }
+                }
+            }
+            TextButton {
+                horizontal-stretch: 0;
+                text: root.band.kind-name;
+                glyph: Icons.collapse;
+                label: "Band " + root.band.number + " kind: " + root.band.kind-name + ". Choose another";
+                clicked => { Actions.eq-band-kind-menu(root.index, self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            IconButton {
+                glyph: Icons.close;
+                size: 32px;
+                icon-size: 16px;
+                label: "Remove band " + root.band.number;
+                tooltip: "Remove this band";
+                clicked => { Actions.eq-band-remove(root.index); }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 34px;
+            spacing: 18px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Frequency"; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-dim; }
+                Stepper { label: "Band " + root.band.number + " frequency"; value: root.band.freq; value-width: 72px; step(d) => { Actions.eq-band-step(root.index, "freq", d); } }
+            }
+            if root.band.has-gain: HorizontalLayout {
+                spacing: 8px;
+                Text { text: "Gain"; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-dim; }
+                Stepper { label: "Band " + root.band.number + " gain"; value: root.band.gain; value-width: 72px; step(d) => { Actions.eq-band-step(root.index, "gain", d); } }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                Text { text: root.band.width-label; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-dim; }
+                Stepper {
+                    label: "Band " + root.band.number + " " + root.band.width-label;
+                    value: root.band.q;
+                    value-width: root.band.width-label == "Q" ? 48px : 92px;
+                    step(d) => { Actions.eq-band-step(root.index, "q", d); }
+                }
+            }
+        }
+    }
+}
+
+// The curve as a card of its own, which SettingsPage keeps in view while the column scrolls
+// (beside the column on a wide page, held at its top on a narrow one): the bands below can
+// be edited with the curve they make in sight.
+export component EqPinnedCurve inherits Rectangle {
+    in property <bool> compact;
+    border-radius: Theme.radius-card;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Theme.border;
+    EqCurve {
+        x: 16px;
+        y: root.compact ? 10px : 16px;
+        width: parent.width - 32px;
+        height: parent.height - 2 * self.y;
+    }
+}
+
+export component EqualizerSection inherits VerticalLayout {
+    spacing: 16px;
+    // The curve's place, under the title: SettingsPage draws it there (held at the top while
+    // the rest scrolls) or, on a wide page, beside the column (no room kept here).
+    private property <length> slot: root.y + head.height + root.spacing;
+    init => { SettingsView.pin-slot = self.slot; }
+    changed slot => { SettingsView.pin-slot = self.slot; }
+    head := VerticalLayout {
+        spacing: 4px;
+        padding-bottom: 4px;
+        Text { text: "Equalizer"; font-size: Theme.font-heading; font-weight: 700; color: Theme.text; accessible-role: none; }
+        Text {
+            text: "Shape the sound with ten sliders, or with bands of your own, such as an AutoEq correction for your headphones. Copy and Paste carry a setting to and from Equalizer APO, AutoEq, Room EQ Wizard and EasyEffects.";
+            font-size: Theme.font-small;
+            color: Theme.text-faint;
+            wrap: word-wrap;
+        }
+    }
+    if !SettingsView.pin-side: Rectangle {
+        height: SettingsView.pin-height;
+        accessible-role: none;
+    }
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Equalizer";
+            hint: Equalizer.on ? "On: " + Equalizer.preset + (Equalizer.per-device ? ", for " + Equalizer.device : "") + ". Choosing a preset or moving a slider turns it on." : "Off: music plays exactly as it is. Choosing a preset or moving a slider turns it on.";
+            checked: Equalizer.on;
+            toggled => { Actions.eq-toggle(); }
+        }
+        Hairline { }
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 14px;
+            padding-bottom: 16px;
+            spacing: 14px;
+            // The setting as a whole: which it is, and moving it to and from the clipboard.
+            HorizontalLayout {
+                spacing: 8px;
+                TextButton {
+                    horizontal-stretch: 0;
+                    text: Equalizer.preset;
+                    glyph: Icons.collapse;
+                    label: "Preset: " + Equalizer.preset + ". Choose another, save, import or export";
+                    clicked => { Actions.eq-preset-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    horizontal-stretch: 0;
+                    // Outlined for a moment when "Find a setting" leads here.
+                    border-radius: Theme.radius-pill;
+                    border-width: SettingsView.highlight == "Copy equalizer settings" || SettingsView.highlight == "Paste equalizer settings" ? 2px : 0;
+                    border-color: Theme.accent;
+                    width: clip-lay.preferred-width;
+                    clip-lay := HorizontalLayout {
+                        spacing: 4px;
+                        TextButton {
+                            text: "Copy";
+                            glyph: Icons.copy;
+                            label: "Copy the equalizer as Equalizer APO text" + (Keys.eq-copy != "" ? " (" + Keys.eq-copy + ")" : "");
+                            clicked => { Actions.eq-copy(); }
+                        }
+                        IconButton {
+                            glyph: Icons.collapse;
+                            size: 36px;
+                            icon-size: 18px;
+                            label: "Copy as another format: a GraphicEQ curve or an EasyEffects preset";
+                            tooltip: "Copy as…";
+                            clicked => { Actions.eq-copy-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                        }
+                        Rectangle { width: 4px; }
+                        TextButton {
+                            text: EqPreview.reading ? "Reading…" : "Paste";
+                            glyph: Icons.paste;
+                            label: "Paste equalizer settings from the clipboard (Equalizer APO, AutoEq, Room EQ Wizard, EasyEffects), shown before they apply" + (Keys.eq-paste != "" ? " (" + Keys.eq-paste + ")" : "");
+                            clicked => { Actions.eq-paste(); }
+                        }
+                    }
+                }
+            }
+            // How it is shown, and back to flat. (The curve is pinned above: EqPinnedCurve.)
+            HorizontalLayout {
+                spacing: 10px;
+                Segmented {
+                    y: (parent.height - self.height) / 2;
+                    label: "Equalizer view";
+                    options: ["Graphic", "Parametric"];
+                    selected: Equalizer.graphic ? 0 : 1;
+                    chosen(i) => { Actions.eq-mode(i); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                TextButton {
+                    horizontal-stretch: 0;
+                    text: "Reset";
+                    glyph: Icons.refresh;
+                    label: "Reset the equalizer to flat";
+                    clicked => { Actions.eq-reset(); }
+                }
+            }
+            if Equalizer.graphic && Equalizer.graphic-note != "": HorizontalLayout {
+                spacing: 8px;
+                accessible-role: text;
+                accessible-label: Equalizer.graphic-note;
+                VerticalLayout {
+                    alignment: start;
+                    padding-top: 1px;
+                    Icon { width: 16px; height: 16px; glyph: Icons.info; color: Theme.accent; }
+                }
+                Text { text: Equalizer.graphic-note; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; horizontal-stretch: 1; accessible-role: none; }
+            }
+            if Equalizer.graphic: EqSliders { }
+            if !Equalizer.graphic: VerticalLayout {
+                for b[i] in Equalizer.bands: VerticalLayout {
+                    if i > 0: Rectangle { height: 1px; background: Theme.border; }
+                    EqBandEditor { band: b; index: i; }
+                }
+                HorizontalLayout {
+                    padding-top: 8px;
+                    alignment: start;
+                    spacing: 8px;
+                    if Equalizer.can-add: TextButton {
+                        text: "Add band";
+                        glyph: Icons.plus;
+                        label: "Add a band";
+                        clicked => { Actions.eq-band-add(); }
+                    }
+                    if !Equalizer.can-add: Text { text: Equalizer.max-bands + " bands is the most."; font-size: Theme.font-small; color: Theme.text-faint; vertical-alignment: center; }
+                }
+            }
+            if Equalizer.rate-note != "": Text { text: Equalizer.rate-note; font-size: Theme.font-small; color: Theme.text-faint; }
+        }
+        SettingRow {
+            label: "Preamp";
+            find-key: "Equalizer preamp";
+            hint: Equalizer.auto-preamp ? "Auto: down by the curve's largest boost, so no part of the music is made louder than it was." : "Set by hand. The peak limiter still catches what would clip.";
+            more: "Boosting a band makes those frequencies louder than the recording, which can go past full scale. Auto lowers everything by the largest boost first, so nothing can clip; a curve that only cuts needs none. A resonant low- or high-pass counts as a boost at its peak; an all-pass changes only the phase. ReplayGain is applied before it, and the limiter (Playback) after it, so it sees what plays.";
+            HorizontalLayout {
+                spacing: 10px;
+                if !Equalizer.auto-preamp: Stepper {
+                    label: "Equalizer preamp";
+                    value: Equalizer.preamp;
+                    value-width: 72px;
+                    step(d) => { Actions.eq-preamp-step(d); }
+                }
+                if Equalizer.auto-preamp: Text {
+                    text: Equalizer.preamp;
+                    vertical-alignment: center;
+                    font-size: Theme.font-body;
+                    font-weight: 600;
+                    color: Theme.text-dim;
+                }
+                Segmented {
+                    label: "Equalizer preamp";
+                    options: ["Auto", "Manual"];
+                    selected: Equalizer.auto-preamp ? 0 : 1;
+                    chosen(i) => { Actions.eq-preamp-mode(i); }
+                }
+            }
+        }
+        if Equalizer.device != "": SwitchRow {
+            label: "Separate setting for " + Equalizer.device;
+            find-key: "Separate setting for this device";
+            hint: Equalizer.per-device ? "Used whenever " + Equalizer.device + " plays. Other devices share another." : "Headphones and speakers can each have their own: turn this on to keep what you set here for " + Equalizer.device + ".";
+            checked: Equalizer.per-device;
+            toggled => { Actions.eq-per-device(); }
+        }
+    }
+}
+
+// ---- The preview of pasted or imported settings ------------------------------------------
+
+// The curves side by side: what plays now (grey), what would (the accent, filled), and a
+// GraphicEQ's own curve (light and thin) when the bands are fitted to one. Each without its
+// preamp (the summary gives it), so the shapes compare.
+component EqPreviewCurve inherits Rectangle {
+    height: 150px;
+    border-radius: Theme.radius-control;
+    background: Theme.bg.with-alpha(0.55);
+    border-width: 1px;
+    border-color: Theme.border;
+    clip: true;
+    accessible-role: image;
+    accessible-label: "The curve it would play, drawn over the one playing now" + (EqPreview.curve-target != "" ? ", with the GraphicEQ curve it follows" : "");
+    for db in [12, 6, 0, -6, -12]: Rectangle {
+        y: (0.5 - db / 30) * root.height;
+        height: 1px;
+        width: root.width;
+        background: db == 0 ? Theme.text-faint.with-alpha(0.35) : Theme.border;
+    }
+    for f[i] in [{ x: 0.21666, t: "100" }, { x: 0.54885, t: "1k" }, { x: 0.88104, t: "10k" }]: Rectangle {
+        x: f.x * root.width;
+        width: 1px;
+        height: root.height;
+        background: Theme.border;
+        Text { x: 4px; y: root.height - self.height - 4px; text: f.t; font-size: 11px; color: Theme.text-faint; accessible-role: none; }
+    }
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: EqPreview.curve-new-fill;
+        fill: Theme.accent.with-alpha(0.14);
+        stroke-width: 0;
+    }
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: EqPreview.curve-now;
+        stroke: Theme.text-faint;
+        stroke-width: 1.5px;
+        fill: transparent;
+    }
+    if EqPreview.curve-target != "": Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: EqPreview.curve-target;
+        stroke: Theme.text;
+        stroke-width: 1px;
+        fill: transparent;
+    }
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 240;
+        commands: EqPreview.curve-new;
+        stroke: Theme.accent;
+        stroke-width: 2px;
+        fill: transparent;
+    }
+    for db in [12, 0, -12]: Rectangle {
+        x: 4px;
+        y: (0.5 - db / 30) * root.height + (db < 0 ? 2px : -self.height - 1px);
+        width: t.preferred-width + 4px;
+        height: t.preferred-height;
+        border-radius: 3px;
+        background: Theme.surface.with-alpha(0.75);
+        t := Text { x: 2px; text: db > 0 ? "+" + db : db == 0 ? "0 dB" : "\u{2212}" + abs(db); font-size: 11px; color: Theme.text-faint; accessible-role: none; }
+    }
+}
+
+// One swatch of the legend.
+component LegendItem inherits HorizontalLayout {
+    in property <color> colour;
+    in property <length> thickness: 2px;
+    in property <string> text;
+    spacing: 6px;
+    Rectangle {
+        width: 18px;
+        Rectangle { y: (parent.height - self.height) / 2; height: root.thickness; width: 18px; border-radius: 1px; background: root.colour; }
+    }
+    Text { text: root.text; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; overflow: elide; accessible-role: none; }
+}
+
+// One filter of the preview's table.
+component EqPreviewRow inherits Rectangle {
+    in property <EqBandRow> band;
+    height: 26px;
+    accessible-role: text;
+    accessible-label: "Filter " + root.band.number + ": " + root.band.kind-name + ", " + root.band.freq + (root.band.has-gain ? ", " + root.band.gain : "") + ", " + root.band.width-label + " " + root.band.q;
+    HorizontalLayout {
+        spacing: 10px;
+        Text { width: 26px; text: root.band.number; horizontal-alignment: right; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-faint; accessible-role: none; }
+        Text { width: 96px; text: root.band.kind-name; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text; overflow: elide; accessible-role: none; }
+        Text { width: 84px; text: root.band.freq; horizontal-alignment: right; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text; accessible-role: none; }
+        Text { width: 76px; text: root.band.gain; horizontal-alignment: right; vertical-alignment: center; font-size: Theme.font-small; color: root.band.has-gain ? Theme.text : Theme.text-faint; accessible-role: none; }
+        Text { horizontal-stretch: 1; text: root.band.width-label + " " + root.band.q; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-dim; overflow: elide; accessible-role: none; }
+    }
+}
+
+// What pasted or imported settings would do, before anything changes: where they came from
+// and what they are, a verdict at a glance (exact, approximated, something left out), the
+// curve over the one playing now, what was left out or approximated and why, every
+// filter, and the preset it becomes. Apply (Enter on it) or Cancel (Esc, or a click
+// outside); a refused one shows why, with Close. It has the keyboard: Tab goes round its
+// buttons, the arrows and Page Up/Down scroll it, no shortcut fires.
+export component EqPreviewPanel inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: window-width;
+    height: window-height;
+    function cycle(d: int) {
+        if EqPreview.refused {
+            close.focus-button();
+            return;
+        }
+        if apply.focused { cancel.focus-button(); } else { apply.focus-button(); }
+    }
+    function scroll(by: length) {
+        flick.content-y = max(min(0px, flick.content-y - by), min(0px, flick.height - flick.content-height));
+    }
+    Rectangle { background: #00000070; }
+    // Anywhere outside: cancels. The wheel does nothing under it.
+    TouchArea {
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down { Actions.eq-preview-cancel(); }
+        }
+        scroll-event(ev) => { accept }
+    }
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Escape { Actions.eq-preview-cancel(); return accept; }
+            if ev.text == Key.Tab { root.cycle(1); return accept; }
+            if ev.text == Key.Backtab { root.cycle(-1); return accept; }
+            if ev.text == Key.DownArrow { root.scroll(40px); return accept; }
+            if ev.text == Key.UpArrow { root.scroll(-40px); return accept; }
+            if ev.text == Key.PageDown { root.scroll(flick.height * 0.9); return accept; }
+            if ev.text == Key.PageUp { root.scroll(-flick.height * 0.9); return accept; }
+            if ev.text == Key.Home { flick.content-y = 0; return accept; }
+            if ev.text == Key.End { root.scroll(100000px); return accept; }
+            accept
+        }
+        panel := Panel {
+            width: min(720px, root.width - 32px);
+            height: min(lay.preferred-height, root.height - 32px);
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            accessible-role: groupbox;
+            accessible-label: EqPreview.title + (EqPreview.format != "" ? ": " + EqPreview.format : "");
+            lay := VerticalLayout {
+                // The head: what it is.
+                VerticalLayout {
+                    padding-left: 24px;
+                    padding-right: 24px;
+                    padding-top: 20px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
+                    Text { text: EqPreview.title; font-size: Theme.font-title; font-weight: 700; color: Theme.text; overflow: elide; accessible-role: none; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        if EqPreview.format != "": Rectangle {
+                            width: chip.preferred-width + 16px;
+                            height: 22px;
+                            border-radius: 11px;
+                            background: Theme.surface-hi;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            chip := Text { text: EqPreview.format; font-size: 12px; font-weight: 600; color: Theme.text; accessible-role: none; }
+                        }
+                        Text { text: EqPreview.summary; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; accessible-role: text; }
+                    }
+                }
+                // The verdict, at a glance.
+                Rectangle {
+                    height: verdict.preferred-height;
+                    background: EqPreview.verdict-kind == 2 ? Theme.accent.with-alpha(0.14) : Theme.surface-hi.with-alpha(0.6);
+                    accessible-role: text;
+                    accessible-label: EqPreview.verdict + (EqPreview.refused ? ". " + EqPreview.reason : "");
+                    verdict := HorizontalLayout {
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        padding-top: 10px;
+                        padding-bottom: 10px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: start;
+                            Icon {
+                                width: 18px;
+                                height: 18px;
+                                glyph: EqPreview.verdict-kind == 0 ? Icons.check : EqPreview.verdict-kind == 1 ? Icons.info : Icons.warning;
+                                color: EqPreview.verdict-kind == 0 ? Theme.text : Theme.accent;
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 4px;
+                            horizontal-stretch: 1;
+                            Text { text: EqPreview.verdict; font-size: Theme.font-body; font-weight: 600; color: Theme.text; wrap: word-wrap; accessible-role: none; }
+                            if EqPreview.refused: Text { text: EqPreview.reason; font-size: Theme.font-small; color: Theme.text-dim; wrap: word-wrap; accessible-role: none; }
+                        }
+                    }
+                }
+                // The body: the curves, the notes, the filters (scrolls when the window is short).
+                flick := AutoFlickable {
+                    visible: !EqPreview.refused;
+                    vertical-stretch: EqPreview.refused ? 0 : 1;
+                    min-height: EqPreview.refused ? 0px : 120px;
+                    preferred-height: EqPreview.refused ? 0px : body.preferred-height;
+                    autoscroll-layer: 3;
+                    content-width: self.width;
+                    content-height: body.preferred-height;
+                    body := VerticalLayout {
+                        x: 0;
+                        width: flick.width;
+                        padding-left: 24px;
+                        padding-right: 24px;
+                        padding-top: 14px;
+                        padding-bottom: 8px;
+                        spacing: 10px;
+                        EqPreviewCurve { }
+                        HorizontalLayout {
+                            spacing: 18px;
+                            LegendItem { colour: Theme.accent; text: "What it would play"; }
+                            LegendItem { colour: Theme.text-faint; thickness: 1.5px; text: EqPreview.now-label; }
+                            if EqPreview.curve-target != "": LegendItem { colour: Theme.text; thickness: 1px; text: "The GraphicEQ curve"; }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        if EqPreview.notes.length > 0: VerticalLayout {
+                            spacing: 6px;
+                            padding-top: 4px;
+                            for n in EqPreview.notes: HorizontalLayout {
+                                spacing: 8px;
+                                accessible-role: text;
+                                accessible-label: (n.kind == 2 ? "Left out: " : n.kind == 1 ? "Approximated: " : "") + n.text;
+                                VerticalLayout {
+                                    alignment: start;
+                                    padding-top: 1px;
+                                    Icon {
+                                        width: 15px;
+                                        height: 15px;
+                                        glyph: n.kind == 2 ? Icons.warning : Icons.info;
+                                        color: n.kind == 2 ? Theme.accent : n.kind == 1 ? Theme.text-dim : Theme.text-faint;
+                                    }
+                                }
+                                Text {
+                                    text: n.text;
+                                    font-size: Theme.font-small;
+                                    color: n.kind == 0 ? Theme.text-faint : Theme.text;
+                                    wrap: word-wrap;
+                                    horizontal-stretch: 1;
+                                    accessible-role: none;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            padding-top: 6px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                height: 22px;
+                                Text { width: 26px; text: "#"; horizontal-alignment: right; font-size: 12px; color: Theme.text-faint; accessible-role: none; }
+                                Text { width: 96px; text: "Type"; font-size: 12px; color: Theme.text-faint; accessible-role: none; }
+                                Text { width: 84px; text: "Frequency"; horizontal-alignment: right; font-size: 12px; color: Theme.text-faint; accessible-role: none; }
+                                Text { width: 76px; text: "Gain"; horizontal-alignment: right; font-size: 12px; color: Theme.text-faint; accessible-role: none; }
+                                Text { horizontal-stretch: 1; text: "Width"; font-size: 12px; color: Theme.text-faint; accessible-role: none; }
+                            }
+                            Rectangle { height: 1px; background: Theme.border; }
+                            for b in EqPreview.rows: EqPreviewRow { band: b; }
+                        }
+                    }
+                }
+                // The foot: what it becomes, and the answer.
+                Rectangle { height: 1px; background: Theme.border; }
+                HorizontalLayout {
+                    padding-left: 24px;
+                    padding-right: 20px;
+                    padding-top: 12px;
+                    padding-bottom: 14px;
+                    spacing: 8px;
+                    Text { text: EqPreview.name-line; font-size: Theme.font-small; color: Theme.text-dim; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; accessible-role: text; }
+                    close := TextButton {
+                        visible: EqPreview.refused;
+                        width: EqPreview.refused ? self.min-width : 0px;
+                        tabbable: EqPreview.refused;
+                        horizontal-stretch: 0;
+                        text: "Close";
+                        primary: true;
+                        zone: "dialog";
+                        clicked => { Actions.eq-preview-cancel(); }
+                    }
+                    cancel := TextButton {
+                        visible: !EqPreview.refused;
+                        width: EqPreview.refused ? 0px : self.min-width;
+                        tabbable: !EqPreview.refused;
+                        horizontal-stretch: 0;
+                        text: "Cancel";
+                        zone: "dialog";
+                        label: "Cancel: leave the equalizer as it is";
+                        clicked => { Actions.eq-preview-cancel(); }
+                    }
+                    apply := TextButton {
+                        visible: !EqPreview.refused;
+                        width: EqPreview.refused ? 0px : self.min-width;
+                        tabbable: !EqPreview.refused;
+                        horizontal-stretch: 0;
+                        text: "Apply";
+                        primary: true;
+                        zone: "dialog";
+                        label: "Apply: " + EqPreview.name-line;
+                        clicked => { Actions.eq-preview-accept(); }
+                    }
+                }
+            }
+        }
+    }
+    // The answer has the keyboard, whenever the preview shows something new (it can be
+    // reopened before this panel has gone).
+    function take-focus() {
+        if EqPreview.refused { close.focus-button(); } else { apply.focus-button(); }
+    }
+    private property <int> shown: EqPreview.shown;
+    changed shown => { root.take-focus(); }
+    init => { root.take-focus(); }
+}

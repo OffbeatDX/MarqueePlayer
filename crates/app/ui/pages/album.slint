@@ -1,0 +1,96 @@
+// An album's page.
+
+import { Theme } from "../theme.slint";
+import { Nav, AlbumPage, Player, Actions } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { Icons, IconButton, TextButton, Cover, RemoteMark, ArtistLinks } from "../widgets.slint";
+import { TrackList } from "../lists.slint";
+
+// ---- Album ---------------------------------------------------------------------
+
+export component AlbumPageView inherits Rectangle {
+    private property <bool> menu-open;
+    // The header's text column: the page less its margins, the cover and the gap.
+    private property <length> text-width: self.width - 2 * Theme.page-margin - 260px - 36px;
+    // Room for every button? Otherwise "Play next" and "Add to queue" step aside: the "⋯"
+    // menu has both (and Play, Shuffle, the heart and the menu stay).
+    private property <bool> all-buttons: root.text-width >= 600px;
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 32px;
+            // A right click anywhere on the header opens the album's menu, as on its tile.
+            Rectangle {
+              TouchArea {
+                pointer-event(ev) => {
+                    if ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down {
+                        Actions.menu-request("album", "", 0, AlbumPage.album.id, self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+                    }
+                }
+              }
+              HorizontalLayout {
+                spacing: 36px;
+                Cover {
+                    size: 260px;
+                    source: AlbumPage.full;
+                    has-cover: AlbumPage.album.has-cover;
+                    tint: AlbumPage.album.tint;
+                    label: AlbumPage.album.title;
+                    radius: Theme.radius-card;
+                    drop-shadow-blur: 30px;
+                    drop-shadow-color: #000000b0;
+                    drop-shadow-offset-y: 8px;
+                }
+                VerticalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    HorizontalLayout {
+                        alignment: start;
+                        spacing: 8px;
+                        Text { text: "ALBUM"; font-size: Theme.font-small; font-weight: 700; color: Theme.text-dim; letter-spacing: 1.5px; }
+                        if AlbumPage.album.remote: RemoteMark { size: 15px; tint: Theme.text-dim; }
+                    }
+                    Text { text: AlbumPage.album.title; font-size: Theme.font-display; font-weight: 800; color: Theme.text; wrap: word-wrap; }
+                    ArtistLinks { text: AlbumPage.album.artist; kind: "album"; ref-id: AlbumPage.album.id; font-size: Theme.font-title; font-weight: 600; base-color: Theme.text; tabbable: true; }
+                    Text { text: AlbumPage.info; font-size: Theme.font-body; color: Theme.text-dim; }
+                    if AlbumPage.label != "": Text { text: AlbumPage.label; font-size: Theme.font-small; color: Theme.text-faint; }
+                    // Technical details: the album's format, quiet, under its info.
+                    if Player.show-details && AlbumPage.details != "": Text {
+                        text: AlbumPage.details;
+                        font-size: Theme.font-small;
+                        color: Theme.text-faint;
+                        overflow: elide;
+                    }
+                    HorizontalLayout {
+                        padding-top: 14px;
+                        spacing: 10px;
+                        alignment: start;
+                        TextButton { text: "Play"; glyph: Icons.play; primary: true; clicked => { Actions.play-album(AlbumPage.album.id); } }
+                        TextButton { text: "Shuffle"; glyph: Icons.shuffle; clicked => { Actions.shuffle-album(AlbumPage.album.id); } }
+                        if root.all-buttons: TextButton { text: "Play next"; glyph: Icons.plus; clicked => { Actions.enqueue-album(AlbumPage.album.id, true); } }
+                        if root.all-buttons: TextButton { text: "Add to queue"; glyph: Icons.queue; clicked => { Actions.enqueue-album(AlbumPage.album.id, false); } }
+                        IconButton {
+                            glyph: AlbumPage.favourite ? Icons.heart : Icons.heart-outline;
+                            active: AlbumPage.favourite;
+                            label: AlbumPage.favourite ? "Remove the album from favourites" : "Add the album to favourites";
+                            clicked => { Actions.toggle-favourite-album(AlbumPage.album.id); }
+                        }
+                        // The album's menu (Add to playlist, Show in Explorer, View metadata).
+                        IconButton {
+                            glyph: Icons.more;
+                            tooltip: root.all-buttons ? "More" : "Play next, add to queue and more";
+                            label: root.all-buttons ? "More for the album" : "Play next, add to queue and more for the album";
+                            clicked => { Actions.menu-request("album", "", 0, AlbumPage.album.id, self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+                        }
+                    }
+                }
+              }
+            }
+            TrackList { tracks: AlbumPage.tracks; ctx: "album"; label: AlbumPage.album.title; details-column: AlbumPage.details-column; }
+        }
+    }
+}

@@ -1,0 +1,531 @@
+// Settings > Visualizer: the preview, the presets and the look's pickers.
+
+import { Theme } from "../../theme.slint";
+import { Home, Player, Actions, Focus, Keys, Lyrics, Visualizer, SettingsView } from "../../stores.slint";
+import { Icon, Icons, IconButton, TextButton, FocusRing, Segmented, Stepper, SettingCard, SettingRow, SwitchRow } from "../../widgets.slint";
+import { VisualizerStage } from "../../vizstage.slint";
+import { SectionHead } from "parts.slint";
+
+// ---- Visualizer ----------------------------------------------------------------
+
+// A preset as a card to pick: its name; the one in use filled in the accent.
+component PresetChip inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    // One of the user's: a small mark before its name.
+    in property <bool> user;
+    in property <bool> current;
+    in property <bool> cursor;
+    in property <bool> focused;
+    callback clicked();
+    height: 36px;
+    border-radius: Theme.radius-control;
+    background: root.current ? Theme.accent : ta.has-hover ? Theme.hover : Theme.surface-hi;
+    border-width: root.current ? 0px : 1px;
+    border-color: Theme.border;
+    animate background { duration: Theme.dur-hover; }
+    accessible-role: radio-button;
+    accessible-label: root.text;
+    accessible-description: root.hint;
+    accessible-checkable: true;
+    accessible-checked: root.current;
+    accessible-action-default => { root.clicked(); }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        alignment: center;
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        if root.user: Icon {
+            y: (parent.height - self.height) / 2;
+            glyph: Icons.person;
+            width: 14px;
+            height: 14px;
+            color: root.current ? Theme.accent-text : Theme.text-faint;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: root.current ? 700 : 500;
+            color: root.current ? Theme.accent-text : ta.has-hover ? Theme.text : Theme.text-dim;
+            overflow: elide;
+            accessible-role: none;
+        }
+    }
+    FocusRing { shown: root.focused && root.cursor; radius: Theme.radius-control; }
+}
+
+// The presets in rows of four (or two, narrow), the built-in ones, then the user's from a
+// row of their own: one Tab stop; the arrows, Home and End choose; the chosen one is the
+// look.
+component PresetPicker inherits Rectangle {
+    private property <int> cols: root.width >= 420px ? 4 : 2;
+    private property <length> gap: 8px;
+    private property <length> cell: (root.width - (root.cols - 1) * root.gap) / root.cols;
+    private property <int> at: max(0, Visualizer.preset);
+    private property <int> built-in: Visualizer.presets.length - Visualizer.user-count;
+    // The user's start a row: where preset i sits in the grid.
+    pure function slot(i: int) -> int {
+        return i < root.built-in ? i : ceil(root.built-in / root.cols) * root.cols + i - root.built-in;
+    }
+    height: ceil((root.slot(Visualizer.presets.length - 1) + 1) / root.cols) * (36px + root.gap) - root.gap;
+    accessible-role: radio-group;
+    accessible-label: "Presets";
+    accessible-value: Visualizer.look-name;
+    function pick(i: int) {
+        if i >= 0 && i < Visualizer.presets.length { Actions.viz-preset(i); }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.RightArrow { root.pick(Visualizer.preset < 0 ? 0 : root.at + 1); return accept; }
+            if ev.text == Key.LeftArrow { root.pick(Visualizer.preset < 0 ? 0 : root.at - 1); return accept; }
+            if ev.text == Key.DownArrow { root.pick(min(Visualizer.presets.length - 1, root.at + root.cols)); return accept; }
+            if ev.text == Key.UpArrow { root.pick(max(0, root.at - root.cols)); return accept; }
+            if ev.text == Key.Home { root.pick(0); return accept; }
+            if ev.text == Key.End { root.pick(Visualizer.presets.length - 1); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation { Actions.reveal(self.absolute-position.y, self.height); }
+        }
+    }
+    for p[i] in Visualizer.presets: PresetChip {
+        x: mod(root.slot(i), root.cols) * (root.cell + root.gap);
+        y: floor(root.slot(i) / root.cols) * (36px + root.gap);
+        width: root.cell;
+        text: p.name;
+        hint: p.user ? "Your preset: " + p.hint : p.hint;
+        user: p.user;
+        current: i == Visualizer.preset;
+        cursor: i == root.at;
+        focused: fs.has-focus;
+        clicked => { root.pick(i); }
+    }
+}
+
+// The colour schemes as swatches of their gradients: one Tab stop, Left and Right choose.
+component SwatchPicker inherits Rectangle {
+    private property <length> size: 28px;
+    private property <length> gap: 6px;
+    width: Visualizer.schemes.length * (root.size + root.gap) - root.gap + 6px;
+    height: root.size + 6px;
+    accessible-role: radio-group;
+    accessible-label: "Colours";
+    accessible-value: Visualizer.schemes[Visualizer.colours].name;
+    accessible-description: "Left and Right choose";
+    accessible-action-increment => { root.pick(Visualizer.colours + 1); }
+    accessible-action-decrement => { root.pick(Visualizer.colours - 1); }
+    function pick(i: int) {
+        if i >= 0 && i < Visualizer.schemes.length && i != Visualizer.colours { Actions.viz-choose("colours", i); }
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.RightArrow || ev.text == Key.DownArrow { root.pick(Visualizer.colours + 1); return accept; }
+            if ev.text == Key.LeftArrow || ev.text == Key.UpArrow { root.pick(Visualizer.colours - 1); return accept; }
+            if ev.text == Key.Home { root.pick(0); return accept; }
+            if ev.text == Key.End { root.pick(Visualizer.schemes.length - 1); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation { Actions.reveal(self.absolute-position.y, self.height); }
+        }
+    }
+    for c[i] in Visualizer.schemes: Rectangle {
+        x: 3px + i * (root.size + root.gap);
+        y: 3px;
+        width: root.size;
+        height: root.size;
+        border-radius: root.size / 2;
+        background: i < Visualizer.swatches.length ? Visualizer.swatches[i] : Theme.surface-hi;
+        border-width: i == Visualizer.colours ? 2px : 1px;
+        border-color: i == Visualizer.colours ? Theme.text : Theme.border;
+        accessible-role: radio-button;
+        accessible-label: c.name;
+        accessible-description: c.hint;
+        accessible-checkable: true;
+        accessible-checked: i == Visualizer.colours;
+        accessible-action-default => { root.pick(i); }
+        sta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.pick(i); }
+        }
+        // The custom one: three dots, its colours.
+        if c.name == "Custom" && Visualizer.colours != i: Text { text: "\u{2026}"; color: Theme.text; font-size: Theme.font-body; accessible-role: none; }
+        if fs.has-focus && i == Visualizer.colours: Rectangle {
+            x: -3px;
+            y: -3px;
+            width: parent.width + 6px;
+            height: parent.height + 6px;
+            border-radius: self.width / 2;
+            border-width: 2px;
+            border-color: Theme.accent;
+        }
+    }
+}
+
+// One colour of the custom gradient, stepped through the named swatches: − ● name +.
+component ColourStepper inherits Rectangle {
+    in property <int> slot;
+    in property <string> label;
+    height: 32px;
+    width: lay.preferred-width;
+    border-radius: self.height / 2;
+    background: Theme.hover;
+    border-width: 1px;
+    border-color: Theme.border;
+    accessible-role: spinbox;
+    accessible-label: root.label;
+    accessible-value: root.slot < Visualizer.custom-names.length ? Visualizer.custom-names[root.slot] : "";
+    accessible-action-increment => { Actions.viz-custom(root.slot, 1); }
+    accessible-action-decrement => { Actions.viz-custom(root.slot, -1); }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.UpArrow || ev.text == Key.RightArrow { Actions.viz-custom(root.slot, 1); return accept; }
+            if ev.text == Key.DownArrow || ev.text == Key.LeftArrow { Actions.viz-custom(root.slot, -1); return accept; }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation { Actions.reveal(self.absolute-position.y, self.height); }
+        }
+    }
+    lay := HorizontalLayout {
+        padding: 2px;
+        spacing: 6px;
+        IconButton { glyph: Icons.chevron-left; size: 28px; icon-size: 16px; tabbable: false; label: root.label + ": previous colour"; clicked => { Actions.viz-custom(root.slot, -1); } }
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: root.slot < Visualizer.custom.length ? Visualizer.custom[root.slot] : transparent;
+            border-width: 1px;
+            border-color: Theme.border;
+        }
+        Text {
+            width: 62px;
+            text: root.slot < Visualizer.custom-names.length ? Visualizer.custom-names[root.slot] : "";
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            color: Theme.text;
+            accessible-role: none;
+        }
+        IconButton { glyph: Icons.chevron-right; size: 28px; icon-size: 16px; tabbable: false; label: root.label + ": next colour"; clicked => { Actions.viz-custom(root.slot, 1); } }
+    }
+    FocusRing { shown: fs.has-focus; radius: root.height / 2; }
+}
+
+// The visualizer's preview: live while music plays, a still frame of made-up music while
+// nothing does (drawn once). A pasted or imported preset shows here before it is added,
+// with the question under it. SettingsPage draws it once, beside the column on a wide page
+// or held at the column's top on a narrow one, so it stays in view while the settings
+// under it scroll (VisualizerSection keeps its place).
+export component VizPreview inherits Rectangle {
+    in property <bool> compact;
+    private property <length> foot: Visualizer.trial ? 74px : 30px;
+    border-radius: Theme.radius-card;
+    background: Theme.surface;
+    border-width: 1px;
+    border-color: Visualizer.trial ? Theme.accent.with-alpha(0.6) : Theme.border;
+    clip: true;
+    accessible-role: groupbox;
+    accessible-label: "Preview of the visualizer: " + (Visualizer.trial ? Visualizer.trial-text : Visualizer.look-name + ", " + Visualizer.styles[Visualizer.style] + (Visualizer.still ? ". A still frame; it moves while music plays" : ", moving with the music"));
+    VisualizerStage {
+        x: 16px;
+        y: root.compact ? 10px : 14px;
+        width: parent.width - 32px;
+        height: parent.height - self.y - root.foot;
+        cover: true;
+    }
+    if !Visualizer.trial: Text {
+        x: 18px;
+        y: parent.height - 24px;
+        width: parent.width - 36px;
+        text: Visualizer.look-name + (Visualizer.still ? "  \u{00b7}  A still frame: it moves while music plays" : "  \u{00b7}  Live");
+        font-size: Theme.font-small;
+        color: Theme.text-faint;
+        overflow: elide;
+        accessible-role: none;
+    }
+    // A shared preset waiting: what it is, and the answers. Esc is Cancel; the first answer
+    // has the keyboard when it shows.
+    if Visualizer.trial: trial := FocusScope {
+        x: 12px;
+        y: parent.height - root.foot + 4px;
+        width: parent.width - 24px;
+        height: root.foot - 10px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Escape { Actions.viz-trial("cancel"); return accept; }
+            reject
+        }
+        init => { first.focus-button(); }
+        // Shown again while one was showing: the keyboard goes to its first answer again.
+        property <int> shown: Visualizer.trial-shown;
+        changed shown => { first.focus-button(); }
+        VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: Visualizer.trial-text;
+                vertical-alignment: center;
+                font-size: Theme.font-small;
+                color: Theme.text;
+                overflow: elide;
+                accessible-role: none;
+            }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            first := TextButton {
+                horizontal-stretch: 0;
+                primary: true;
+                zone: "preview";
+                text: Visualizer.trial-identical ? "Use it" : Visualizer.trial-taken ? "Replace" : "Add preset";
+                label: Visualizer.trial-identical ? "Use your preset " + Visualizer.trial-name : Visualizer.trial-taken ? "Replace your preset " + Visualizer.trial-name + " with this one" : "Add the preset " + Visualizer.trial-name + " and use it";
+                clicked => { Actions.viz-trial(Visualizer.trial-identical ? "use" : Visualizer.trial-taken ? "replace" : "add"); }
+            }
+            if Visualizer.trial-taken: TextButton {
+                horizontal-stretch: 0;
+                zone: "preview";
+                text: "Keep both";
+                label: "Keep both: add this one under another name";
+                clicked => { Actions.viz-trial("keep"); }
+            }
+            TextButton {
+                horizontal-stretch: 0;
+                zone: "preview";
+                text: "Cancel";
+                label: "Cancel: nothing is added";
+                clicked => { Actions.viz-trial("cancel"); }
+            }
+        }
+        }
+    }
+}
+
+export component VisualizerSection inherits VerticalLayout {
+    spacing: 16px;
+    head := SectionHead { title: "Visualizer"; blurb: "The music, moving, on Now playing: its look and where it shows."; }
+    // The preview's place, under the title: SettingsPage draws it there (held at the top
+    // while the rest scrolls) or, on a wide page, beside the column (no room kept here).
+    private property <length> slot: root.y + head.height + root.spacing;
+    init => { SettingsView.pin-slot = self.slot; }
+    changed slot => { SettingsView.pin-slot = self.slot; }
+    if !SettingsView.pin-side: Rectangle {
+        height: SettingsView.pin-height;
+        accessible-role: none;
+    }
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Visualizer";
+            hint: "On Now playing while music plays." + (Keys.visualizer == "" ? "" : " " + Keys.visualizer + " turns it on and off") + (Keys.visualizer-look == "" ? "." : ", " + Keys.visualizer-look + " shows the next preset.");
+            checked: Player.visualizer;
+            toggled => { Actions.toggle-visualizer(); }
+        }
+        SettingRow {
+            label: "Where";
+            hint: (Visualizer.placement == 0 ? (Visualizer.ring ? "Behind the page: around the cover, its ripples fading out under the page." : Visualizer.tall ? "Behind the whole page: the line along its foot, the sparks rising behind the cover and the panel." : "A band behind the cover and the panel, faint enough to read over.") : Visualizer.placement == 1 ? "A tab of its own beside Up next and Lyrics." : "The whole page, with the cover and title in the corner.") + (Keys.visualizer-place == "" ? "" : " " + Keys.visualizer-place + " moves it on.");
+            Segmented {
+                label: "Where";
+                options: ["Behind", "In the panel", "Full page"];
+                selected: Visualizer.placement;
+                chosen(i) => { Actions.viz-choose("placement", i); }
+            }
+        }
+        SettingRow {
+            label: "Opacity";
+            hint: (Visualizer.placement == 0 ? "Behind the page, where a look is fainter so the page reads over it." : "In the panel and on the full page.") + " Each keeps its own (behind the page " + Visualizer.opacity-behind + ", elsewhere " + Visualizer.opacity-elsewhere + "), and a preset keeps both.";
+            Stepper { label: "Opacity"; value: Visualizer.opacity; step(d) => { Actions.viz-step("opacity", d); } }
+        }
+    }
+    SettingCard {
+        title: "Presets";
+        note: Visualizer.preset >= 0 ? (Visualizer.presets[Visualizer.preset].user ? "Your preset: " : "") + Visualizer.presets[Visualizer.preset].hint + "." : Visualizer.user-based != "" ? "Custom: changed from your preset \u{201c}" + Visualizer.user-based + "\u{201d}." : "Custom: your own choices below. A preset sets them all at once.";
+        Rectangle {
+            height: picker.height + 18px;
+            picker := PresetPicker {
+                x: 20px;
+                y: 0;
+                width: parent.width - 40px;
+            }
+        }
+        SettingRow {
+            label: "Your presets";
+            hint: Visualizer.user-current != "" ? "\u{201c}" + Visualizer.user-current + "\u{201d} is yours: rename it, update or delete it, or share it." : Visualizer.user-based != "" ? "Changed since you chose \u{201c}" + Visualizer.user-based + "\u{201d}: Update saves the change to it." : "Save this look as your own; share it as text for a message, or as a file; add one someone sent you.";
+            TextButton {
+                text: "Presets";
+                glyph: Icons.collapse;
+                label: "Your presets: save as, rename, update, delete, copy as text, paste, export, import";
+                clicked => { Actions.viz-presets-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+        }
+        SettingRow {
+            label: "Defaults";
+            find-key: "Presets";
+            hint: "Classic, behind the page, at the display's frame rate. Your presets stay.";
+            TextButton { text: "Reset"; glyph: Icons.refresh; label: "Reset the visualizer to its defaults"; clicked => { Actions.viz-reset(); } }
+        }
+    }
+    SettingCard {
+        title: "Look";
+        SettingRow {
+            divider: false;
+            label: "Style";
+            hint: Visualizer.style == 0 ? "Bars rising with each band of the music." : Visualizer.style == 1 ? "One smooth line over the spectrum." : Visualizer.style == 2 ? "Around the cover, drawn round: what, is the next choice." : "Sparks rising from a glowing line along the foot, more where the music is loudest, a burst on every beat.";
+            Segmented {
+                label: "Style";
+                options: Visualizer.styles;
+                selected: Visualizer.style;
+                chosen(i) => { Actions.viz-choose("style", i); }
+            }
+        }
+        if Visualizer.style == 2: SettingRow {
+            label: "Around the cover";
+            hint: Visualizer.ring-kind == 1 ? "Saturn: a tilted ring of dust in orbit, passing behind the cover and in front, each grain as bright as its note." : Visualizer.ring-kind == 2 ? "Galaxy: two spiral arms of dust turning round the cover, winding tighter with the bass." : Visualizer.ring-kind == 3 ? "Swarm: dust caught in a whirl round the cover; every beat blows it outward and it spirals back." : Visualizer.ring-kind == 4 ? "Eclipse: a glow at the cover's rim, and on each beat a flare of sparks arcing out and falling back." : "Ripples: the music as a glowing line round the cover; every beat sends a ripple out and throws sparks off it.";
+            VerticalLayout {
+                spacing: 6px;
+                alignment: center;
+                HorizontalLayout {
+                    alignment: end;
+                    Segmented {
+                        label: "Around the cover";
+                        options: ["Ripples", "Saturn", "Galaxy"];
+                        selected: Visualizer.ring-kind >= 0 && Visualizer.ring-kind < 3 ? Visualizer.ring-kind : -1;
+                        chosen(i) => { Actions.viz-choose("ring", i); }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Segmented {
+                        label: "Around the cover, more";
+                        options: ["Swarm", "Eclipse"];
+                        selected: Visualizer.ring-kind >= 3 ? Visualizer.ring-kind - 3 : -1;
+                        chosen(i) => { Actions.viz-choose("ring", i + 3); }
+                    }
+                }
+            }
+        }
+        if Visualizer.style == 2: SwitchRow {
+            label: "Pulse the cover";
+            hint: "The cover itself grows a tiny bit with each beat.";
+            checked: Visualizer.cover-pulse;
+            toggled => { Actions.viz-toggle("cover_pulse"); }
+        }
+        SettingRow {
+            label: "Colours";
+            hint: Visualizer.schemes[Visualizer.colours].hint + ".";
+            SwatchPicker { }
+        }
+        if Visualizer.colours == 8: SettingRow {
+            label: "Custom colours";
+            hint: "The gradient's foot, middle and top (or left, middle and right).";
+            HorizontalLayout {
+                spacing: 6px;
+                ColourStepper { slot: 0; label: "Foot colour"; }
+                ColourStepper { slot: 1; label: "Middle colour"; }
+                ColourStepper { slot: 2; label: "Top colour"; }
+            }
+        }
+        if Visualizer.colours != 0: SettingRow {
+            label: "Colour by";
+            hint: Visualizer.colour-by == 0 ? "Up the bars: quiet is the gradient's foot, loud its top." : "Across: each frequency its colour, low to high.";
+            Segmented {
+                label: "Colour by";
+                options: ["Height", "Frequency"];
+                selected: Visualizer.colour-by;
+                chosen(i) => { Actions.viz-choose("colour_by", i); }
+            }
+        }
+        SettingRow {
+            label: "Detail";
+            hint: Visualizer.style == 1 ? "How many points the line has." : Visualizer.style == 0 ? "How many bars: thin and many, or wide and few." : "How finely it is drawn.";
+            Segmented {
+                label: "Detail";
+                options: ["Fine", "Medium", "Coarse"];
+                selected: Visualizer.detail;
+                chosen(i) => { Actions.viz-choose("detail", i); }
+            }
+        }
+        if Visualizer.can-mirror: SwitchRow {
+            label: "Mirror";
+            hint: "Low notes in the middle, spreading to both sides.";
+            checked: Visualizer.mirror;
+            toggled => { Actions.viz-toggle("mirror"); }
+        }
+        if Visualizer.has-peaks: SwitchRow {
+            label: "Peak caps";
+            hint: "Marks that hold a moment above the loudest point, then fall.";
+            checked: Visualizer.peaks;
+            toggled => { Actions.viz-toggle("peaks"); }
+        }
+    }
+    if Visualizer.reflects: SettingCard {
+        title: "Reflection";
+        SwitchRow {
+            divider: false;
+            label: "Reflection";
+            hint: "A mirror image under the bars, fading out.";
+            checked: Visualizer.reflection;
+            toggled => { Actions.viz-toggle("reflection"); }
+        }
+        if Visualizer.reflection: SettingRow {
+            label: "Reflection height";
+            hint: "As a share of the bars' height.";
+            Stepper { label: "Reflection height"; value: Visualizer.refl-size; step(d) => { Actions.viz-step("size", d); } }
+        }
+        if Visualizer.reflection: SettingRow {
+            label: "Reflection strength";
+            hint: "How bright it is where it meets the bars.";
+            Stepper { label: "Reflection strength"; value: Visualizer.refl-strength; step(d) => { Actions.viz-step("strength", d); } }
+        }
+    }
+    SettingCard {
+        title: "Motion";
+        SettingRow {
+            divider: false;
+            label: "Speed";
+            hint: Visualizer.motion == 0 ? "Slow to rise and fall: calm, flowing." : Visualizer.motion == 1 ? "Quick to rise, smooth to fall." : "Every beat at once.";
+            Segmented {
+                label: "Speed";
+                options: ["Smooth", "Normal", "Snappy"];
+                selected: Visualizer.motion;
+                chosen(i) => { Actions.viz-choose("motion", i); }
+            }
+        }
+        SettingRow {
+            label: "Sensitivity";
+            hint: "Higher fills more of the height: for quiet recordings. Lower for loud ones.";
+            Stepper { label: "Sensitivity"; value: Visualizer.sensitivity; step(d) => { Actions.viz-step("sensitivity", d); } }
+        }
+        if Visualizer.ring-kind == 0: SettingRow {
+            label: "Intensity";
+            hint: "How far the ring swings with the music: higher for bigger peaks, lower for a calmer ring.";
+            Stepper { label: "Intensity"; value: Visualizer.intensity; step(d) => { Actions.viz-step("intensity", d); } }
+        }
+        SettingRow {
+            label: "Frame rate";
+            hint: "Up to 60 frames a second (the display's rate, if lower), or 30 to save power on a laptop.";
+            Segmented {
+                label: "Frame rate";
+                options: ["Up to 60", "30"];
+                selected: Visualizer.fps;
+                chosen(i) => { Actions.viz-choose("fps", i); }
+            }
+        }
+    }
+}

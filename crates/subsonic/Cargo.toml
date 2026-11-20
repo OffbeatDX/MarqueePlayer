@@ -1,0 +1,20 @@
+[package]
+name = "subsonic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A blocking Subsonic / OpenSubsonic client (Navidrome): token sign-in, typed read calls, cover art and streamed songs over the shared HTTP client, write calls behind a read-only guard."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+http-client = { path = "../http" }
+md5 = { path = "../md5" }
+
+[features]
+# A Navidrome stand-in on 127.0.0.1 (`mock`), for the app's tests and its bench. Never in a
+# release build.
+mock = []

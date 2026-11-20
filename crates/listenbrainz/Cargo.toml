@@ -1,0 +1,23 @@
+[package]
+name = "listenbrainz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "ListenBrainz listens: the API over the shared HTTP client (token, now playing, single and imported listens, feedback), its rate limits, a durable offline queue."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+http-client = { path = "../http" }
+
+[features]
+# A ListenBrainz stand-in on 127.0.0.1 (`mock`), for the crate's and the app's tests and the
+# app's bench. Never in a release build.
+mock = []
+
+[dev-dependencies]
+listenbrainz = { path = ".", features = ["mock"] }

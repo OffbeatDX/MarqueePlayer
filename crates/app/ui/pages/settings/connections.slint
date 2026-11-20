@@ -1,0 +1,180 @@
+// Settings > Connections: Last.fm, ListenBrainz, Discord.
+
+import { Theme } from "../../theme.slint";
+import { Player, Actions, LastFm, ListenBrainz, Server, Discord } from "../../stores.slint";
+import { Icons, TextButton, LineField, SettingCard, SettingRow, SwitchRow, StatusNote } from "../../widgets.slint";
+import { SectionHead, ServiceHead } from "parts.slint";
+
+// ---- Connections (Last.fm, ListenBrainz, Discord) -----------------------------
+
+export component ConnectionsSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Connections"; blurb: "Services that can be told what you play. Nothing is sent to one until you set it up here."; }
+    ServiceHead { title: "Last.fm"; blurb: "Scrobble what you play to your Last.fm profile."; }
+    StatusNote {
+        glyph: LastFm.attention ? Icons.warning : LastFm.connected ? Icons.check : Icons.info;
+        attention: LastFm.attention;
+        title: LastFm.connected ? "Connected as " + LastFm.user : LastFm.authorising ? "Waiting for Last.fm" : LastFm.attention ? "Not scrobbling" : "Not connected";
+        text: LastFm.status;
+        if LastFm.connected: TextButton { text: "Send now"; glyph: Icons.refresh; label: "Send waiting scrobbles now"; clicked => { Actions.lastfm-retry(); } }
+        if LastFm.connected: TextButton { text: "Disconnect"; label: "Disconnect from Last.fm"; clicked => { Actions.lastfm-disconnect(); } }
+    }
+    if !LastFm.connected: SettingCard {
+        title: "Connect";
+        note: "Uses an API account of your own: create one at last.fm/api/account/create, then paste its API key and shared secret here.";
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 4px;
+            padding-bottom: 18px;
+            spacing: 10px;
+            LineField {
+                text <=> LastFm.api-key;
+                placeholder: "API key";
+                label: "Last.fm API key";
+                accepted => { Actions.lastfm-connect(LastFm.api-key, LastFm.api-secret); }
+            }
+            LineField {
+                text <=> LastFm.api-secret;
+                placeholder: "Shared secret";
+                label: "Last.fm shared secret";
+                input-type: InputType.password;
+                accepted => { Actions.lastfm-connect(LastFm.api-key, LastFm.api-secret); }
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                if !LastFm.authorising: TextButton {
+                    text: "Connect";
+                    primary: LastFm.api-key != "" && LastFm.api-secret != "";
+                    label: "Connect to Last.fm";
+                    clicked => { Actions.lastfm-connect(LastFm.api-key, LastFm.api-secret); }
+                }
+                if LastFm.authorising: TextButton { text: "Cancel"; label: "Stop waiting for Last.fm"; clicked => { Actions.lastfm-cancel(); } }
+            }
+        }
+    }
+    // ListenBrainz: a gap above, so the services read apart.
+    VerticalLayout {
+        padding-top: 12px;
+        ServiceHead { title: "ListenBrainz"; blurb: "Send what you play to your ListenBrainz profile, the open listening history run by MetaBrainz."; }
+    }
+    StatusNote {
+        glyph: ListenBrainz.attention ? Icons.warning : ListenBrainz.connected ? Icons.check : Icons.info;
+        attention: ListenBrainz.attention;
+        title: ListenBrainz.connected && ListenBrainz.attention ? "ListenBrainz is refusing the listens" : ListenBrainz.connected ? "Connected as " + ListenBrainz.user : ListenBrainz.connecting ? "Checking the token" : ListenBrainz.attention ? "Not sending listens" : "Not connected";
+        text: ListenBrainz.status;
+        if ListenBrainz.connected: TextButton { text: "Send now"; glyph: Icons.refresh; label: "Send waiting listens now"; clicked => { Actions.listenbrainz-retry(); } }
+        if ListenBrainz.connected: TextButton { text: "Disconnect"; label: "Disconnect from ListenBrainz"; clicked => { Actions.listenbrainz-disconnect(); } }
+    }
+    if !ListenBrainz.connected: SettingCard {
+        title: "Connect";
+        note: "Copy the user token from your ListenBrainz settings page and paste it here. It is kept on this computer only, and never shown again.";
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 10px;
+            LineField {
+                text <=> ListenBrainz.token;
+                placeholder: "User token";
+                label: "ListenBrainz user token";
+                input-type: InputType.password;
+                accepted => { Actions.listenbrainz-connect(ListenBrainz.token, ListenBrainz.server); }
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                spacing: 8px;
+                TextButton {
+                    text: ListenBrainz.connecting ? "Checking\u{2026}" : "Connect";
+                    primary: !ListenBrainz.connecting && ListenBrainz.token != "";
+                    label: "Connect to ListenBrainz";
+                    clicked => { Actions.listenbrainz-connect(ListenBrainz.token, ListenBrainz.server); }
+                }
+                if !ListenBrainz.own-server: TextButton {
+                    text: "Open the token page";
+                    label: "Open your ListenBrainz settings page, where the user token is, in the browser";
+                    clicked => { Actions.listenbrainz-token-page(); }
+                }
+            }
+        }
+        SettingRow {
+            label: "Server address";
+            find-key: "ListenBrainz server address";
+            hint: ListenBrainz.plain-http
+                ? "Plain http: the connection is not encrypted, so the token and what you play can be read on the way. Fine on your own network; use https for a server reached over the internet."
+                : "Empty for ListenBrainz itself. For a server of your own that speaks ListenBrainz\u{2019}s API, the address of that API.";
+            LineField {
+                width: 240px;
+                text <=> ListenBrainz.server;
+                placeholder: "api.listenbrainz.org";
+                label: "ListenBrainz server address";
+                edited(t) => { Actions.listenbrainz-server-edited(t); }
+                accepted => { Actions.listenbrainz-connect(ListenBrainz.token, ListenBrainz.server); }
+            }
+        }
+    }
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Love favourites on ListenBrainz";
+            enabled: ListenBrainz.connected;
+            hint: ListenBrainz.connected
+                ? "A track you make a favourite here is loved on ListenBrainz, and no longer loved when you take the heart away. Only tracks tagged with a MusicBrainz recording id."
+                : "Connect ListenBrainz above first.";
+            more: "Only hearts given from now on: favourites made before are not sent. A heart given while ListenBrainz cannot be reached is sent while the app stays open.";
+            checked: ListenBrainz.love;
+            toggled => { Actions.toggle-listenbrainz-love(); }
+        }
+    }
+    Text {
+        text: "For both services, a track over 30 seconds counts once it has played half its length or four minutes. Plays made offline are sent later.";
+        font-size: Theme.font-small;
+        color: Theme.text-faint;
+        wrap: word-wrap;
+    }
+    // Discord: a gap above, so the services read apart.
+    VerticalLayout {
+        padding-top: 12px;
+        ServiceHead { title: "Discord"; blurb: "Show the track you are playing on your Discord profile, as \u{201c}Listening to\u{201d}."; }
+    }
+    if Discord.enabled: StatusNote {
+        glyph: Discord.attention ? Icons.warning : Discord.connected ? Icons.check : Icons.info;
+        attention: Discord.attention;
+        title: Discord.title;
+        text: Discord.status;
+    }
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Show on Discord";
+            hint: "Tells Discord, running on this computer, the title and artist of the track playing and how far in it is. Nothing is told while this is off.";
+            more: "Shown while a track plays; cleared when you pause, stop or close Marquee Player. Discord shows it to whoever can see your activity there, which Discord's own settings decide.";
+            checked: Discord.enabled;
+            toggled => { Actions.discord-set(!Discord.enabled, Discord.app-id); }
+        }
+        SettingRow {
+            label: "Application ID";
+            hint: "Leave empty to appear as Marquee Player. To appear under another name, paste the ID of a Discord application of your own.";
+            more: "An application's name is what Discord shows after \u{201c}Listening to\u{201d}, and its icon is the picture shown. Create one at discord.com/developers/applications. The ID is a number, and not a secret.";
+            HorizontalLayout {
+                spacing: 8px;
+                LineField {
+                    width: 210px;
+                    text <=> Discord.app-id;
+                    placeholder: "Marquee Player\u{2019}s own";
+                    label: "Discord application ID";
+                    accepted => { Actions.discord-set(Discord.enabled, Discord.app-id); }
+                }
+                if Discord.app-id != Discord.applied-id: TextButton {
+                    text: "Save";
+                    primary: true;
+                    label: "Save the Discord application ID";
+                    clicked => { Actions.discord-set(Discord.enabled, Discord.app-id); }
+                }
+            }
+        }
+    }
+}

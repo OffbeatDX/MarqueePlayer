@@ -1,0 +1,5 @@
+# The toolchain the desktop workspace is built and checked with (docs/linux.md, "Building";
+# the CI workflows read the version from here).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

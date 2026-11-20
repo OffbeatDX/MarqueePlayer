@@ -1,0 +1,392 @@
+// Settings: the page, its sections' list and "Find a setting"'s results. Each section is a
+// file of its own beside this one.
+
+import { Theme } from "../../theme.slint";
+import { Nav, Home, Library, Actions, Focus, Keys, Output, LastFm, ListenBrainz, Server, Discord, Lyrics, Visualizer, SettingsView } from "../../stores.slint";
+import { AutoFlickable } from "../../autoscroll.slint";
+import { Icon, Icons, SearchField, FocusRing, FocusTarget, SettingCard, Hairline } from "../../widgets.slint";
+import { EqualizerSection, EqPinnedCurve } from "../../eq.slint";
+import { SectionHead } from "parts.slint";
+import { LibrarySection } from "library.slint";
+import { PlaybackSection, OutputSection, LyricsSection } from "playback.slint";
+import { VizPreview, VisualizerSection } from "visualizer.slint";
+import { HomeSection, WindowSection } from "window.slint";
+import { ConnectionsSection } from "connections.slint";
+import { KeysSection } from "keys.slint";
+import { AboutSection } from "about.slint";
+
+// Settings is a short list of sections beside a column of at most `column` width; one
+// section shows at a time. The column sits right of the list, both anchored to the page
+// margin (the pill and the title above line up with them), so a setting's name and its
+// control are never further apart than the column is wide, however wide the window.
+// Narrow (pinned sidebars, a small window), the list becomes a strip of tabs above the
+// column. The title and the filter box stay put; only the column scrolls.
+global SettingsLayout {
+    out property <length> column: 700px;
+    out property <length> list-width: 200px;
+    out property <length> gap: 32px;
+    // Below this page width the list becomes a strip above the column.
+    out property <length> wide-from: 700px;
+    out property <length> strip-height: 52px;
+    // A section's pinned card beside the column: at most this wide, and only when at least
+    // the smaller fits (SettingsPage).
+    out property <length> pin-width: 560px;
+    out property <length> pin-min: 320px;
+    // The sections, in SettingsView.section order (settings::nav::SECTIONS has the names).
+    out property <[{name: string, glyph: string}]> sections: [
+        { name: "Library", glyph: Icons.folder },
+        { name: "Playback", glyph: Icons.play },
+        { name: "Equalizer", glyph: Icons.graphic-eq },
+        { name: "Output", glyph: Icons.speaker },
+        { name: "Lyrics", glyph: Icons.note },
+        { name: "Visualizer", glyph: Icons.equalizer },
+        { name: "Home", glyph: Icons.home },
+        { name: "Window", glyph: Icons.desktop },
+        { name: "Connections", glyph: Icons.link },
+        { name: "Keys", glyph: Icons.keyboard },
+        { name: "About", glyph: Icons.info },
+    ];
+    // A section with something to act on carries a dot in the list: missing tracks held
+    // back (Library), not playing where chosen (Output), Last.fm needing a reconnect or
+    // Discord refusing the application ID (Connections).
+    public pure function marked(i: int) -> bool {
+        return (i == 0 && (Library.held != "" || Server.held != "" || Server.attention)) || (i == 3 && Output.attention) || (i == 8 && (LastFm.attention || ListenBrainz.attention || Discord.attention));
+    }
+    public pure function mark-text(i: int) -> string {
+        return i == 0 ? (Library.held != "" || Server.held != "" ? "missing tracks held back" : "the server needs you to sign in again") : i == 3 ? "not playing on the chosen device" : "needs attention";
+    }
+    public function step(by: int) {
+        Actions.settings-section(clamp(SettingsView.section + by, 0, self.sections.length - 1));
+    }
+}
+
+// One entry of the section list: a row in the list beside the column, or a pill in the
+// strip above it (`chip`). The current one is filled like the sidebar's current page.
+component SectionTab inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <bool> current;
+    in property <bool> marked;
+    in property <bool> chip;
+    // The list has the keyboard focus (its cursor is the current section).
+    in property <bool> focused;
+    // A row's height in the list (it shrinks to fit a short window).
+    in property <length> row-height: 40px;
+    callback clicked();
+    height: root.chip ? 34px : root.row-height;
+    min-width: root.chip ? lay.preferred-width : 0px;
+    border-radius: root.chip ? self.height / 2 : Theme.radius-control;
+    background: root.current ? Theme.accent.with-alpha(0.16) : ta.has-hover ? Theme.hover : transparent;
+    border-width: root.chip && !root.current ? 1px : 0px;
+    border-color: Theme.border;
+    animate background { duration: Theme.dur-hover; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    lay := HorizontalLayout {
+        padding-left: root.chip ? 12px : 12px;
+        padding-right: root.chip ? 14px : 10px;
+        spacing: root.chip ? 8px : 14px;
+        Icon {
+            y: (parent.height - self.height) / 2;
+            glyph: root.glyph;
+            width: 18px;
+            height: 18px;
+            color: root.current ? Theme.accent : Theme.text-dim;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: Theme.font-body;
+            font-weight: root.current ? 700 : 500;
+            color: root.current ? Theme.text : Theme.text-dim;
+            overflow: elide;
+            horizontal-stretch: 1;
+            accessible-role: none;
+        }
+        if root.marked: Rectangle {
+            width: 8px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: Theme.accent;
+            }
+        }
+    }
+    FocusRing { shown: root.focused && root.current; radius: root.border-radius; inset: !root.chip; }
+}
+
+// The section list: one Tab stop whose cursor is the shown section. Up / Down (and Left /
+// Right in the strip), Home and End show another section at once; a click shows that one.
+component SectionList inherits Rectangle {
+    in property <bool> strip;
+    accessible-role: tab-list;
+    accessible-label: "Settings sections";
+    accessible-value: SettingsLayout.sections[SettingsView.section].name;
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.modifiers.control || ev.modifiers.alt || ev.modifiers.shift { return reject; }
+            if ev.text == Key.DownArrow || (root.strip && ev.text == Key.RightArrow) { SettingsLayout.step(1); return accept; }
+            if ev.text == Key.UpArrow || (root.strip && ev.text == Key.LeftArrow) { SettingsLayout.step(-1); return accept; }
+            if ev.text == Key.Home { Actions.settings-section(0); return accept; }
+            if ev.text == Key.End { Actions.settings-section(SettingsLayout.sections.length - 1); return accept; }
+            reject
+        }
+        // Not a page control: it never scrolls the column (Actions.reveal).
+        focus-gained => { Focus.zone = "settings"; }
+        focus-lost => {
+            if Focus.zone == "settings" { Focus.zone = ""; }
+        }
+    }
+    // Rows of 40 px, smaller when the window is too short for them all (to 32).
+    private property <length> row-height: clamp((root.height - 4px) / SettingsLayout.sections.length - 2px, 32px, 40px);
+    if !root.strip: VerticalLayout {
+        alignment: start;
+        spacing: 2px;
+        for s[i] in SettingsLayout.sections: SectionTab {
+            row-height: root.row-height;
+            text: s.name;
+            glyph: s.glyph;
+            current: i == SettingsView.section && SettingsView.filter == "";
+            marked: SettingsLayout.marked(i);
+            focused: fs.has-focus;
+            accessible-role: tab;
+            accessible-label: s.name + (self.marked ? ", " + SettingsLayout.mark-text(i) : "");
+            accessible-item-selectable: true;
+            accessible-item-selected: i == SettingsView.section;
+            accessible-item-index: i;
+            accessible-item-count: SettingsLayout.sections.length;
+            accessible-action-default => { Actions.settings-section(i); }
+            clicked => { Actions.settings-section(i); }
+        }
+    }
+    if root.strip: strip := AutoFlickable { autoscroll-x: true; autoscroll-y: false;
+        interactive: true;
+        // The shown section's tab, kept in view as the arrows move along the strip, when
+        // the strip appears on a section far along it (About, the last), and as the strip
+        // narrows (a sidebar being pinned).
+        property <length> current-x;
+        property <length> current-width;
+        function reveal() {
+            if self.current-x + self.content-x < 0px {
+                self.content-x = -self.current-x;
+            } else if self.current-x + self.current-width + self.content-x > self.width {
+                self.content-x = self.width - self.current-x - self.current-width;
+            }
+        }
+        changed width => { self.reveal(); }
+        content-width: chips.preferred-width;
+        chips := HorizontalLayout {
+            alignment: start;
+            spacing: 6px;
+            padding-top: 2px;
+            padding-bottom: 2px;
+            for s[i] in SettingsLayout.sections: SectionTab {
+                chip: true;
+                y: 2px;
+                text: s.name;
+                glyph: s.glyph;
+                current: i == SettingsView.section && SettingsView.filter == "";
+                marked: SettingsLayout.marked(i);
+                focused: fs.has-focus;
+                accessible-role: tab;
+                accessible-label: s.name + (self.marked ? ", " + SettingsLayout.mark-text(i) : "");
+                accessible-item-selectable: true;
+                accessible-item-selected: i == SettingsView.section;
+                accessible-item-index: i;
+                accessible-item-count: SettingsLayout.sections.length;
+                accessible-action-default => { Actions.settings-section(i); }
+                clicked => { Actions.settings-section(i); }
+                function reveal() {
+                    strip.current-x = self.x;
+                    strip.current-width = self.width;
+                    strip.reveal();
+                }
+                changed current => {
+                    if self.current { self.reveal(); }
+                }
+                init => {
+                    if self.current { self.reveal(); }
+                }
+            }
+        }
+    }
+}
+
+// ---- Filter results ------------------------------------------------------------
+
+component FilterResults inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead {
+        title: "Find a setting";
+        blurb: SettingsView.hits.length == 0 ? "Nothing matches \u{201c}" + SettingsView.filter + "\u{201d}." : SettingsView.hits.length == 1 ? "1 setting matches. Enter goes to it." : SettingsView.hits.length + " settings match. Enter goes to the first.";
+    }
+    if SettingsView.hits.length > 0: SettingCard {
+        VerticalLayout {
+            padding-top: 2px;
+            for h[i] in SettingsView.hits: Rectangle {
+                height: 52px;
+                accessible-role: button;
+                accessible-label: h.label + ", in " + h.section-name;
+                accessible-action-default => { Actions.settings-jump(h.section, h.label); }
+                if i > 0: Hairline { y: 0; width: parent.width; }
+                Rectangle {
+                    x: 6px;
+                    y: 4px;
+                    width: parent.width - 12px;
+                    height: parent.height - 8px;
+                    border-radius: Theme.radius-control;
+                    background: hta.has-hover ? Theme.hover : transparent;
+                }
+                hfs := FocusTarget { activated => { Actions.settings-jump(h.section, h.label); } }
+                hta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { Actions.settings-jump(h.section, h.label); }
+                }
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 16px;
+                    spacing: 12px;
+                    Text { text: h.label; vertical-alignment: center; font-weight: 600; color: Theme.text; overflow: elide; horizontal-stretch: 1; accessible-role: none; }
+                    Text { text: h.section-name; vertical-alignment: center; font-size: Theme.font-small; color: Theme.text-faint; horizontal-stretch: 0; accessible-role: none; }
+                    Icon { y: (parent.height - self.height) / 2; glyph: Icons.chevron-right; width: 18px; height: 18px; color: Theme.text-dim; }
+                }
+                FocusRing { shown: hfs.has-focus; radius: Theme.radius-control; inset: true; }
+            }
+        }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    private property <bool> wide: root.width >= SettingsLayout.wide-from;
+    private property <length> margin: root.width >= 900px ? Theme.page-margin : 24px;
+    private property <length> list-x: root.margin;
+    private property <length> col-x: root.wide ? root.margin + SettingsLayout.list-width + SettingsLayout.gap : root.margin;
+    private property <length> col-width: min(SettingsLayout.column, root.width - root.col-x - root.margin);
+    // Where the list and the column start: under the title.
+    private property <length> body-y: Theme.page-top + SettingsView.header;
+    private property <length> col-y: root.wide ? root.body-y : root.body-y + SettingsLayout.strip-height;
+    // The filter box ends where the column does, on the title's line.
+    private property <length> find-width: clamp(root.col-x + root.col-width - root.margin - title.preferred-width - 24px, 150px, 260px);
+    // A section's pinned card (Visualizer: its preview; Equalizer: its curve), which stays in
+    // view while the column scrolls. With room right of the column, it sits there, level with the
+    // section's first card. Otherwise it sits at its place under the section's title
+    // (SettingsView.pin-slot, kept free by the section) and, once the column scrolls past
+    // it, is held at the column's top, the column cut under it, so what scrolls on goes
+    // under it rather than behind it. Drawn once either way.
+    private property <bool> pins: SettingsView.filter == "" && (SettingsView.section == 5 || SettingsView.section == 2);
+    private property <bool> eq-pin: SettingsView.section == 2;
+    private property <length> side-x: root.col-x + root.col-width + SettingsLayout.gap;
+    private property <length> side-width: min(SettingsLayout.pin-width, root.width - root.side-x - root.margin);
+    private property <bool> side: root.wide && root.side-width >= SettingsLayout.pin-min;
+    private property <length> pin-h: root.eq-pin ? (root.side ? clamp(root.side-width * 0.4, 168px, 224px) : 160px)
+        : root.side ? clamp(root.side-width * 0.62, 220px, 380px) : Visualizer.trial ? 176px : 132px;
+    private property <bool> stuck: root.pins && !root.side && SettingsView.pin-slot + Nav.page-scroll < 0px;
+    private property <length> cut: root.stuck ? root.pin-h + 12px : 0px;
+    private property <length> pin-cover: root.pins && !root.side ? root.pin-h + 12px : 0px;
+    function pin-sync() {
+        SettingsView.pin-side = root.side;
+        SettingsView.pin-height = root.pin-h;
+        SettingsView.pin-cover = root.pin-cover;
+    }
+    init => {
+        SettingsView.column-top = root.col-y;
+        root.pin-sync();
+    }
+    changed col-y => { SettingsView.column-top = self.col-y; }
+    changed side => { root.pin-sync(); }
+    changed pin-h => { root.pin-sync(); }
+    changed pin-cover => { root.pin-sync(); }
+
+    title := Text {
+        x: root.margin;
+        y: Theme.page-top;
+        text: "Settings";
+        font-size: Theme.font-display;
+        font-weight: 800;
+        color: Theme.text;
+    }
+    find := SearchField {
+        x: root.col-x + root.col-width - self.width;
+        y: Theme.page-top + (title.preferred-height - self.height) / 2;
+        width: root.find-width;
+        height: 40px;
+        placeholder: "Find a setting";
+        text <=> SettingsView.filter;
+        edited(t) => { Actions.settings-filter(t); }
+        accepted => {
+            if SettingsView.hits.length > 0 { Actions.settings-jump(SettingsView.hits[0].section, SettingsView.hits[0].label); }
+        }
+        escape => {
+            if SettingsView.filter != "" {
+                Actions.settings-filter("");
+            } else {
+                Nav.back();
+            }
+        }
+    }
+    SectionList {
+        x: root.list-x;
+        y: root.body-y;
+        width: root.wide ? SettingsLayout.list-width : root.width - 2 * root.margin;
+        height: root.wide ? root.height - root.body-y - Theme.bar-height : SettingsLayout.strip-height - 12px;
+        strip: !root.wide;
+    }
+    // The column. A few pixels of slack each side, so focus rings at its edges show. Cut at
+    // the top under a held card (`cut`); the column itself does not move for it.
+    Rectangle {
+        x: root.col-x - 6px;
+        y: root.col-y + root.cut;
+        width: root.col-width + 12px;
+        height: max(0px, root.height - root.col-y - root.cut);
+        clip: root.cut > 0;
+    AutoFlickable {
+        x: 0;
+        y: -root.cut;
+        width: parent.width;
+        height: root.height - root.col-y;
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            x: 6px;
+            width: root.col-width;
+            padding-top: 4px;
+            padding-bottom: Theme.bar-height + 32px;
+            if SettingsView.filter != "": FilterResults { }
+            if SettingsView.filter == "" && SettingsView.section == 0: LibrarySection { }
+            if SettingsView.filter == "" && SettingsView.section == 1: PlaybackSection { }
+            if SettingsView.filter == "" && SettingsView.section == 2: EqualizerSection { }
+            if SettingsView.filter == "" && SettingsView.section == 3: OutputSection { }
+            if SettingsView.filter == "" && SettingsView.section == 4: LyricsSection { }
+            if SettingsView.filter == "" && SettingsView.section == 5: VisualizerSection { }
+            if SettingsView.filter == "" && SettingsView.section == 6: HomeSection { }
+            if SettingsView.filter == "" && SettingsView.section == 7: WindowSection { }
+            if SettingsView.filter == "" && SettingsView.section == 8: ConnectionsSection { }
+            if SettingsView.filter == "" && SettingsView.section == 9: KeysSection { }
+            if SettingsView.filter == "" && SettingsView.section == 10: AboutSection { }
+        }
+    }
+    }
+    if root.pins && root.eq-pin: EqPinnedCurve {
+        x: root.side ? root.side-x : root.col-x;
+        y: root.side ? root.col-y + SettingsView.pin-slot : root.col-y + max(0px, SettingsView.pin-slot + Nav.page-scroll);
+        width: root.side ? root.side-width : root.col-width;
+        height: root.pin-h;
+        compact: !root.side;
+        drop-shadow-blur: root.stuck ? 18px : 0px;
+        drop-shadow-color: #00000070;
+    }
+    if root.pins && !root.eq-pin: VizPreview {
+        x: root.side ? root.side-x : root.col-x;
+        y: root.side ? root.col-y + SettingsView.pin-slot : root.col-y + max(0px, SettingsView.pin-slot + Nav.page-scroll);
+        width: root.side ? root.side-width : root.col-width;
+        height: root.pin-h;
+        compact: !root.side;
+        drop-shadow-blur: root.stuck ? 18px : 0px;
+        drop-shadow-color: #00000070;
+    }
+}

@@ -1,0 +1,443 @@
+// Home: its shelves (rows of covers, the hero shelf) and the grid under them.
+
+import { Theme } from "../theme.slint";
+import { AlbumCard, ShelfView, ShelfLayout } from "../types.slint";
+import { Activity, Nav, Home, Library, Actions, Focus, Server, Dialog } from "../stores.slint";
+import { AutoFlickable } from "../autoscroll.slint";
+import { Icon, Icons, IconButton, TextButton, Cover, AlbumTile, RemoteMark, SectionTitle, LinkText, ArtistLinks, FocusRing, FocusTarget, ProgressLine } from "../widgets.slint";
+import { ListKeys, CoverGrid, SeeAll } from "../lists.slint";
+
+// A shelf's title: opens the shelf in full.
+component ShelfTitle inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    horizontal-stretch: 0;
+    width: t.preferred-width;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.clicked(); }
+    fs := FocusTarget { activated => { root.clicked(); } }
+    t := SectionTitle {
+        width: 100%;
+        height: 100%;
+        text: root.text;
+        vertical-alignment: center;
+        color: ta.has-hover || fs.has-focus ? Theme.accent : Theme.text;
+        accessible-role: none;
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    FocusRing { shown: fs.has-focus; radius: Theme.radius-control; }
+}
+
+// One horizontal line of covers with page-left/right buttons.
+component CoverRow inherits Rectangle {
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    in property <[AlbumCard]> albums;
+    in property <string> title;
+    // A random shelf: a reshuffle button next to the title.
+    in property <bool> random;
+    callback reshuffle();
+    // The title opens the shelf in full; "See all" says so.
+    callback see-all();
+    in property <length> size: Theme.cover-size;
+    private property <length> gap: 24px;
+    private property <length> content-w: albums.length * (size + gap) - gap;
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, root.albums.length - 1);
+    height: header.height + 12px + size + 50px;
+    // Keep the cursor's cover in the row's view, and the row in the page's.
+    function reveal() {
+        let left = root.at * (root.size + root.gap);
+        if left + flick.content-x < 0 {
+            flick.content-x = -left;
+        } else if left + root.size + flick.content-x > root.width {
+            flick.content-x = max(root.width - root.content-w, root.width - left - root.size);
+        }
+        Actions.reveal(flick.absolute-position.y - 4px, root.size + 50px);
+    }
+    header := HorizontalLayout {
+        y: 0;
+        height: 36px;
+        ShelfTitle { text: root.title; clicked => { root.see-all(); } }
+        if root.random: IconButton {
+            y: 2px;
+            glyph: Icons.shuffle;
+            size: 32px;
+            icon-size: 18px;
+            tooltip: "Reshuffle";
+            clicked => { root.reshuffle(); }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 4px;
+            SeeAll { label: "See all of " + root.title; clicked => { root.see-all(); } }
+            Rectangle { width: 8px; }
+            if root.content-w > root.width: IconButton {
+                glyph: Icons.chevron-left;
+                size: 32px;
+                icon-size: 20px;
+                label: "Scroll left";
+                // The arrow keys on the row do this from the keyboard.
+                tabbable: false;
+                clicked => { flick.content-x = min(0px, flick.content-x + root.width * 0.8); }
+            }
+            if root.content-w > root.width: IconButton {
+                glyph: Icons.chevron-right;
+                size: 32px;
+                icon-size: 20px;
+                label: "Scroll right";
+                tabbable: false;
+                clicked => { flick.content-x = max(root.width - root.content-w, flick.content-x - root.width * 0.8); }
+            }
+        }
+    }
+    row := Rectangle {
+        y: header.height + 12px;
+        height: root.size + 50px;
+        accessible-role: AccessibleRole.list;
+        accessible-label: root.title;
+        accessible-delegate-focus: root.at;
+        accessible-item-count: root.albums.length;
+        fs := FocusScope {
+            focus-lost => {
+                if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+            }
+            enabled: root.albums.length > 0;
+            focus-on-click: false;
+            key-pressed(ev) => {
+                if ListKeys.to-menu(ev) { return accept; }
+                if root.albums.length == 0 { return reject; }
+                if ListKeys.enter(ev) { Actions.open-album(root.albums[root.at].id); return accept; }
+                if ListKeys.menu-key(ev) {
+                    Actions.menu-request-keys("album", "", 0, root.albums[root.at].id,
+                        flick.absolute-position.x + flick.content-x + root.at * (root.size + root.gap) + root.size / 2,
+                        flick.absolute-position.y + root.size / 2);
+                    return accept;
+                }
+                if ev.modifiers.control || ev.modifiers.alt { return reject; }
+                let n = Actions.list-key(ev.text, root.at, root.albums.length, 1, 1, max(1, floor(root.width / (root.size + root.gap))));
+                if n >= 0 { root.cursor = n; root.reveal(); return accept; }
+                reject
+            }
+            focus-gained(reason) => {
+                Focus.zone = "";
+                root.cursor = root.at;
+                root.reveal();
+            }
+        }
+        flick := AutoFlickable { autoscroll-x: true; autoscroll-y: false;
+            content-width: max(root.width, root.content-w);
+            // Not while autoscrolling: each frame's step would animate.
+            animate content-x { duration: flick.autoscrolling ? 0ms : 300ms; easing: ease-out; }
+            for album[i] in root.albums: AlbumTile {
+                x: i * (root.size + root.gap);
+                // Room for the focus ring and the hover lift.
+                y: 4px;
+                size: root.size;
+                album: album;
+                index: i;
+                focused: fs.has-focus && i == root.at;
+                open => { Actions.open-album(album.id); }
+                play => { Actions.play-album(album.id); }
+                open-artist => { Actions.open-artist(album.artist); }
+            }
+        }
+    }
+}
+
+// A small cover in the hero's strip: one of the shelf's albums; the one featured is ringed.
+component HeroThumb inherits Rectangle {
+    in property <AlbumCard> album;
+    in property <bool> current;
+    // The strip's keyboard cursor is here (the strip has the focus).
+    in property <bool> cursor;
+    in property <length> size: 52px;
+    callback clicked();
+    width: size;
+    height: size;
+    accessible-role: list-item;
+    accessible-label: root.album.title + ", " + root.album.artist + (root.current ? ", shown" : "");
+    Cover {
+        size: root.size;
+        source: root.album.cover;
+        has-cover: root.album.has-cover;
+        tint: root.album.tint;
+        accessible-role: none;
+    }
+    // The others a little dimmed, so the featured one reads as chosen.
+    Rectangle {
+        border-radius: Theme.radius-cover;
+        background: root.current || ta.has-hover ? transparent : #00000059;
+        border-width: root.current ? 2px : 0px;
+        border-color: Theme.text;
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    FocusRing { shown: root.cursor; radius: Theme.radius-cover; }
+}
+
+// A hero shelf: one album big, over its blurred art, labelled with the shelf's title (which
+// opens the whole shelf). The shelf's other albums are a strip of small covers inside the
+// card: choosing one (click, or the arrow keys on the strip) features it in its place. One
+// shelf, one label: nothing under it needs a title of its own.
+component HeroShelf inherits Rectangle {
+    in property <ShelfView> shelf;
+    private property <AlbumCard> album: root.shelf.albums[root.shelf.hero];
+    private property <int> cursor: root.shelf.hero;
+    private property <length> thumb: 52px;
+    private property <length> thumb-gap: 8px;
+    height: 300px;
+    card := Rectangle {
+        border-radius: Theme.radius-card;
+        clip: true;
+        background: Theme.surface;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.shelf.hero-blur;
+            image-fit: cover;
+            opacity: 0.9;
+        }
+        Rectangle { background: @linear-gradient(90deg, #000000a0 0%, #00000030 100%); }
+        if root.shelf.albums.length > 0: HorizontalLayout {
+            padding: 30px;
+            spacing: 30px;
+            Cover {
+                size: 240px;
+                source: root.album.cover;
+                has-cover: root.album.has-cover;
+                tint: root.album.tint;
+                label: root.album.title;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #000000a0;
+                TouchArea { mouse-cursor: pointer; clicked => { Actions.open-album(root.album.id); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+                HorizontalLayout {
+                    alignment: start;
+                    Text {
+                        text: root.shelf.title;
+                        font-size: Theme.font-small;
+                        font-weight: 700;
+                        color: hero-ta.has-hover || hero-fs.has-focus ? Theme.accent.brighter(20%) : Theme.accent;
+                        letter-spacing: 1px;
+                        accessible-role: button;
+                        accessible-label: "See all of " + root.shelf.title;
+                        accessible-action-default => { Actions.shelf-open(root.shelf.index); }
+                        hero-fs := FocusTarget { activated => { Actions.shelf-open(root.shelf.index); } }
+                        hero-ta := TouchArea { mouse-cursor: pointer; clicked => { Actions.shelf-open(root.shelf.index); } }
+                        FocusRing { shown: hero-fs.has-focus; radius: 4px; }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    spacing: 12px;
+                    LinkText { text: root.album.title; font-size: Theme.font-display; font-weight: 800; base-color: Theme.text; tabbable: true; clicked => { Actions.open-album(root.album.id); } }
+                    if root.album.remote: RemoteMark { size: 20px; tint: Theme.text-dim; }
+                }
+                ArtistLinks { text: root.album.artist; kind: "album"; ref-id: root.album.id; font-size: Theme.font-title; tabbable: true; }
+                HorizontalLayout {
+                    padding-top: 12px;
+                    spacing: 10px;
+                    alignment: start;
+                    TextButton { text: "Play"; glyph: Icons.play; primary: true; clicked => { Actions.play-album(root.album.id); } }
+                    TextButton { text: "Shuffle"; glyph: Icons.shuffle; clicked => { Actions.shuffle-album(root.album.id); } }
+                    if root.shelf.random: IconButton {
+                        glyph: Icons.shuffle;
+                        size: 36px;
+                        icon-size: 18px;
+                        tooltip: "Reshuffle";
+                        label: "Reshuffle " + root.shelf.title;
+                        clicked => { Actions.shelf-reshuffle(root.shelf.index); }
+                    }
+                }
+                // The shelf's albums: as many as fit, the featured one ringed.
+                if root.shelf.albums.length > 1: strip := Rectangle {
+                    height: root.thumb + 18px;
+                    clip: true;
+                    accessible-role: AccessibleRole.list;
+                    accessible-label: root.shelf.title;
+                    accessible-delegate-focus: root.cursor;
+                    accessible-item-count: root.shelf.albums.length;
+                    strip-fs := FocusScope {
+                        x: 0;
+                        y: 18px;
+                        width: parent.width;
+                        height: root.thumb;
+                        focus-on-click: false;
+                        key-pressed(ev) => {
+                            if ev.modifiers.control || ev.modifiers.alt { return reject; }
+                            if ListKeys.enter(ev) { Actions.open-album(root.album.id); return accept; }
+                            let n = Actions.list-key(ev.text, root.cursor, min(root.shelf.albums.length, floor((self.width + root.thumb-gap) / (root.thumb + root.thumb-gap))), 1, 1, 1);
+                            if n >= 0 {
+                                root.cursor = n;
+                                Actions.hero-select(root.shelf.index, n);
+                                return accept;
+                            }
+                            reject
+                        }
+                        focus-gained => { Focus.zone = ""; root.cursor = root.shelf.hero; }
+                        for a[i] in root.shelf.albums: HeroThumb {
+                            x: i * (root.thumb + root.thumb-gap);
+                            visible: self.x + root.thumb <= strip-fs.width;
+                            size: root.thumb;
+                            album: a;
+                            current: i == root.shelf.hero;
+                            cursor: strip-fs.has-focus && i == root.cursor;
+                            clicked => { Actions.hero-select(root.shelf.index, i); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component HomePage inherits Rectangle {
+    // A scan of the folders or a sync with the server (activity.rs): what it does and how far,
+    // quietly, in the band above the shelves (over the page, so nothing moves when it comes or
+    // goes). A folder or a cloud says which; the line under it fills once the total is known,
+    // and runs to full when the job is over. An empty home says it in its own words (below).
+    // The sidebar and Settings > Library say more; the sidebar may be closed.
+    if Activity.shown && !Home.empty: Rectangle {
+        x: parent.width - self.width - Theme.page-margin;
+        y: 18px;
+        z: 1;
+        width: min(440px, parent.width * 0.45);
+        height: 38px;
+        accessible-role: progress-indicator;
+        accessible-label: Activity.title + (Activity.text != "" ? ": " + Activity.text : "");
+        accessible-value: Activity.progress >= 0 ? round(clamp(Activity.progress, 0, 1) * 100) + "%" : "";
+        VerticalLayout {
+            alignment: center;
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: end;
+                spacing: 6px;
+                Rectangle {
+                    width: 14px;
+                    horizontal-stretch: 0;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        glyph: Activity.sync ? Icons.cloud : Icons.folder;
+                        width: 14px;
+                        height: 14px;
+                        color: Theme.text-faint;
+                    }
+                }
+                Text {
+                    text: Activity.title + (Activity.text != "" ? " · " + Activity.text : "");
+                    font-size: Theme.font-small;
+                    color: Theme.text-faint;
+                    horizontal-alignment: right;
+                    overflow: elide;
+                    accessible-role: none;
+                }
+            }
+            Rectangle {
+                height: 3px;
+                border-radius: 1.5px;
+                background: Theme.surface-hi;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(Activity.progress, 0, 1);
+                    border-radius: 1.5px;
+                    background: Theme.accent.with-alpha(0.8);
+                    animate width { duration: 400ms; }
+                }
+            }
+        }
+    }
+    AutoFlickable {
+        content-y <=> Nav.page-scroll;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            padding: Theme.page-margin;
+            padding-top: Theme.page-top;
+            padding-bottom: Theme.bar-height + 32px;
+            spacing: 40px;
+            // Nothing in the library yet: either source gets it started. While the first scan of
+            // the folders or the first sync with the server runs (`Activity`, as in the top right
+            // once there are albums), what it does and how far.
+            if Home.empty: VerticalLayout {
+                spacing: 12px;
+                Text { text: Activity.shown && Activity.title != "" ? Activity.title : "Nothing here yet"; font-size: Theme.font-display; font-weight: 800; color: Theme.text; wrap: word-wrap; }
+                Text {
+                    text: !Activity.shown ? "Add a music folder or connect a Navidrome server to get started." : Activity.text;
+                    font-size: Theme.font-title;
+                    color: Theme.text-dim;
+                    wrap: word-wrap;
+                }
+                // How far, and that nothing needs waiting for.
+                if Activity.shown && Activity.progress >= 0: HorizontalLayout {
+                    alignment: start;
+                    padding-top: 4px;
+                    ProgressLine { max-width: 520px; horizontal-stretch: 1; value: Activity.progress; label: Activity.title; }
+                }
+                if Activity.shown && !Activity.sync && Library.status-note != "": Text { text: Library.status-note; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+                if Activity.shown: Text {
+                    text: Activity.sync ? "Albums come in here as the server lists them: you can play one while the rest is read." : "Albums come in here as their folders are read: you can play one while the rest is found.";
+                    font-size: Theme.font-body;
+                    color: Theme.text-faint;
+                    wrap: word-wrap;
+                }
+                if !Activity.shown: HorizontalLayout {
+                    alignment: start;
+                    spacing: 10px;
+                    TextButton { text: "Add folder"; glyph: Icons.folder; primary: true; clicked => { Actions.add-folder(); } }
+                    // Settings > Library's sign-in, in view, its address field focused.
+                    if !Server.signed-in: TextButton { text: "Connect Navidrome"; glyph: Icons.cloud; label: "Connect a Navidrome server: its sign-in, in Settings"; clicked => { Actions.server-open-sign-in(); } }
+                }
+            }
+            for shelf in Home.shelves: Rectangle {
+                height: shelf.layout == ShelfLayout.row ? r.height : shelf.layout == ShelfLayout.grid ? g.height + 48px : h.height;
+                r := CoverRow {
+                    visible: shelf.layout == ShelfLayout.row;
+                    title: shelf.title;
+                    random: shelf.random;
+                    reshuffle => { Actions.shelf-reshuffle(shelf.index); }
+                    see-all => { Actions.shelf-open(shelf.index); }
+                    albums: shelf.layout == ShelfLayout.row ? shelf.albums : [];
+                }
+                if shelf.layout == ShelfLayout.grid: HorizontalLayout {
+                    x: 0;
+                    y: 0;
+                    height: 36px;
+                    ShelfTitle { text: shelf.title; clicked => { Actions.shelf-open(shelf.index); } }
+                    if shelf.random: IconButton {
+                        y: 2px;
+                        glyph: Icons.shuffle;
+                        size: 32px;
+                        icon-size: 18px;
+                        tooltip: "Reshuffle";
+                        clicked => { Actions.shelf-reshuffle(shelf.index); }
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        SeeAll { label: "See all of " + shelf.title; clicked => { Actions.shelf-open(shelf.index); } }
+                    }
+                }
+                g := CoverGrid {
+                    y: 48px;
+                    visible: shelf.layout == ShelfLayout.grid;
+                    label: shelf.title;
+                    albums: shelf.layout == ShelfLayout.grid ? shelf.albums : [];
+                }
+                h := HeroShelf {
+                    visible: shelf.layout == ShelfLayout.hero;
+                    shelf: shelf;
+                }
+            }
+        }
+    }
+}

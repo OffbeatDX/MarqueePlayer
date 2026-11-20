@@ -1,0 +1,266 @@
+// Structs mirrored on the Rust side.
+
+export struct AlbumCard {
+    id: int,
+    title: string,
+    artist: string,
+    year: string,
+    cover: image,
+    has-cover: bool,
+    // Placeholder colour for albums without art (derived from the title).
+    tint: color,
+    // Only on the server (no track of it has a file here): marked with a cloud.
+    remote: bool,
+}
+
+export struct TrackRow {
+    id: int,
+    album-id: int,
+    number: string,
+    title: string,
+    artist: string,
+    album: string,
+    duration: string,
+    playing: bool,
+    favourite: bool,
+    // "★★★☆☆", or "" when not rated.
+    stars: string,
+    cover: image,
+    // First row of a new disc on a multi-disc album: shows a "Disc N" header.
+    disc-header: string,
+    // Technical details, short ("FLAC 24/96", "MP3 320"): "" when the setting is off, the
+    // format is not known, or the album's summary line already says it (metadata/details.rs).
+    details: string,
+    // Plays from the server (no file here): marked with a cloud (`Server.host` names it).
+    remote: bool,    // Chosen in the list's selection (selection.rs).
+    selected: bool,
+}
+
+// One row of "View metadata" (metadata/view.rs builds them; metaview.slint draws them).
+export struct MetaRow {
+    // 0 a group heading, 1 a field, 2 a picture, 3 a note, 4 the track table's head, 5 a track.
+    kind: int,
+    label: string,
+    // Each value on its own line (a multi-valued tag has several).
+    values: [string],
+    // A quieter line under them: where it came from, why it differs.
+    note: string,
+    attention: bool,
+    // A long value, cut: it can be shown in full (and folded again).
+    expandable: bool,
+    expanded: bool,
+    copyable: bool,
+    thumb: image,
+    has-thumb: bool,
+    // A track row: disc, number, title, artist, length, format.
+    cells: [string],
+    number-attention: bool,
+    format-attention: bool,
+    // The cursor stops here; Enter acts on it (`action`: opens a track, lists more).
+    selectable: bool,
+    action: bool,
+    // Tag editing: what editing the row does (0 nothing, 1 a field, 2 an identifier that
+    // can only be removed, 3 an album field on every track, 4 a track of the table).
+    edit: int,
+    // A draft value (not saved yet), shown marked.
+    changed: bool,
+    // No value: "Not set".
+    empty: bool,
+    // Several values can be added.
+    multi: bool,
+    // A track row: which of number, title, artist the draft changes.
+    cell-changed: [bool],
+}
+
+// One part of an artist credit as shown: an artist's name, linked to their page by `key`,
+// or plain text between names ("A feat. B": "A", " feat. ", "B"). `key` "" for text.
+export struct ArtistLink {
+    text: string,
+    key: string,
+}
+
+// Shelf layouts, matching `ShelfLayout` in Rust.
+export enum ShelfLayout { row, grid, hero }
+
+export struct ShelfView {
+    title: string,
+    layout: ShelfLayout,
+    albums: [AlbumCard],
+    // The hero layout: the album featured (an index into `albums`), and its blurred art.
+    hero: int,
+    hero-blur: image,
+    // Position in the shelf list (settings), for the shelf's actions.
+    index: int,
+    // A random shelf: it can be reshuffled.
+    random: bool,
+}
+
+export struct QueueRow {
+    title: string,
+    // The track's id in the library (its artist links; 0 for a file from outside).
+    track-id: int,
+    artist: string,
+    album: string,
+    album-id: int,
+    has-cover: bool,
+    tint: color,
+    duration: string,
+    current: bool,
+    cover: image,
+    // Plays from the server (no file here).
+    remote: bool,    // Chosen in the queue's selection (selection.rs).
+    selected: bool,
+}
+
+export struct PlaylistRow {
+    id: int,
+    name: string,
+    count: int,
+    // A smart playlist (its tracks come from its rules), its rules in words, and what it
+    // holds ("12 tracks"; a smart one's once worked out).
+    smart: bool,
+    summary: string,
+    info: string,
+}
+
+// One control of a smart playlist rule (playlists/smartedit.rs builds them): what it is (`kind`: 0 a
+// choice that opens a list, 1 a typed field, 2 words between controls, 3 stars, 4 a switch),
+// what it sets (`role`, playlists::smartedit::Role), what it shows, its width (typed fields).
+export struct SmartSlot {
+    kind: int,
+    role: int,
+    text: string,
+    placeholder: string,
+    label: string,
+    width: length,
+    invalid: bool,
+    on: bool,
+}
+
+// A line of the smart playlist editor (`kind`: 0 a rule, 1 a group heading, 2 a rule this
+// build cannot use, 3 the order, 4 the limit, 5 "match all or any"), indented by `depth`,
+// with what is wrong with it (`error`) or a quieter `note`.
+export struct SmartRow {
+    kind: int,
+    depth: int,
+    slots: [SmartSlot],
+    error: string,
+    note: string,
+    can-up: bool,
+    can-down: bool,
+    removable: bool,
+    label: string,
+}
+
+export struct NamedCount {
+    name: string,
+    count: int,
+}
+
+export struct ShelfEdit {
+    title: string,
+    // What the shelf shows, for display ("Recently added", "Genre: Hardcore").
+    description: string,
+    layout: ShelfLayout,
+    limit: int,
+    visible: bool,
+}
+
+// One entry of the app's context menu (menu.slint, menus.rs).
+export struct MenuItemData {
+    label: string,
+    separator: bool,
+    submenu: bool,
+    enabled: bool,
+    danger: bool,
+    // A choice that is in effect (the Albums sort): drawn with a check mark.
+    checked: bool,
+    // A caption over the entries that follow ("Presets"): small, dim, not to be chosen.
+    heading: bool,
+}
+
+// One line of Settings > Keys (keys/shortcuts.rs builds them from its table).
+// A line of lyrics; `time` in seconds, -1 when unsynced.
+export struct LyricLine {
+    text: string,
+    time: float,
+}
+
+export struct KeyHelp {
+    keys: string,
+    what: string,
+}
+
+// Settings > Keys: a remappable action and its keys (keys/edit.rs). `key0`/`key1` as
+// shown ("Ctrl+←", "" for none), `spoken0`/`spoken1` as a screen reader says them
+// ("Ctrl+Left"); `slots` is 1, or 2 for an action with two keys (Search).
+export struct KeyRow {
+    what: string,
+    key0: string,
+    key1: string,
+    spoken0: string,
+    spoken1: string,
+    slots: int,
+    is-default: bool,
+    default-keys: string,
+    // The heading of the group this row starts ("Playback"), or "" inside a group.
+    group: string,
+}
+
+// One band of Settings > Equalizer's parametric list (eq.rs): its kind (0 peak, 1 low
+// shelf, 2 high shelf), its values as text, and where it sits on the curve (0..1 of the
+// curve's width and height), with its number.
+export struct EqBandRow {
+    // Its kind (eq.rs, `Kind::ALL`'s order: peak, low shelf, high shelf, low-pass,
+    // high-pass, band-pass, notch, all-pass), as Settings names it, and whether it has a gain.
+    kind: int,
+    kind-name: string,
+    has-gain: bool,
+    freq: string,
+    // "+4.5 dB", or "—" for a filter without a gain.
+    gain: string,
+    // The width and what it is: "Q" "0.71", "Width" "1.5 oct", "Slope" "10.8 dB/oct".
+    q: string,
+    width-label: string,
+    x: float,
+    y: float,
+    number: int,
+}
+
+// A line of the equalizer preview (eq.rs): 0 read in a particular way (nothing lost),
+// 1 played approximately, 2 left out.
+export struct EqNote {
+    kind: int,
+    text: string,
+}
+
+// A visualizer preset of Settings' picker and the quick menu (visualizer/mod.rs): a built-in
+// one or the user's, its name and a few words about it.
+export struct VizPresetRow {
+    name: string,
+    hint: string,
+    user: bool,
+}
+
+// A setting found by Settings' filter box (settings/nav.rs): its name, the section it is
+// in (SettingsView.section) and that section's name.
+export struct SettingHit {
+    label: string,
+    section: int,
+    section-name: string,
+}
+
+// Settings > About (about.rs): a place the app keeps files (its name, path, and what it is
+// with its size once measured), and an open-source component it is built on.
+export struct AboutFile {
+    what: string,
+    path: string,
+    detail: string,
+}
+export struct AboutCredit {
+    name: string,
+    what: string,
+    licence: string,
+}
+
+export enum Page { home, albums, album, artist, search, playlists, playlist, now-playing, settings, shelves, shelf, artists, genres, labels, tracks, smart, smart-edit }

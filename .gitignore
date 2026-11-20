@@ -1,0 +1,12 @@
+target/
+*.log
+dist/
+/MarqueePlayer.exe
+/MarqueePlayer
+# Release numbering state (crates/app/build.rs, `cargo xtask release`)
+/crates/app/.build-version
+/crates/app/.app-version
+# Editors and the system's own files
+.vscode/
+.idea/
+.DS_Store

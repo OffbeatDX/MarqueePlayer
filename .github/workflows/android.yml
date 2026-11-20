@@ -1,0 +1,127 @@
+# The Android app (android/): tests, the API scan, Lint, and the debug and release builds.
+# Everything here is a plain Gradle command a contributor can run (android/README.md, "Building").
+name: Android
+
+# Nothing here runs for a push to a branch or a pull request: it runs when a version is tagged
+# (the tags the desktop release takes) and by hand (Actions > Android > Run workflow).
+on:
+  push:
+    tags:
+      - "v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      signed-release:
+        description: "Also build a signed release (needs the four MARQUEE_* signing secrets)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: android
+
+jobs:
+  build:
+    name: Test, lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Validates gradle-wrapper.jar against Gradle's published checksums, and caches.
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The runner's preinstalled SDK (ANDROID_HOME) has the platform; AGP fetches what is missing.
+      - name: Unit tests and the API scan
+        run: ./gradlew :core:check :app:testDebugUnitTest --console=plain
+
+      - name: Lint (debug)
+        run: ./gradlew :app:lintDebug --console=plain
+
+      - name: Debug APK
+        run: ./gradlew :app:assembleDebug --console=plain
+
+      # Unsigned here (no key on the runner): proves R8 and resource shrinking still build.
+      - name: Release APK (unsigned)
+        run: ./gradlew :app:assembleRelease --console=plain
+
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: marquee-player-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload the reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            android/core/build/reports/
+            android/core/build/test-results/
+            android/app/build/reports/
+            android/app/build/test-results/
+          if-no-files-found: ignore
+
+  # A signed release, only when asked for by hand (Actions → Android → Run workflow) on this
+  # repository, never for a pull request; skipped cleanly when the secrets are not configured.
+  signed-release:
+    name: Signed release
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.signed-release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HAS_KEY: ${{ secrets.MARQUEE_KEYSTORE_BASE64 != '' && secrets.MARQUEE_KEYSTORE_PASSWORD != '' && secrets.MARQUEE_KEY_ALIAS != '' && secrets.MARQUEE_KEY_PASSWORD != '' }}
+    steps:
+      - name: No signing secrets
+        if: ${{ env.HAS_KEY != 'true' }}
+        run: echo "::notice::The MARQUEE_* signing secrets are not configured; no signed release built."
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/checkout@v4
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Signed release APK
+        if: ${{ env.HAS_KEY == 'true' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.MARQUEE_KEYSTORE_BASE64 }}
+          MARQUEE_KEYSTORE_PASSWORD: ${{ secrets.MARQUEE_KEYSTORE_PASSWORD }}
+          MARQUEE_KEY_ALIAS: ${{ secrets.MARQUEE_KEY_ALIAS }}
+          MARQUEE_KEY_PASSWORD: ${{ secrets.MARQUEE_KEY_PASSWORD }}
+        run: |
+          export MARQUEE_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$MARQUEE_KEYSTORE_FILE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$MARQUEE_KEYSTORE_FILE"
+          ./gradlew :app:assembleRelease --console=plain
+          if ls app/build/outputs/apk/release/*unsigned*.apk >/dev/null 2>&1; then
+            echo "::error::The release came out unsigned"; exit 1
+          fi
+
+      - name: Upload the signed release
+        if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: marquee-player-release
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

@@ -1,0 +1,239 @@
+// Settings > Library, with the server.
+
+import { Theme } from "../../theme.slint";
+import { Library, Actions, LastFm, ListenBrainz, Server, SettingsView } from "../../stores.slint";
+import { Icon, Icons, IconButton, TextButton, LineField, SettingCard, SettingRow, SwitchRow, StatusNote, Hairline } from "../../widgets.slint";
+import { SectionHead, ServiceHead } from "parts.slint";
+
+// A Navidrome (or other Subsonic) server's music beside the folders, as one library (server/mod.rs).
+component ServerSettings inherits VerticalLayout {
+    spacing: 16px;
+    VerticalLayout {
+        padding-top: 12px;
+        ServiceHead {
+            title: "Server";
+            blurb: "Add the music on your Navidrome (or another Subsonic) server: it shows with your folders' music as one library, each album and track once. Its music files are never changed: only your favourites, ratings and plays go back to it, as the switches below say.";
+        }
+    }
+    if Server.held != "": StatusNote {
+        glyph: Icons.warning;
+        attention: true;
+        title: "Music the server no longer lists";
+        text: Server.held;
+        TextButton { text: "Remove it from the library"; glyph: Icons.close; label: "Remove what the server no longer lists from the library"; clicked => { Actions.server-confirm-removal(); } }
+    }
+    if Server.signed-in || Server.busy: StatusNote {
+        glyph: Server.attention ? Icons.warning : Server.busy ? Icons.refresh : Icons.check;
+        attention: Server.attention;
+        title: Server.stopping ? "Stopping" : Server.title;
+        text: Server.status;
+        detail: Server.detail;
+        progress: Server.busy ? Server.progress : -1;
+        if Server.busy && Server.signed-in: TextButton {
+            text: Server.stopping ? "Stopping\u{2026}" : "Stop";
+            glyph: Icons.close;
+            label: "Stop the sync. What it has read stays in the library; the next sync goes on from there";
+            clicked => { Actions.server-stop(); }
+        }
+        if !Server.busy && Server.signed-in: TextButton {
+            text: "Sync now";
+            glyph: Icons.refresh;
+            label: "Read the server's catalog again now";
+            clicked => { Actions.server-sync(); }
+        }
+        if Server.signed-in: TextButton {
+            text: "Sign out";
+            label: "Sign out of the server. Its music leaves the library; your folders' music stays as it is";
+            clicked => { Actions.server-sign-out(); }
+        }
+    }
+    if !Server.signed-in && !Server.busy: SettingCard {
+        title: "Sign in";
+        note: Server.leftover != "" ? Server.leftover : "The address you open the server at in a browser, and your user name and password there. The password is not kept: only a token made from it.";
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-top: 4px;
+            padding-bottom: 18px;
+            spacing: 10px;
+            // Home's "Connect Navidrome" asked for this card: in view, the address focused (once
+            // the page is laid out).
+            Timer {
+                interval: 60ms;
+                running: SettingsView.focus-server;
+                triggered => {
+                    SettingsView.focus-server = false;
+                    Actions.reveal(root.absolute-position.y, root.height);
+                    address.focus-field();
+                }
+            }
+            address := LineField {
+                text <=> Server.address;
+                placeholder: "Address, such as https://music.example.org or http://192.168.1.10:4533";
+                label: "Server address";
+                edited(t) => { Actions.server-address-edited(t); }
+                accepted => { Actions.server-connect(Server.address, Server.user, Server.password); }
+            }
+            LineField {
+                text <=> Server.user;
+                placeholder: "User name";
+                label: "User name on the server";
+                accepted => { Actions.server-connect(Server.address, Server.user, Server.password); }
+            }
+            LineField {
+                text <=> Server.password;
+                placeholder: "Password";
+                label: "Password on the server";
+                input-type: InputType.password;
+                accepted => { Actions.server-connect(Server.address, Server.user, Server.password); }
+            }
+            if Server.plain-http: Text {
+                text: "Plain http: the connection is not encrypted, so the sign-in and the music can be read on the way. Fine on your own network; use https for a server reached over the internet.";
+                font-size: Theme.font-small;
+                color: Theme.text-faint;
+                wrap: word-wrap;
+            }
+            if Server.error != "": Text {
+                text: Server.error;
+                font-size: Theme.font-small;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                alignment: start;
+                padding-top: 4px;
+                spacing: 8px;
+                TextButton {
+                    text: Server.signing-in ? "Connecting\u{2026}" : "Connect";
+                    primary: !Server.signing-in && Server.address != "" && Server.user != "" && Server.password != "";
+                    label: "Sign in to the server";
+                    clicked => { Actions.server-connect(Server.address, Server.user, Server.password); }
+                }
+                if Server.leftover != "": TextButton {
+                    text: "Remove its music";
+                    label: "Remove the server's music from the library; your folders' music stays as it is";
+                    clicked => { Actions.server-sign-out(); }
+                }
+            }
+        }
+    }
+    // What goes back to the server (server/write.rs): its own database only, never a file.
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Sync favourites and ratings with the server";
+            hint: "Both ways, for the tracks the server has: a heart or stars changed here go to the server at once, and one changed there comes here at the next sync.";
+            more: "When both sides changed the same track, a rating made here wins, and for a favourite the later change wins. The first sync keeps every favourite of either side and a rating made here. Only the server's own record of your stars and ratings changes, never a music file. Off: nothing is sent or taken.";
+            checked: Server.sync-marks;
+            toggled => { Actions.server-toggle(0); }
+        }
+        SwitchRow {
+            label: "Report plays to the server";
+            hint: "Each play counted here of a track the server has goes to its play counts and history, and it shows as playing there. If the server itself scrobbles to Last.fm or ListenBrainz, turn off the next switch, or those plays get there twice.";
+            more: "A play made while the server cannot be reached waits and goes at the next sync. Off: plays not yet sent are forgotten, and none goes later.";
+            checked: Server.report-plays;
+            toggled => { Actions.server-toggle(1); }
+        }
+        SwitchRow {
+            label: "Scrobble server tracks from this app";
+            enabled: LastFm.connected || ListenBrainz.connected;
+            hint: LastFm.connected || ListenBrainz.connected
+                ? "To Last.fm and ListenBrainz. Off: this app tells them nothing of the tracks it plays from the server (nor, while plays are reported to the server, of your files the server also has), so a server that scrobbles them itself does not make them count twice."
+                : "Neither Last.fm nor ListenBrainz is connected in this app (Settings > Connections), so there is nothing to scrobble twice.";
+            checked: Server.lastfm-scrobbles;
+            toggled => { Actions.server-toggle(2); }
+        }
+    }
+}
+
+
+export component LibrarySection inherits VerticalLayout {
+    private property <bool> show-unreadable;
+    spacing: 16px;
+    SectionHead { title: "Library"; blurb: Library.tag-editing ? "Your music folders. Tag editing is on: View metadata can change their files' tags and covers." : "Your music folders. They are only read, unless you turn on tag editing below."; }
+    if Library.held != "": StatusNote {
+        glyph: Icons.warning;
+        attention: true;
+        title: Library.held-removable ? "Missing tracks kept in the library" : "Tracks kept in the library";
+        text: Library.held;
+        if Library.held-removable: TextButton { text: "Remove missing tracks"; glyph: Icons.close; clicked => { Actions.confirm-removal(); } }
+    }
+    StatusNote {
+        glyph: Library.scanning ? Icons.refresh : Library.resumable ? Icons.info : Icons.check;
+        title: Library.scanning ? (Library.stopping ? "Stopping" : Library.status-title) : Library.resumable ? "Stopped before the end" : "";
+        text: Library.scanning && Library.status-detail != "" ? Library.status-detail : Library.status;
+        detail: Library.scanning ? Library.status-note : "";
+        progress: Library.scanning ? Library.progress : -1;
+        // A scan can stop at any time: what it has read stays, the rest is read next time.
+        if Library.scanning: TextButton {
+            text: Library.stopping ? "Stopping…" : "Stop";
+            glyph: Icons.close;
+            label: Library.stopping ? "Stopping the scan" : "Stop the scan. What it has read stays in the library; the rest is read at the next start, or by Resume";
+            clicked => { Actions.stop-scan(); }
+        }
+        if !Library.scanning: TextButton {
+            text: Library.resumable ? "Resume" : "Rescan";
+            glyph: Icons.refresh;
+            label: Library.resumable ? "Resume the scan: read the files it had not read yet" : "Rescan the library folders";
+            clicked => { Actions.rescan(); }
+        }
+        if Library.unreadable.length > 0: TextButton {
+            text: root.show-unreadable ? "Hide unreadable files" : Library.unreadable.length == 1 ? "Show the unreadable file" : "Show " + Library.unreadable.length + " unreadable files";
+            glyph: root.show-unreadable ? Icons.expand : Icons.collapse;
+            accessible-expandable: true;
+            accessible-expanded: root.show-unreadable;
+            clicked => { root.show-unreadable = !root.show-unreadable; }
+        }
+    }
+    if root.show-unreadable && Library.unreadable.length > 0: SettingCard {
+        title: Library.unreadable.length == 1 ? "1 unreadable file" : Library.unreadable.length + " unreadable files";
+        note: "The last scan skipped these. Fix or remove them, then rescan.";
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 14px;
+            spacing: 8px;
+            for u in Library.unreadable: Text { text: u; font-size: Theme.font-small; color: Theme.text; wrap: word-wrap; }
+        }
+    }
+    SettingCard {
+        title: "Folders";
+        note: Library.folders.length == 0 ? "No folders yet: add the one your music is in." : "";
+        for f[i] in Library.folders: Rectangle {
+            height: 52px;
+            Hairline { y: 0; width: parent.width; }
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 12px;
+                spacing: 12px;
+                Icon { y: (parent.height - self.height) / 2; glyph: Icons.folder; color: Theme.text-dim; }
+                Text { text: f; vertical-alignment: center; color: Theme.text; overflow: elide; horizontal-stretch: 1; }
+                IconButton { y: 8px; glyph: Icons.close; size: 36px; icon-size: 16px; label: "Remove " + f + " from the library"; tooltip: "Remove from the library"; clicked => { Actions.remove-folder(i); } }
+            }
+        }
+        Hairline { }
+        HorizontalLayout {
+            padding: 14px;
+            padding-left: 20px;
+            alignment: start;
+            TextButton { text: "Add folder"; glyph: Icons.plus; label: "Add a music folder"; clicked => { Actions.add-folder(); } }
+        }
+    }
+    ServerSettings { }
+    SettingCard {
+        title: "Tag editing";
+        SwitchRow {
+            divider: false;
+            label: "Edit tags";
+            hint: "Lets the app change your music files: their tags and front covers, from View metadata. Off: it only reads them.";
+            more: "Nothing is written until you review and save. Each file is written as a copy beside it and checked (its other tags, pictures and audio unchanged) before it takes the file's place; one that does not check out is left as it was. Every save can be undone from View metadata's Edit history while it is kept.";
+            checked: Library.tag-editing;
+            toggled => { Actions.toggle-tag-editing(); }
+        }
+        if Library.edit-history != "": SettingRow {
+            label: "Undo history";
+            hint: Library.edit-history;
+            TextButton { text: "Clear"; label: "Clear the undo history of tag edits"; clicked => { Actions.clear-edit-history(); } }
+        }
+    }
+}

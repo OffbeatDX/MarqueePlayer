@@ -1,0 +1,281 @@
+// The name prompt of "New playlist…" (stores.slint, `Dialog`; playlists/newplaylist.rs), and the
+// panel the window's dialogs share (`Panel`, also "View metadata", metaview.slint). Frosted
+// like the menu, the app's radii and type. While one is open it has the keyboard: Tab and
+// Shift+Tab go round its own controls, Esc closes it, and no shortcut fires (nothing
+// reaches the window's shortcut scope). A click outside closes it too. When it closes,
+// the focus goes back where it was (the list that opened it, else the window).
+import { Theme } from "theme.slint";
+import { Dialog, Actions } from "stores.slint";
+import { TextButton, LineField, Icon, Icons, Switch, FocusRing } from "widgets.slint";
+
+export component Panel inherits Rectangle {
+    border-radius: Theme.radius-card;
+    background: Theme.glass-fill;
+    backdrop-blur: Theme.glass-radius-blur;
+    border-width: 1px;
+    border-color: Theme.border;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000080;
+    drop-shadow-offset-y: 6px;
+    // Clicks on the panel's empty parts stay here.
+    TouchArea { }
+    @children
+}
+
+// The name for a new playlist, where the menu was: it continues the menu the user just
+// used, beside what was right-clicked (still in view), and moves the eye nowhere.
+export component NamePrompt inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: window-width;
+    height: window-height;
+    function cycle(d: int) {
+        let at = field.focused ? 0 : cancel.focused ? 1 : ok.focused ? 2 : 0;
+        let next = mod(at + d + 3, 3);
+        if next == 0 {
+            field.focus-field();
+        } else if next == 1 {
+            cancel.focus-button();
+        } else {
+            ok.focus-button();
+        }
+    }
+    // Anywhere outside: cancels. The wheel does nothing under it.
+    TouchArea {
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down { Actions.prompt-cancel(); }
+        }
+        scroll-event(ev) => { accept }
+    }
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Escape { Actions.prompt-cancel(); return accept; }
+            if ev.text == Key.Tab { root.cycle(1); return accept; }
+            if ev.text == Key.Backtab { root.cycle(-1); return accept; }
+            accept
+        }
+        Panel {
+            width: 340px;
+            height: lay.preferred-height;
+            // At the menu's place, kept inside the window.
+            x: max(8px, min(Dialog.x, root.width - self.width - 8px));
+            y: Dialog.y + self.height > root.height - 8px ? max(8px, root.height - self.height - 8px) : Dialog.y;
+            accessible-role: groupbox;
+            accessible-label: Dialog.prompt-title;
+            lay := VerticalLayout {
+                padding: 18px;
+                spacing: 12px;
+                Text {
+                    text: Dialog.prompt-title;
+                    font-size: Theme.font-title;
+                    font-weight: 700;
+                    color: Theme.text;
+                    accessible-role: none;
+                }
+                field := LineField {
+                    text <=> Dialog.prompt-text;
+                    placeholder: Dialog.prompt-placeholder;
+                    label: Dialog.prompt-placeholder;
+                    edited(t) => { Actions.prompt-edited(t); }
+                    accepted(t) => { Actions.prompt-confirm(t); }
+                    escape => { Actions.prompt-cancel(); }
+                }
+                if Dialog.prompt-note != "": HorizontalLayout {
+                    spacing: 8px;
+                    accessible-role: text;
+                    accessible-label: Dialog.prompt-note;
+                    Icon {
+                        y: 0px;
+                        width: 16px;
+                        height: 16px;
+                        glyph: Icons.info;
+                        color: Theme.accent;
+                    }
+                    Text {
+                        text: Dialog.prompt-note;
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                        accessible-role: none;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    padding-top: 2px;
+                    cancel := TextButton { text: "Cancel"; zone: "dialog"; clicked => { Actions.prompt-cancel(); } }
+                    ok := TextButton { text: Dialog.prompt-confirm; primary: true; zone: "dialog"; clicked => { Actions.prompt-confirm(Dialog.prompt-text); } }
+                }
+            }
+        }
+    }
+    init => { field.focus-field(); }
+}
+
+// "Do the same for the rest": the switch and its words, the whole row toggling it.
+component ClashSwitch inherits Rectangle {
+    in property <bool> shown;
+    in property <string> label;
+    out property <bool> focused: sw.has-focus;
+    public function focus-switch() { sw.focus(); }
+    sw := FocusScope {
+        enabled: root.shown;
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Return || ev.text == " " { Dialog.clash-same = !Dialog.clash-same; return accept; }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.shown;
+        mouse-cursor: pointer;
+        clicked => { Dialog.clash-same = !Dialog.clash-same; }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        Switch {
+            y: (parent.height - self.height) / 2;
+            checked: Dialog.clash-same;
+            label: root.label;
+            hovered: ta.has-hover;
+            zone: "dialog";
+            toggled => { Dialog.clash-same = !Dialog.clash-same; }
+        }
+        Text { text: root.label; font-size: Theme.font-body; color: Theme.text; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    }
+    FocusRing { shown: sw.has-focus; radius: Theme.radius-control; }
+}
+
+// A playlist name another playlist has already (playlists/nameclash.rs): never settled silently. In
+// the middle of the window, over a dimmed page: what clashes, how many tracks each has, what
+// the choices do; Replace (only where something can be replaced: an imported file over an
+// ordinary playlist), Keep both (the newcomer takes "Name (2)"; it has the keyboard, Enter on
+// it) and Cancel (Esc, or a click outside). While more clashes of the same import are to
+// come, a switch makes the answer stand for them too. Tab goes round its controls.
+export component ClashPrompt inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: window-width;
+    height: window-height;
+    private property <bool> rest-shown: Dialog.clash-rest > 0;
+    // The stops in order: the switch (when shown), Cancel, Replace (when offered), Keep both.
+    function stop-shown(i: int) -> bool {
+        return (i != 0 || root.rest-shown) && (i != 2 || Dialog.clash-can-replace);
+    }
+    function cycle(d: int) {
+        let at = same.focused ? 0 : cancel.focused ? 1 : replace.focused ? 2 : 3;
+        let n1 = mod(at + d + 4, 4);
+        let n2 = mod(n1 + d + 4, 4);
+        let n3 = mod(n2 + d + 4, 4);
+        let next = root.stop-shown(n1) ? n1 : root.stop-shown(n2) ? n2 : n3;
+        if next == 0 {
+            same.focus-switch();
+        } else if next == 1 {
+            cancel.focus-button();
+        } else if next == 2 {
+            replace.focus-button();
+        } else {
+            keep.focus-button();
+        }
+    }
+    Rectangle { background: #00000070; }
+    // Anywhere outside: cancels. The wheel does nothing under it.
+    TouchArea {
+        pointer-event(ev) => {
+            if ev.kind == PointerEventKind.down { Actions.clash-choose(0, false); }
+        }
+        scroll-event(ev) => { accept }
+    }
+    FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(ev) => {
+            if ev.text == Key.Escape { Actions.clash-choose(0, false); return accept; }
+            if ev.text == Key.Tab { root.cycle(1); return accept; }
+            if ev.text == Key.Backtab { root.cycle(-1); return accept; }
+            accept
+        }
+        Panel {
+            width: min(480px, root.width - 32px);
+            height: lay.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            accessible-role: groupbox;
+            accessible-label: Dialog.clash-title;
+            lay := VerticalLayout {
+                padding: 20px;
+                padding-bottom: 16px;
+                spacing: 10px;
+                Text {
+                    text: Dialog.clash-title;
+                    font-size: Theme.font-title;
+                    font-weight: 700;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                    accessible-role: none;
+                }
+                Text {
+                    text: Dialog.clash-text;
+                    font-size: Theme.font-body;
+                    color: Theme.text;
+                    wrap: word-wrap;
+                    accessible-role: text;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    accessible-role: text;
+                    accessible-label: Dialog.clash-note;
+                    Icon {
+                        y: 0px;
+                        width: 16px;
+                        height: 16px;
+                        glyph: Icons.info;
+                        color: Theme.accent;
+                    }
+                    Text {
+                        text: Dialog.clash-note;
+                        font-size: Theme.font-small;
+                        color: Theme.text-dim;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                        accessible-role: none;
+                    }
+                }
+                HorizontalLayout {
+                    visible: root.rest-shown;
+                    height: root.rest-shown ? 28px : 0px;
+                    spacing: 10px;
+                    same := ClashSwitch {
+                        shown: root.rest-shown;
+                        label: Dialog.clash-rest == 1 ? "Do the same for the next clash" : "Do the same for the next " + Dialog.clash-rest + " clashes";
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    padding-top: 4px;
+                    cancel := TextButton { text: "Cancel"; zone: "dialog"; clicked => { Actions.clash-choose(0, Dialog.clash-same); } }
+                    replace := TextButton {
+                        visible: Dialog.clash-can-replace;
+                        width: Dialog.clash-can-replace ? self.min-width : 0px;
+                        tabbable: Dialog.clash-can-replace;
+                        text: "Replace";
+                        zone: "dialog";
+                        clicked => { Actions.clash-choose(1, Dialog.clash-same); }
+                    }
+                    keep := TextButton { text: "Keep both"; primary: true; zone: "dialog"; clicked => { Actions.clash-choose(2, Dialog.clash-same); } }
+                }
+            }
+        }
+    }
+    private property <int> shown: Dialog.clash-shown;
+    changed shown => { keep.focus-button(); }
+    init => { keep.focus-button(); }
+}

@@ -1,0 +1,39 @@
+[package]
+name = "library"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+lofty.workspace = true
+image.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Demuxing only (no decoders run here): `edit` compares a file's audio packets before and
+# after a tag edit. The same crate and features the player uses.
+symphonia.workspace = true
+# NFC for comparing names (`names::norm`); already in the tree through Slint's text stack.
+icu_normalizer = "2.4.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security"] }
+
+# Linux and macOS: inotify (Linux), rename(2) with what the original had, statvfs, thread
+# priority.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# macOS: FSEvents for watching folders (`dirwatch/fsevents.rs`), on a dispatch queue. The objc2
+# bindings are plain Rust declarations of the system frameworks (no SDK or bindgen at build).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString", "CFArray"] }
+objc2-core-services = { version = "0.3.2", default-features = false, features = ["std", "FSEvents", "dispatch2"] }
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# The tag editor's tests decode a file through the player's own source while saving it.
+player-core = { path = "../player-core" }

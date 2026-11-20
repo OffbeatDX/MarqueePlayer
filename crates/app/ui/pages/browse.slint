@@ -1,0 +1,293 @@
+// The library's browsing pages: Albums, a shelf's See all, Artists, the genre and decade
+// groups, and Tracks.
+
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { AlbumCard, Page } from "../types.slint";
+import { Nav, Grid, Actions, ShelfPage, Focus, Browse, TrackPage, Dialog } from "../stores.slint";
+import { ScrollDriver } from "../autoscroll.slint";
+import { Icons, IconButton, TextButton, AlbumTile, SectionTitle, LineField } from "../widgets.slint";
+import { ListKeys, LongTrackList } from "../lists.slint";
+
+// ---- Home ----------------------------------------------------------------------
+
+// What a cover list opens: "album" (by id), "artist" (by name), "group" (a genre or
+// label, by name).
+global Tiles {
+    public function open(kind: string, card: AlbumCard) {
+        if kind == "artist" {
+            Actions.open-artist-at(card.id);
+        } else if kind == "group" {
+            Actions.open-group(card.title);
+        } else {
+            Actions.open-album(card.id);
+        }
+    }
+}
+
+// ---- All albums (virtualised grid) -----------------------------------------------
+
+// A page-wide virtualised grid of covers under a title: the Albums page, a shelf's full
+// page, the Artists and Genres pages. Header controls go after the subtitle (@children).
+component AlbumGridView inherits Rectangle {
+    // A dialog (name prompt, View metadata) opened from this list's keys: the focus comes
+    // back here when it closes.
+    private property <bool> dialog-return;
+    private property <bool> dialog-open: Dialog.open;
+    changed dialog-open => {
+        if !self.dialog-open && self.dialog-return {
+            self.dialog-return = false;
+            fs.focus();
+        }
+    }
+    in property <string> title;
+    in property <string> subtitle;
+    in property <[AlbumCard]> albums;
+    in property <int> count;
+    in property <bool> random;
+    // What the tiles are: "album", "artist" (round) or "group" (a genre or a label).
+    in property <string> kind: "album";
+    // Shown when there is nothing (a filter that matches nothing).
+    in property <string> empty-text;
+    in-out property <length> scroll;
+    callback reshuffle();
+    public function focus-grid() { fs.focus(); }
+    private property <length> gap: 24px;
+    private property <length> inner-w: self.width - 2 * Theme.page-margin;
+    private property <int> cols: max(1, floor((inner-w + gap) / (Theme.cover-size + gap)));
+    private property <length> step: (inner-w + gap) / cols;
+    private property <length> row-h: Theme.cover-size + 50px + gap;
+    private property <int> cursor;
+    private property <int> at: min(root.cursor, root.count - 1);
+    // The rows on screen, less the player bar over the bottom.
+    private property <length> view-h: list.visible-height - Theme.bar-height;
+    function reveal() {
+        let top = floor(root.at / root.cols) * root.row-h;
+        if top + root.scroll < 0 {
+            root.scroll = -top;
+        } else if top + root.row-h - root.gap + root.scroll > root.view-h {
+            root.scroll = min(0px, root.view-h - top - root.row-h + root.gap);
+        }
+    }
+    function activate() {
+        Tiles.open(root.kind, root.albums[root.at]);
+    }
+    VerticalLayout {
+        Rectangle {
+            height: Theme.page-top + 56px;
+            HorizontalLayout {
+                x: Theme.page-margin;
+                y: Theme.page-top;
+                width: parent.width - 2 * Theme.page-margin;
+                height: 56px;
+                spacing: 24px;
+                alignment: start;
+                SectionTitle {
+                    text: root.title;
+                    font-size: Theme.font-display;
+                    font-weight: 800;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.subtitle;
+                    color: Theme.text-dim;
+                    font-size: Theme.font-body;
+                    vertical-alignment: center;
+                }
+                if root.random: VerticalLayout {
+                    alignment: center;
+                    TextButton { text: "Reshuffle"; glyph: Icons.shuffle; clicked => { root.reshuffle(); } }
+                }
+            }
+            // The page's own controls, at the right of the title row.
+            HorizontalLayout {
+                x: Theme.page-margin;
+                y: Theme.page-top;
+                width: parent.width - 2 * Theme.page-margin;
+                height: 56px;
+                spacing: 12px;
+                alignment: end;
+                @children
+            }
+        }
+        Rectangle {
+            accessible-role: AccessibleRole.list;
+            accessible-label: root.title;
+            accessible-delegate-focus: root.at;
+            accessible-item-count: root.count;
+            fs := FocusScope {
+                focus-lost => {
+                    if Dialog.open { root.dialog-return = true; Dialog.returns = true; }
+                }
+                enabled: root.count > 0;
+                focus-on-click: false;
+                key-pressed(ev) => {
+                    if ListKeys.to-menu(ev) { return accept; }
+                    if root.count == 0 { return reject; }
+                    if ListKeys.enter(ev) { root.activate(); return accept; }
+                    if ListKeys.menu-key(ev) {
+                        if root.kind == "album" {
+                            Actions.menu-request-keys("album", "", 0, root.albums[root.at].id,
+                                self.absolute-position.x + Theme.page-margin + mod(root.at, root.cols) * root.step + Theme.cover-size / 2,
+                                self.absolute-position.y + floor(root.at / root.cols) * root.row-h + root.scroll + Theme.cover-size / 2);
+                        }
+                        return accept;
+                    }
+                    if ev.modifiers.control || ev.modifiers.alt { return reject; }
+                    let n = Actions.list-key(ev.text, root.at, root.count, 2, root.cols, max(1, floor(root.view-h / root.row-h)));
+                    if n >= 0 { root.cursor = n; root.reveal(); return accept; }
+                    reject
+                }
+                focus-gained => {
+                    Focus.zone = "";
+                    root.cursor = max(0, root.at);
+                    root.reveal();
+                }
+            }
+            list := ListView {
+                content-y <=> root.scroll;
+                // One ListView row holds `cols` covers: Slint has no grid, and ListView only
+                // instantiates the rows on screen, so a few thousand albums stay cheap. One
+                // empty row at the end keeps the last covers clear of the player bar; it is as
+                // tall as the others, as ListView estimates its height from the rows it has
+                // made (a shorter row threw the estimate off after a jump to the end, and the
+                // grid drew nothing).
+                for r in ceil(root.count / root.cols) + 1: Rectangle {
+                    height: root.row-h;
+                    for c in root.cols: AlbumTile {
+                        property <int> idx: r * root.cols + c;
+                        x: Theme.page-margin + c * root.step;
+                        // Room for the focus ring and the hover lift.
+                        y: 4px;
+                        visible: idx < root.count;
+                        album: idx < root.count ? root.albums[idx] : { id: -1 };
+                        index: idx;
+                        group: root.kind != "album";
+                        round: root.kind == "artist";
+                        focused: fs.has-focus && idx == root.at;
+                        open => { Tiles.open(root.kind, self.album); }
+                        play => { Actions.play-album(self.album.id); }
+                        open-artist => { Actions.open-artist(self.album.artist); }
+                    }
+                }
+            }
+            ScrollDriver {
+                area-x: list.absolute-position.x;
+                area-y: list.absolute-position.y;
+                area-width: list.visible-width;
+                area-height: list.visible-height;
+                content-width: list.content-width;
+                content-height: list.content-height;
+                content-y <=> list.content-y;
+            }
+            if root.count == 0 && root.empty-text != "": Text {
+                x: Theme.page-margin;
+                y: 8px;
+                text: root.empty-text;
+                font-size: Theme.font-title;
+                color: Theme.text-dim;
+            }
+        }
+    }
+}
+
+export component AlbumsPage inherits Rectangle {
+    view := AlbumGridView {
+        title: "Albums";
+        subtitle: Grid.filter != "" ? Grid.count + " of " + Grid.total + " albums" : Grid.total + " albums";
+        albums: Grid.albums;
+        count: Grid.count;
+        scroll <=> Grid.content-y;
+        empty-text: Grid.filter != "" ? "No albums match “" + Grid.filter + "”" : "";
+        // Narrows the grid as you type (title, artist); Enter goes to the covers, Esc clears.
+        VerticalLayout {
+            alignment: center;
+            LineField {
+                width: 240px;
+                text <=> Grid.filter;
+                placeholder: "Filter albums";
+                edited(t) => { Actions.grid-filter(t); }
+                accepted => { view.focus-grid(); }
+                escape => { Grid.filter = ""; Actions.grid-filter(""); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            TextButton {
+                text: "Sort: " + Grid.sort-label;
+                label: "Sort by " + Grid.sort-label;
+                clicked => { Actions.grid-sort-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                glyph: Grid.descending ? Icons.down : Icons.up;
+                tooltip: Grid.descending ? "Descending" : "Ascending";
+                label: Grid.descending ? "Descending, change to ascending" : "Ascending, change to descending";
+                clicked => { Actions.grid-toggle-direction(); }
+            }
+        }
+    }
+}
+
+// A home shelf in full ("See all"), a genre's or label's albums, a search's albums.
+export component ShelfAllPage inherits Rectangle {
+    AlbumGridView {
+        title: ShelfPage.title;
+        subtitle: ShelfPage.count == 1 ? "1 album" : ShelfPage.count + " albums";
+        albums: ShelfPage.albums;
+        count: ShelfPage.count;
+        random: ShelfPage.random;
+        scroll <=> Nav.page-scroll;
+        reshuffle => { Actions.shelf-page-reshuffle(); }
+    }
+}
+
+// ---- Browse -------------------------------------------------------------------------
+
+// Every album artist (or an artist search in full), each with a cover of one of theirs.
+export component ArtistsPage inherits Rectangle {
+    AlbumGridView {
+        title: Browse.artists-title;
+        subtitle: Browse.artists-count == 1 ? "1 artist" : Browse.artists-count + " artists";
+        albums: Browse.artists;
+        count: Browse.artists-count;
+        kind: "artist";
+        scroll <=> Nav.page-scroll;
+    }
+}
+
+// Genres, or labels: each opens its albums.
+export component GroupsPage inherits Rectangle {
+    in property <bool> labels;
+    AlbumGridView {
+        title: root.labels ? "Labels" : "Genres";
+        subtitle: Browse.groups-count == 1 ? (root.labels ? "1 label" : "1 genre") : Browse.groups-count + (root.labels ? " labels" : " genres");
+        albums: Browse.groups;
+        count: Browse.groups-count;
+        kind: "group";
+        scroll <=> Nav.page-scroll;
+        empty-text: root.labels ? "No album has a label tag." : "No album has a genre tag.";
+        VerticalLayout {
+            alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+                TextButton { text: "Genres"; primary: !root.labels; clicked => { Nav.go(Page.genres); } }
+                TextButton { text: "Labels"; primary: root.labels; clicked => { Nav.go(Page.labels); } }
+            }
+        }
+    }
+}
+
+// A search's tracks in full ("See all").
+export component TracksPage inherits Rectangle {
+    LongTrackList {
+        tracks: TrackPage.tracks;
+        ctx: "tracks";
+        label: TrackPage.title;
+        Text { text: TrackPage.title; font-size: Theme.font-display; font-weight: 800; color: Theme.text; }
+        Text { text: TrackPage.info; font-size: Theme.font-body; color: Theme.text-dim; }
+    }
+}

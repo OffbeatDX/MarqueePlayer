@@ -1,0 +1,24 @@
+// What the Settings sections share: a section's and a service's heading.
+
+import { Theme } from "../../theme.slint";
+
+// A section's name at the top of the column, with what it is for.
+export component SectionHead inherits VerticalLayout {
+    in property <string> title;
+    in property <string> blurb;
+    spacing: 4px;
+    padding-bottom: 4px;
+    Text { text: root.title; font-size: Theme.font-heading; font-weight: 700; color: Theme.text; accessible-role: none; }
+    if root.blurb != "": Text { text: root.blurb; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+}
+
+// ---- Library -------------------------------------------------------------------
+
+// One service of a section (Library's server, Connections): its name and what connecting it does.
+export component ServiceHead inherits VerticalLayout {
+    in property <string> title;
+    in property <string> blurb;
+    spacing: 3px;
+    Text { text: root.title; font-size: Theme.font-title; font-weight: 700; color: Theme.text; accessible-role: none; }
+    Text { text: root.blurb; font-size: Theme.font-small; color: Theme.text-faint; wrap: word-wrap; }
+}

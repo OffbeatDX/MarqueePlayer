@@ -1,0 +1,591 @@
+# The desktop app's release (docs/releases.md, "Version and releases"): `cargo xtask release` on Windows
+# (the portable zip and the installer), on Ubuntu 22.04 (the AppImage, glibc 2.35) and on macOS
+# (the disk image, Apple Silicon), after the checks (desktop.yml) have passed for the commit on
+# those systems. The packages and their debug symbols are uploaded as this run's artifacts,
+# with the names the release gave them. A tag's run then makes a draft GitHub release with the
+# packages; nothing is public until the owner publishes that draft. Nothing is signed beyond
+# macOS' ad-hoc signature, which Apple Silicon requires.
+#
+# The release number (YYYY.M.D.count) is made by crates/app/build.rs from state files that a
+# fresh checkout does not have, so on its own every CI release would be today's count 1. A tag
+# names the number instead: pushing v2026.11.19.2 builds 2026.11.19.2, on that day (UTC: the
+# runners' clock), and the run fails if the build came out with any other number. By hand
+# (Actions > Release > Run workflow) the number may be given; without one it is today's .1.
+#
+# A tag builds all three systems. By hand, each can be left out (a macOS runner's minute costs
+# ten Linux ones on a private repository); the checks run on the systems built, and the
+# number comparison compares those.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9][0-9][0-9][0-9].[0-9]*.[0-9]*.[0-9]*"
+  workflow_dispatch:
+    inputs:
+      release-number:
+        description: "The release number to build (YYYY.M.D.count, today's UTC date); empty: today's .1"
+        type: string
+        default: ""
+      windows:
+        description: "Windows: the portable zip and the installer"
+        type: boolean
+        default: true
+      linux:
+        description: "Linux: the AppImage"
+        type: boolean
+        default: true
+      macos:
+        description: "macOS: the disk image (Apple Silicon)"
+        type: boolean
+        default: true
+      android:
+        description: "Android: the signed APK (needs the four MARQUEE_* signing secrets)"
+        type: boolean
+        default: true
+      skip-checks:
+        description: "A test build: package without running the checks first (never for a release to publish)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never cancel a release half made; a second one for the same ref waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # The systems to build and the number the release must get, from the tag or the inputs,
+  # checked before anything builds.
+  number:
+    name: Release number
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      expected: ${{ steps.n.outputs.expected }}
+      seed: ${{ steps.n.outputs.seed }}
+      windows: ${{ steps.s.outputs.windows }}
+      linux: ${{ steps.s.outputs.linux }}
+      macos: ${{ steps.s.outputs.macos }}
+      systems: ${{ steps.s.outputs.systems }}
+    steps:
+      # A tag builds everything; a run by hand what was ticked.
+      - id: s
+        env:
+          EVENT: ${{ github.event_name }}
+          WINDOWS: ${{ inputs.windows }}
+          LINUX: ${{ inputs.linux }}
+          MACOS: ${{ inputs.macos }}
+        run: |
+          # (Read below by name, ${!v}.)
+          # shellcheck disable=SC2034
+          if [ "$EVENT" != workflow_dispatch ]; then WINDOWS=true LINUX=true MACOS=true; fi
+          systems=()
+          for s in windows linux macos; do
+            v=${s^^}; on=${!v}
+            [ "$on" = true ] || on=false
+            echo "$s=$on" >> "$GITHUB_OUTPUT"
+            if [ "$on" = true ]; then systems+=("$s"); fi
+          done
+          if [ ${#systems[@]} -eq 0 ]; then
+            echo "::error::no system chosen: tick Windows, Linux or macOS"; exit 1
+          fi
+          list=$(IFS=,; echo "${systems[*]}")
+          echo "systems=$list" >> "$GITHUB_OUTPUT"
+          echo "Building for $list."
+
+      - id: n
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT: ${{ inputs.release-number }}
+        run: |
+          want=""
+          if [ "$REF_TYPE" = tag ]; then want=${REF_NAME#v}; else want=$INPUT; fi
+          if [ -z "$want" ]; then
+            echo "No release number given: this build is numbered today's (UTC) .1, as a fresh checkout is."
+            exit 0
+          fi
+          # build.rs writes the date without leading zeros: 2026.1.5.3.
+          if ! [[ "$want" =~ ^([0-9]{4}\.[1-9][0-9]?\.[1-9][0-9]?)\.([1-9][0-9]{0,4})$ ]]; then
+            echo "::error::$want is not a release number (YYYY.M.D.count, no leading zeros)"; exit 1
+          fi
+          day=${BASH_REMATCH[1]} count=${BASH_REMATCH[2]}
+          today=$(date -u +%Y.%-m.%-d)
+          if [ "$day" != "$today" ]; then
+            echo "::error::$want is not dated today: build.rs numbers a release by the day it is built ($today, UTC, on the runners)"; exit 1
+          fi
+          echo "expected=$want" >> "$GITHUB_OUTPUT"
+          # crates/app/.build-version as build.rs reads it ("YYYY.M.D count fingerprint"): a
+          # fingerprint that matches no source, so the build takes the count after this one.
+          echo "seed=$day $((count - 1)) ci-seed" >> "$GITHUB_OUTPUT"
+          echo "This release is $want."
+
+  # The checks on the systems this release builds (macOS only when it is one of them).
+  checks:
+    name: Checks
+    needs: number
+    # Left out only when a run by hand asks for a test build (a tag's run has no such input).
+    if: ${{ !inputs.skip-checks }}
+    uses: ./.github/workflows/desktop.yml
+    with:
+      systems: ${{ needs.number.outputs.systems }}
+
+  windows:
+    name: Windows (zip and installer)
+    needs: [checks, number]
+    if: ${{ !cancelled() && needs.number.result == 'success' && needs.number.outputs.windows == 'true' && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
+    runs-on: windows-latest
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.built.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The toolchain rust-toolchain.toml names, with its components.
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --component clippy,rustfmt
+          rustup default "$toolchain"
+          rustc --version
+
+      # Inno Setup 6.3 or newer, where its installer puts it (cargo xtask release finds it there):
+      # on the image already (6.7.1 in November 2026), installed if a later image drops it.
+      # The Visual C++ runtime DLLs the zip carries come from the image's Visual Studio.
+      - name: Inno Setup
+        run: |
+          if [ -f "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" ]; then
+            echo "Inno Setup 6 is installed"
+          else
+            choco install innosetup --no-progress -y
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref_name == github.event.repository.default_branch }}
+
+      - name: Release number state
+        if: needs.number.outputs.seed != ''
+        env:
+          SEED: ${{ needs.number.outputs.seed }}
+        run: printf '%s\n' "$SEED" > crates/app/.build-version
+
+      # The tests and clippy ran in the checks job, for this commit.
+      - name: cargo xtask release
+        run: cargo xtask release --skip-checks
+
+      - name: The number it was given
+        id: built
+        env:
+          EXPECTED: ${{ needs.number.outputs.expected }}
+        run: |
+          ver=$(tr -d '\r\n ' < crates/app/.app-version)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXPECTED" ] && [ "$ver" != "$EXPECTED" ]; then
+            echo "::error::built as $ver, not $EXPECTED"; exit 1
+          fi
+          echo "Built Marquee Player $ver"
+
+      - name: Upload the portable zip
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-portable.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-setup.exe
+          archive: false
+          if-no-files-found: error
+
+      # The exe and its PDB, to resolve a crash address from a user's log; never shipped.
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: MarqueePlayer-${{ steps.built.outputs.version }}-windows-symbols
+          path: |
+            dist/symbols/${{ steps.built.outputs.version }}/MarqueePlayer.exe
+            dist/symbols/${{ steps.built.outputs.version }}/MarqueePlayer.pdb
+          if-no-files-found: error
+
+  linux:
+    name: Linux (AppImage)
+    needs: [checks, number]
+    if: ${{ !cancelled() && needs.number.result == 'success' && needs.number.outputs.linux == 'true' && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
+    # The release baseline: the AppImage needs the glibc of the system it is built on (2.35).
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.built.outputs.version }}
+    env:
+      # In the checkout, where the cache finds it (by default the release builds in
+      # ~/.cache/mp-release-target, for WSL's sake).
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The toolchain rust-toolchain.toml names, with its components.
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --component clippy,rustfmt
+          rustup default "$toolchain"
+          rustc --version
+
+      # docs/linux.md, "Building", without the PipeWire packages (22.04's 0.3.48 is too old to
+      # build against), what pipewire-sdk.sh needs (meson, ninja, libdbus), and what the release
+      # checks for and packages (docs/releases.md, "Version and releases", step 1).
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config clang libclang-dev libasound2-dev \
+            libfontconfig1-dev libfreetype-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
+            meson ninja-build libdbus-1-dev \
+            desktop-file-utils appstream patchelf binutils curl \
+            libxkbcommon-x11-0 libxcb-xkb1 fonts-dejavu-core
+
+      # PipeWire 0.3.65's library and headers, built once into ~/.local/share/mp-build
+      # (where the release looks), for building only.
+      - name: Cache the PipeWire SDK
+        uses: actions/cache@v6
+        with:
+          path: ~/.local/share/mp-build/pipewire-0.3.65
+          key: pipewire-sdk-ubuntu-22.04-${{ hashFiles('packaging/linux/pipewire-sdk.sh') }}
+
+      # Does nothing when the cache brought it.
+      - name: PipeWire SDK
+        run: packaging/linux/pipewire-sdk.sh
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref_name == github.event.repository.default_branch }}
+
+      - name: Release number state
+        if: needs.number.outputs.seed != ''
+        env:
+          SEED: ${{ needs.number.outputs.seed }}
+        run: printf '%s\n' "$SEED" > crates/app/.build-version
+
+      - name: cargo xtask release
+        run: cargo xtask release --skip-checks
+
+      - name: The number it was given
+        id: built
+        env:
+          EXPECTED: ${{ needs.number.outputs.expected }}
+        run: |
+          ver=$(tr -d '\r\n ' < crates/app/.app-version)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXPECTED" ] && [ "$ver" != "$EXPECTED" ]; then
+            echo "::error::built as $ver, not $EXPECTED"; exit 1
+          fi
+          echo "Built Marquee Player $ver"
+
+      # As is, not zipped (downloads lose the executable bit: chmod +x it).
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-x86_64.AppImage
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: MarqueePlayer-${{ steps.built.outputs.version }}-linux-symbols
+          path: dist/symbols/${{ steps.built.outputs.version }}/linux/
+          if-no-files-found: error
+
+  macos:
+    name: macOS (disk image)
+    needs: [checks, number]
+    if: ${{ !cancelled() && needs.number.result == 'success' && needs.number.outputs.macos == 'true' && (needs.checks.result == 'success' || needs.checks.result == 'skipped') }}
+    # Apple Silicon: the package is arm64 only (docs/macos.md, "The package").
+    runs-on: macos-latest
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.built.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The toolchain rust-toolchain.toml names, with its components.
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          toolchain=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$toolchain" --profile minimal --component clippy,rustfmt
+          rustup default "$toolchain"
+          rustc --version
+
+      # The Xcode command line tools (codesign, hdiutil, dsymutil, strip, otool) are on the
+      # image; CMake (libopus) too, installed if a later image drops it.
+      - name: CMake
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          cmake --version | head -n 1
+          xcode-select -p
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref_name == github.event.repository.default_branch }}
+
+      - name: Release number state
+        if: needs.number.outputs.seed != ''
+        env:
+          SEED: ${{ needs.number.outputs.seed }}
+        run: printf '%s\n' "$SEED" > crates/app/.build-version
+
+      - name: cargo xtask release
+        run: cargo xtask release --skip-checks
+
+      - name: The number it was given
+        id: built
+        env:
+          EXPECTED: ${{ needs.number.outputs.expected }}
+        run: |
+          ver=$(tr -d '\r\n ' < crates/app/.app-version)
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          if [ -n "$EXPECTED" ] && [ "$ver" != "$EXPECTED" ]; then
+            echo "::error::built as $ver, not $EXPECTED"; exit 1
+          fi
+          echo "Built Marquee Player $ver"
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-macos-arm64.dmg
+          archive: false
+          if-no-files-found: error
+
+      # The unstripped binary and its .dSYM, to symbolicate a crash report; never shipped.
+      - name: Upload the debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: MarqueePlayer-${{ steps.built.outputs.version }}-macos-symbols
+          path: dist/symbols/${{ steps.built.outputs.version }}/macos/
+          if-no-files-found: error
+
+  # The Android app's signed APK, with the release's number as its version (android/README.md,
+  # "Versions"): on a tag, and by hand unless left out. The key comes from the repository's
+  # four MARQUEE_* secrets and is written to the runner's temporary folder for the build only.
+  # Without the secrets there is no APK, and the release is made without one. The Android
+  # workflow (android.yml) runs the app's tests and lint for the same tag.
+  android:
+    name: Android (signed APK)
+    needs: number
+    if: ${{ github.ref_type == 'tag' || inputs.android }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      apk: ${{ steps.built.outputs.apk }}
+      version: ${{ steps.version.outputs.version }}
+    env:
+      HAS_KEY: ${{ secrets.MARQUEE_KEYSTORE_BASE64 != '' && secrets.MARQUEE_KEYSTORE_PASSWORD != '' && secrets.MARQUEE_KEY_ALIAS != '' && secrets.MARQUEE_KEY_PASSWORD != '' }}
+    steps:
+      - name: No signing secrets
+        if: ${{ env.HAS_KEY != 'true' }}
+        run: echo "::warning::The MARQUEE_* signing secrets are not configured, so this release has no Android APK."
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - if: ${{ env.HAS_KEY == 'true' }}
+        uses: gradle/actions/setup-gradle@v4
+
+      # The tag's number, or the one given by hand; without one, today's (UTC) .1, as the
+      # desktop builds number themselves.
+      - name: Version
+        id: version
+        if: ${{ env.HAS_KEY == 'true' }}
+        env:
+          EXPECTED: ${{ needs.number.outputs.expected }}
+        run: |
+          version=${EXPECTED:-$(date -u +%Y.%-m.%-d).1}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Marquee Player for Android $version"
+
+      - name: Signed release APK
+        id: built
+        if: ${{ env.HAS_KEY == 'true' }}
+        working-directory: android
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          KEYSTORE_BASE64: ${{ secrets.MARQUEE_KEYSTORE_BASE64 }}
+          MARQUEE_KEYSTORE_PASSWORD: ${{ secrets.MARQUEE_KEYSTORE_PASSWORD }}
+          MARQUEE_KEY_ALIAS: ${{ secrets.MARQUEE_KEY_ALIAS }}
+          MARQUEE_KEY_PASSWORD: ${{ secrets.MARQUEE_KEY_PASSWORD }}
+        run: |
+          export MARQUEE_KEYSTORE_FILE="$RUNNER_TEMP/release.jks"
+          trap 'rm -f "$MARQUEE_KEYSTORE_FILE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$MARQUEE_KEYSTORE_FILE"
+          ./gradlew :app:assembleRelease "-Pmarquee.version=$VERSION" --console=plain
+          out=app/build/outputs/apk/release
+          if ls "$out"/*unsigned*.apk >/dev/null 2>&1; then
+            echo "::error::The release came out unsigned"; exit 1
+          fi
+          # Named as the desktop packages are.
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$out/marquee-player-$VERSION-release.apk" "$GITHUB_WORKSPACE/dist/MarqueePlayer-$VERSION-android.apk"
+          echo "apk=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the APK
+        if: ${{ env.HAS_KEY == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/MarqueePlayer-${{ steps.version.outputs.version }}-android.apk
+          archive: false
+          if-no-files-found: error
+
+  # The builds of one release must carry one number (they could differ across midnight UTC).
+  # It runs whatever the builds' outcome, so that a build chosen but failed or skipped fails
+  # the run here too, and compares only the systems chosen.
+  same-number:
+    name: Same release number
+    needs: [number, windows, linux, macos]
+    if: ${{ !cancelled() && needs.number.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.same.outputs.version }}
+    steps:
+      - id: same
+        env:
+          WINDOWS_ON: ${{ needs.number.outputs.windows }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          WINDOWS: ${{ needs.windows.outputs.version }}
+          LINUX_ON: ${{ needs.number.outputs.linux }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          LINUX: ${{ needs.linux.outputs.version }}
+          MACOS_ON: ${{ needs.number.outputs.macos }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          MACOS: ${{ needs.macos.outputs.version }}
+        run: |
+          failed=0 first="" lines=()
+          for s in WINDOWS LINUX MACOS; do
+            on=${s}_ON result=${s}_RESULT
+            [ "${!on}" = true ] || continue
+            if [ "${!result}" != success ] || [ -z "${!s}" ]; then
+              echo "::error::${s,,} was to be built, but its job ended as ${!result}"; failed=1; continue
+            fi
+            lines+=("${s,,}: ${!s}")
+            if [ -z "$first" ]; then first=${!s}
+            elif [ "${!s}" != "$first" ]; then failed=1; fi
+          done
+          printf '%s\n' "${lines[@]}"
+          if [ "$failed" = 1 ]; then
+            echo "::error::not every system chosen built the same number (above): run the release again"; exit 1
+          fi
+          echo "version=$first" >> "$GITHUB_OUTPUT"
+          echo "### Marquee Player $first" >> "$GITHUB_STEP_SUMMARY"
+          printf -- '- %s\n' "${lines[@]}" >> "$GITHUB_STEP_SUMMARY"
+
+  # A tag's release becomes a DRAFT GitHub release with every package attached (not the
+  # symbols, which hold the build machines' paths and stay this run's artifacts) and notes
+  # generated from the commits; the owner reads it and publishes it, or not. A draft made by
+  # an earlier run for the tag gets this run's files instead; a published release is never
+  # changed. Runs by hand stop at the artifacts. The one job that may write to the repository.
+  publish:
+    name: Draft GitHub release
+    needs: [number, same-number, android]
+    # Not when the APK's build failed (a release without the secrets has none, and is made).
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.same-number.result == 'success' && needs.android.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # As it was uploaded: the action would otherwise unpack a zip it is handed.
+      - name: Download the portable zip
+        uses: actions/download-artifact@v8
+        with:
+          name: MarqueePlayer-${{ needs.same-number.outputs.version }}-portable.zip
+          path: packages
+          skip-decompress: true
+      - name: Download the installer
+        uses: actions/download-artifact@v8
+        with:
+          name: MarqueePlayer-${{ needs.same-number.outputs.version }}-setup.exe
+          path: packages
+      - name: Download the AppImage
+        uses: actions/download-artifact@v8
+        with:
+          name: MarqueePlayer-${{ needs.same-number.outputs.version }}-x86_64.AppImage
+          path: packages
+      - name: Download the disk image
+        uses: actions/download-artifact@v8
+        with:
+          name: MarqueePlayer-${{ needs.same-number.outputs.version }}-macos-arm64.dmg
+          path: packages
+
+      - name: Download the Android APK
+        if: needs.android.outputs.apk == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: MarqueePlayer-${{ needs.android.outputs.version }}-android.apk
+          path: packages
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ needs.android.outputs.apk }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.same-number.outputs.version }}
+        run: |
+          ls -l packages
+          # The packages by name (the APK too when one was built), and nothing else (a package
+          # unpacked, a file missing).
+          suffixes=(portable.zip setup.exe x86_64.AppImage macos-arm64.dmg)
+          if [ "$APK" = true ]; then suffixes+=(android.apk); fi
+          files=()
+          for suffix in "${suffixes[@]}"; do
+            f="packages/MarqueePlayer-$VERSION-$suffix"
+            [ -f "$f" ] || { echo "::error::$f is missing"; exit 1; }
+            files+=("$f")
+          done
+          found=(packages/*)
+          if [ ${#found[@]} -ne ${#files[@]} ]; then
+            echo "::error::expected the ${#files[@]} packages alone, found ${#found[@]} files"; exit 1
+          fi
+          # gh finds a draft by its tag name too.
+          if draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::error::the release $TAG is published already; its files are left as they are"; exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+            echo "The draft release $TAG has this run's packages."
+          else
+            gh release create "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "Marquee Player $VERSION" --generate-notes
+            echo "Draft release $TAG made: publish it from the repository's Releases page."
+          fi
+          echo "Draft release: Marquee Player $VERSION ($TAG), not yet public." >> "$GITHUB_STEP_SUMMARY"

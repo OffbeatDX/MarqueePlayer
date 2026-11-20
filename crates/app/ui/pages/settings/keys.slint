@@ -1,0 +1,248 @@
+// Settings > Keys.
+
+import { Theme } from "../../theme.slint";
+import { Actions, Focus, Keys, SettingsView } from "../../stores.slint";
+import { Icons, IconButton, TextButton, FocusRing, SettingCard, Hairline } from "../../widgets.slint";
+import { SectionHead } from "parts.slint";
+
+// ---- Settings ------------------------------------------------------------------
+
+component KeyCap inherits Rectangle {
+    in property <string> text;
+    height: 26px;
+    width: max(64px, t.preferred-width + 20px);
+    border-radius: 6px;
+    background: Theme.surface-hi;
+    border-width: 1px;
+    border-color: Theme.border;
+    t := Text { text: root.text; font-size: Theme.font-small; font-weight: 600; color: Theme.text; }
+}
+
+// A key of Settings > Keys: shows the action's key as a key cap; activated (click, or
+// Enter while focused) it waits for the next key press, which it hands to Rust
+// (keys/edit.rs) whatever it is: Tab, Esc and the shortcuts' keys included. Leaving it
+// while waiting cancels.
+component KeyButton inherits Rectangle {
+    in property <string> text;
+    // How a screen reader says the key ("Ctrl+Left").
+    in property <string> spoken;
+    // The action, for the screen reader.
+    in property <string> what;
+    in property <bool> capturing;
+    callback start();
+    height: 30px;
+    width: max(76px, t.preferred-width + 24px);
+    border-radius: 6px;
+    background: root.capturing ? Theme.accent.with-alpha(0.16) : ta.has-hover ? Theme.hover : Theme.surface-hi;
+    border-width: root.capturing ? 2px : 1px;
+    border-color: root.capturing ? Theme.accent : Theme.border;
+    animate background { duration: Theme.dur-hover; }
+    accessible-role: button;
+    accessible-label: root.what + ": " + (root.capturing ? "press the new key" : root.spoken == "" ? "no key" : root.spoken);
+    accessible-description: "Press to change the key";
+    accessible-action-default => { root.begin(); }
+    function begin() {
+        fs.focus();
+        root.start();
+    }
+    fs := FocusScope {
+        focus-on-click: false;
+        key-pressed(ev) => {
+            if root.capturing {
+                Actions.key-captured(ev.text, ev.modifiers.control, ev.modifiers.shift, ev.modifiers.alt);
+                return accept;
+            }
+            if ev.text == Key.Return && !ev.modifiers.control && !ev.modifiers.alt {
+                root.begin();
+                return accept;
+            }
+            reject
+        }
+        focus-gained(reason) => {
+            Focus.zone = "";
+            if reason == FocusReason.tab-navigation { Actions.reveal(self.absolute-position.y, self.height); }
+        }
+        focus-lost => {
+            if root.capturing { Actions.key-capture-cancel(); }
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.begin(); }
+    }
+    t := Text {
+        text: root.capturing ? "Press a key\u{2026}" : root.text == "" ? "None" : root.text;
+        font-size: Theme.font-small;
+        font-weight: 600;
+        color: root.capturing ? Theme.text : root.text == "" ? Theme.text-faint : Theme.text;
+        accessible-role: none;
+    }
+    FocusRing { shown: fs.has-focus && !root.capturing; radius: 6px; }
+}
+
+// ---- Keys ----------------------------------------------------------------------
+
+export component KeysSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead {
+        title: "Keys";
+        blurb: "Click a key, or press Enter on it, then press the new one. Esc cancels; Delete leaves the action without a key. A key without Ctrl or Alt never acts while you type in a text field.";
+    }
+    SettingCard {
+        accessible-label: "Shortcuts";
+        for k[i] in Keys.rows: VerticalLayout {
+            property <bool> lit: SettingsView.highlight == k.what;
+            // The group's heading, like a card's (a hairline above all but the first).
+            if k.group != "": VerticalLayout {
+                if i > 0: Hairline { }
+                VerticalLayout {
+                    padding-left: 20px;
+                    padding-top: i == 0 ? 16px : 18px;
+                    padding-bottom: 6px;
+                    Text { text: k.group; font-size: Theme.font-title; font-weight: 700; color: Theme.text; accessible-role: text; }
+                }
+            }
+            Rectangle {
+                height: max(44px, krow.preferred-height);
+                Rectangle {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    border-radius: Theme.radius-control;
+                    border-width: lit ? 2px : 0px;
+                    border-color: Theme.accent;
+                }
+                krow := HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 14px;
+                    padding-top: 7px;
+                    padding-bottom: 7px;
+                    spacing: 12px;
+                    Text {
+                        horizontal-stretch: 1;
+                        text: k.what;
+                        font-size: Theme.font-body;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                    // The keys, right-aligned against the reset button.
+                    HorizontalLayout {
+                        horizontal-stretch: 0;
+                        alignment: end;
+                        spacing: 8px;
+                        KeyButton {
+                            y: (parent.height - self.height) / 2;
+                            text: k.key0;
+                            spoken: k.spoken0;
+                            what: k.what;
+                            capturing: Keys.capture-row == i && Keys.capture-slot == 0;
+                            start => { Actions.key-capture(i, 0); }
+                        }
+                        if k.slots > 1: KeyButton {
+                            y: (parent.height - self.height) / 2;
+                            text: k.key1;
+                            spoken: k.spoken1;
+                            what: k.what + ", second key";
+                            capturing: Keys.capture-row == i && Keys.capture-slot == 1;
+                            start => { Actions.key-capture(i, 1); }
+                        }
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        glyph: Icons.refresh;
+                        size: 32px;
+                        icon-size: 16px;
+                        enabled: !k.is-default;
+                        label: "Reset \u{201c}" + k.what + "\u{201d} to " + k.default-keys;
+                        tooltip: "Reset to " + k.default-keys;
+                        clicked => { Actions.key-reset(i); }
+                    }
+                }
+            }
+            // How to capture, a refused key, or a conflict: under its row.
+            if Keys.note-row == i && Keys.note != "": VerticalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                padding-bottom: 8px;
+                Rectangle {
+                    height: nlay.preferred-height;
+                    border-radius: Theme.radius-control;
+                    background: Keys.conflict ? Theme.accent.with-alpha(0.12) : Theme.surface-hi;
+                    border-width: 1px;
+                    border-color: Keys.conflict ? Theme.accent : Theme.border;
+                    nlay := HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        spacing: 10px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: Keys.note;
+                            font-size: Theme.font-small;
+                            color: Theme.text;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            accessible-role: text;
+                            accessible-live-region: AccessibleLiveness.polite;
+                        }
+                        if Keys.conflict: TextButton {
+                            horizontal-stretch: 0;
+                            text: "Reassign";
+                            primary: true;
+                            label: "Reassign the key (Enter)";
+                            clicked => { Actions.key-reassign(); }
+                        }
+                        if Keys.capture-row == i && !Keys.conflict: TextButton {
+                            horizontal-stretch: 0;
+                            text: "No key";
+                            label: "Leave it without a key (Delete)";
+                            clicked => { Actions.key-clear(); }
+                        }
+                        if Keys.capture-row == i: TextButton {
+                            horizontal-stretch: 0;
+                            text: "Cancel";
+                            label: "Cancel (Esc)";
+                            clicked => { Actions.key-capture-cancel(); }
+                        }
+                    }
+                }
+            }
+        }
+        Hairline { }
+        HorizontalLayout {
+            padding: 14px;
+            padding-left: 20px;
+            alignment: start;
+            TextButton {
+                text: "Reset all keys";
+                glyph: Icons.refresh;
+                label: Keys.all-default ? "Reset all keys (they are the defaults)" : "Reset all keys to the defaults";
+                clicked => { Actions.key-reset-all(); }
+            }
+        }
+    }
+    SettingCard {
+        title: "Fixed keys";
+        note: "These always do the same thing and cannot be given to an action.";
+        VerticalLayout {
+            padding-left: 20px;
+            padding-right: 20px;
+            padding-bottom: 16px;
+            spacing: 8px;
+            for k in Keys.fixed: HorizontalLayout {
+                spacing: 20px;
+                // The keys' column: as wide as the widest of them.
+                Rectangle {
+                    width: 190px;
+                    height: cap.height;
+                    cap := KeyCap { x: 0; text: k.keys; }
+                }
+                Text {
+                    text: k.what;
+                    color: Theme.text-dim;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

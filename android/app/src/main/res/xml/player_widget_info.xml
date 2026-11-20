@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 4x1 by default, resizable to 4x2, 4x3 and wider (the larger layouts). Never updated on a timer
+     (updatePeriodMillis 0): the playback service pushes a new state when the track, the play state
+     or the accent changes. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:minWidth="250dp"
+    android:minHeight="50dp"
+    android:minResizeWidth="180dp"
+    android:minResizeHeight="50dp"
+    android:maxResizeHeight="320dp"
+    android:previewLayout="@layout/widget_preview"
+    android:previewImage="@drawable/widget_preview_image"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

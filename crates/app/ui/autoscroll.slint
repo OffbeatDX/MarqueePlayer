@@ -1,0 +1,183 @@
+// Middle-click autoscroll: the scroll areas' side (the mode itself is autoscroll.rs).
+//
+// - `ScrollDriver`: give it an area's place, size and content, and its content-x / -y
+//   two-way. On a middle press it claims the axes it can scroll when the anchor is inside
+//   it; while it holds an axis it scrolls itself on the frame clock at the global speed,
+//   stopping at the content's ends. Nothing runs while it has nowhere to go.
+// - `AutoFlickable`: a Flickable with its driver. Use it for every scrolling area; a
+//   ListView (std-widgets) takes a `ScrollDriver` beside it.
+// - `AutoscrollBlock`: in a panel over the page (sidebars, player bar, pill), so a middle
+//   press there does not scroll the page under it.
+// - `AutoscrollMark`: the anchor and the scroll cursor, over the whole window.
+import { Theme } from "theme.slint";
+import { Autoscroll } from "stores.slint";
+
+export component ScrollDriver {
+    // The visible area, in window coordinates.
+    in property <length> area-x;
+    in property <length> area-y;
+    in property <length> area-width;
+    in property <length> area-height;
+    in property <length> content-width;
+    in property <length> content-height;
+    in-out property <length> content-x;
+    in-out property <length> content-y;
+    // The axes it scrolls on (it claims one only when the content is larger).
+    in property <bool> scroll-x: false;
+    in property <bool> scroll-y: true;
+    // 0 the page, 2 a panel over it (a sidebar). A higher layer wins over a lower one.
+    in property <int> layer: 0;
+    // False while it is on screen but hidden (a page kept alive while another shows).
+    in property <bool> live: true;
+    out property <bool> active-x: Autoscroll.on && Autoscroll.has-x && root.my-x == Autoscroll.x-owner;
+    out property <bool> active-y: Autoscroll.on && Autoscroll.has-y && root.my-y == Autoscroll.y-owner;
+    out property <bool> active: root.active-x || root.active-y;
+    width: 0;
+    height: 0;
+
+    private property <bool> can-x: root.scroll-x && root.content-width > root.area-width + 1px;
+    private property <bool> can-y: root.scroll-y && root.content-height > root.area-height + 1px;
+    private property <int> my-x: -1;
+    private property <int> my-y: -1;
+    private property <int> probe: Autoscroll.probe;
+    changed probe => {
+        if !root.live { return; }
+        let px = Autoscroll.anchor-x;
+        let py = Autoscroll.anchor-y;
+        if px < root.area-x || py < root.area-y || px >= root.area-x + root.area-width || py >= root.area-y + root.area-height { return; }
+        let size = (root.area-width / 1px) * (root.area-height / 1px);
+        if root.can-x && (root.layer > Autoscroll.x-layer || (root.layer == Autoscroll.x-layer && size < Autoscroll.x-area)) {
+            Autoscroll.serial += 1;
+            Autoscroll.x-owner = Autoscroll.serial;
+            Autoscroll.x-layer = root.layer;
+            Autoscroll.x-area = size;
+            root.my-x = Autoscroll.serial;
+            Autoscroll.at-x = root.content-x;
+            Autoscroll.end-x = root.min-x;
+        }
+        if root.can-y && (root.layer > Autoscroll.y-layer || (root.layer == Autoscroll.y-layer && size < Autoscroll.y-area)) {
+            Autoscroll.serial += 1;
+            Autoscroll.y-owner = Autoscroll.serial;
+            Autoscroll.y-layer = root.layer;
+            Autoscroll.y-area = size;
+            root.my-y = Autoscroll.serial;
+            Autoscroll.at-y = root.content-y;
+            Autoscroll.end-y = root.min-y;
+        }
+    }
+
+    // Somewhere to go in the direction asked for.
+    private property <length> min-x: min(0px, root.area-width - root.content-width);
+    private property <length> min-y: min(0px, root.area-height - root.content-height);
+    private property <bool> run-x: root.active-x && ((Autoscroll.vx > 0 && root.content-x > root.min-x) || (Autoscroll.vx < 0 && root.content-x < 0px));
+    private property <bool> run-y: root.active-y && ((Autoscroll.vy > 0 && root.content-y > root.min-y) || (Autoscroll.vy < 0 && root.content-y < 0px));
+    // The frame clock, only while moving: each frame moves by speed x the time since the
+    // last one (a frame missed is made up, at most 50 ms of it).
+    private property <duration> now: root.run-x || root.run-y ? animation-tick() : 0ms;
+    private property <duration> last;
+    changed now => {
+        let dt = root.now > 0ms && root.last > 0ms && root.now > root.last && root.now - root.last < 250ms ? min(0.05, (root.now - root.last) / 1s) : 0;
+        root.last = root.now;
+        if dt <= 0 { return; }
+        if root.run-x {
+            root.content-x = clamp(root.content-x - Autoscroll.vx * dt * 1px, root.min-x, 0px);
+            Autoscroll.at-x = root.content-x;
+        }
+        if root.run-y {
+            root.content-y = clamp(root.content-y - Autoscroll.vy * dt * 1px, root.min-y, 0px);
+            Autoscroll.at-y = root.content-y;
+        }
+        Autoscroll.frames += 1;
+    }
+}
+
+export component AutoFlickable inherits Flickable {
+    in property <bool> autoscroll-x: false;
+    in property <bool> autoscroll-y: true;
+    in property <int> autoscroll-layer: 0;
+    in property <bool> autoscroll-live: true;
+    // Being autoscrolled now (a panel holding itself open, lyrics not following).
+    out property <bool> autoscrolling: driver.active;
+    driver := ScrollDriver {
+        area-x: root.absolute-position.x;
+        area-y: root.absolute-position.y;
+        area-width: root.width;
+        area-height: root.height;
+        content-width: root.content-width;
+        content-height: root.content-height;
+        content-x <=> root.content-x;
+        content-y <=> root.content-y;
+        scroll-x: root.autoscroll-x;
+        scroll-y: root.autoscroll-y;
+        layer: root.autoscroll-layer;
+        live: root.autoscroll-live;
+    }
+}
+
+// Fills its parent; a middle press inside it leaves what is under the panel alone.
+export component AutoscrollBlock {
+    in property <int> layer: 2;
+    in property <bool> live: true;
+    width: 100%;
+    height: 100%;
+    private property <int> probe: Autoscroll.probe;
+    changed probe => {
+        if !root.live { return; }
+        let p = root.absolute-position;
+        if Autoscroll.anchor-x >= p.x && Autoscroll.anchor-y >= p.y && Autoscroll.anchor-x < p.x + root.width && Autoscroll.anchor-y < p.y + root.height {
+            Autoscroll.top-layer = max(Autoscroll.top-layer, root.layer);
+        }
+    }
+}
+
+// A small arrowhead: 0 up, 1 down, 2 left, 3 right.
+component Chevron inherits Path {
+    in property <int> dir;
+    in property <bool> lit;
+    width: root.dir < 2 ? 8px : 5px;
+    height: root.dir < 2 ? 5px : 8px;
+    viewbox-width: root.dir < 2 ? 8 : 5;
+    viewbox-height: root.dir < 2 ? 5 : 8;
+    commands: root.dir == 0 ? "M0 5 L4 0.6 L8 5 Z" : root.dir == 1 ? "M0 0 L4 4.4 L8 0 Z" : root.dir == 2 ? "M5 0 L0.6 4 L5 8 Z" : "M0 0 L4.4 4 L0 8 Z";
+    fill: root.lit ? Theme.accent : Theme.text-faint;
+    animate fill { duration: Theme.dur-hover; }
+}
+
+// Over the whole window while the mode is on: the anchor where the press was, with an
+// arrow for each way it can go (the way it is going lit), and the scroll cursor (it also
+// keeps the hover states under it still).
+export component AutoscrollMark inherits Rectangle {
+    in property <length> window-width;
+    in property <length> window-height;
+    x: 0;
+    y: 0;
+    width: root.window-width;
+    height: root.window-height;
+    if Autoscroll.engaged: TouchArea {
+        mouse-cursor: Autoscroll.has-x && Autoscroll.has-y ? MouseCursor.move : Autoscroll.has-x ? MouseCursor.ew-resize : MouseCursor.ns-resize;
+        Rectangle {
+            x: Autoscroll.anchor-x - self.width / 2;
+            y: Autoscroll.anchor-y - self.height / 2;
+            width: 30px;
+            height: 30px;
+            border-radius: self.width / 2;
+            background: Theme.glass-fill;
+            backdrop-blur: Theme.glass-radius-blur;
+            border-width: 1px;
+            border-color: Theme.border;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000070;
+            accessible-role: none;
+            Rectangle {
+                width: 4px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.text;
+            }
+            if Autoscroll.has-y: Chevron { dir: 0; x: (parent.width - self.width) / 2; y: 4px; lit: Autoscroll.vy < 0; }
+            if Autoscroll.has-y: Chevron { dir: 1; x: (parent.width - self.width) / 2; y: parent.height - 4px - self.height; lit: Autoscroll.vy > 0; }
+            if Autoscroll.has-x: Chevron { dir: 2; x: 4px; y: (parent.height - self.height) / 2; lit: Autoscroll.vx < 0; }
+            if Autoscroll.has-x: Chevron { dir: 3; x: parent.width - 4px - self.width; y: (parent.height - self.height) / 2; lit: Autoscroll.vx > 0; }
+        }
+    }
+}

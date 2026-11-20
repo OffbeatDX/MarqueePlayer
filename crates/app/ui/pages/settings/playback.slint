@@ -1,0 +1,151 @@
+// Settings > Playback, Output and Lyrics.
+
+import { Player, Actions, Output, Lyrics, PlatformWords } from "../../stores.slint";
+import { Icons, TextButton, Segmented, Stepper, SettingCard, SettingRow, SwitchRow, StatusNote } from "../../widgets.slint";
+import { SectionHead } from "parts.slint";
+
+// ---- Playback ------------------------------------------------------------------
+
+export component PlaybackSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Playback"; blurb: "How loud tracks play, and how one goes into the next."; }
+    SettingCard {
+        SettingRow {
+            divider: false;
+            label: "ReplayGain";
+            hint: "Evens out loudness between tracks, or keeps an album's own dynamics.";
+            more: "Track or album gain from R128 and REPLAYGAIN tags; Opus and FLAC are matched to -18 LUFS. Files without tags play unadjusted. The RG button in the player bar changes it too.";
+            Segmented {
+                label: "ReplayGain";
+                options: ["Off", "Track", "Album"];
+                selected: Player.gain-mode == "Off" ? 0 : Player.gain-mode == "Album" ? 2 : 1;
+                chosen(i) => { Actions.set-gain-mode(i); }
+            }
+        }
+        SettingRow {
+            label: "Preamp";
+            hint: "Added to ReplayGain, for a library that is quiet or loud overall.";
+            Stepper {
+                label: "Preamp";
+                value: Player.preamp;
+                step(d) => { Actions.preamp-step(d); }
+            }
+        }
+        SwitchRow {
+            label: "Clipping protection";
+            hint: "Never turns a track up past its loudest peak.";
+            more: "Uses the peak values in a track's tags, and caps the preamp too. Tracks without peak tags play as adjusted.";
+            checked: Player.prevent-clipping;
+            toggled => { Actions.toggle-prevent-clipping(); }
+        }
+        SwitchRow {
+            label: "Limit loud peaks";
+            hint: "Some tracks are mastered so loud they crackle. This lowers just those peaks.";
+            more: "Also what the equalizer's boosts and two tracks crossfading would take past full scale: the limiter comes after them, so it sees what plays.";
+            checked: Player.limit-peaks;
+            toggled => { Actions.toggle-limit-peaks(); }
+        }
+    }
+    SettingCard {
+        title: "Between tracks";
+        SwitchRow {
+            divider: false;
+            label: "Crossfade";
+            hint: Player.crossfade ? "Each track fades into the next, also between sample rates (an Opus track after a CD-quality FLAC, say): the incoming one is converted to the rate playing." : "Off: one track follows the next straight on, gapless.";
+            more: "Equal power, each track at its own ReplayGain. No crossfade is longer than a fifth of either track. A track that comes in at another sample rate stays converted to the rate playing, with a converter far below what can be heard, until you pause, seek or stop: then it plays at its own rate again. The technical details say when a track is converted. Pause, seek and stop keep their short fades.";
+            checked: Player.crossfade;
+            toggled => { Actions.crossfade-toggle(); }
+        }
+        if Player.crossfade: SettingRow {
+            label: "Crossfade length";
+            hint: "How long the two tracks overlap, 1 to 12 seconds.";
+            Stepper {
+                label: "Crossfade length";
+                value: Player.crossfade-secs;
+                step(d) => { Actions.crossfade-step(d); }
+            }
+        }
+        if Player.crossfade: SwitchRow {
+            label: "Keep albums gapless";
+            hint: "An album's tracks played in its order never crossfade: live albums and mixes run on as recorded.";
+            more: "Tracks of one album out of order (shuffle, a playlist) crossfade like any others. Off: an album's tracks crossfade too.";
+            checked: Player.crossfade-albums;
+            toggled => { Actions.crossfade-album-toggle(); }
+        }
+        if Player.crossfade: SwitchRow {
+            label: "Crossfade when skipping";
+            hint: "Next, previous, or a track you choose: half a second from what is playing.";
+            checked: Player.crossfade-skips;
+            toggled => { Actions.crossfade-skip-toggle(); }
+        }
+    }
+    if Player.stream-shown: SettingCard {
+        title: "Music from the server";
+        SettingRow {
+            divider: false;
+            label: "Keep downloaded tracks";
+            hint: "Tracks from the server are kept here, to play again without downloading them.";
+            more: "A track plays as it downloads; the next one in the queue is fetched ahead, so they follow without a gap. The least recently played go first when the space is used; the tracks playing and next are never removed.";
+            Stepper {
+                label: "Keep downloaded tracks";
+                value: Player.stream-cap;
+                step(d) => { Actions.stream-cap-step(d); }
+            }
+        }
+        SettingRow {
+            label: "Downloaded tracks";
+            hint: Player.stream-used;
+            TextButton { text: "Clear"; label: "Clear the tracks downloaded from the server"; clicked => { Actions.stream-clear(); } }
+        }
+    }
+}
+
+// ---- Output --------------------------------------------------------------------
+
+export component OutputSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Output"; blurb: "Where music plays, and how the device is opened."; }
+    StatusNote {
+        glyph: Output.attention ? Icons.warning : Icons.speaker;
+        attention: Output.attention;
+        text: Output.status;
+        detail: Output.stream;
+    }
+    SettingCard {
+        title: "Device";
+        SettingRow {
+            label: "Output device";
+            hint: "Where music plays.";
+            TextButton {
+                text: Output.device-label;
+                glyph: Icons.collapse;
+                label: "Output device: " + Output.device-label + ". Choose another";
+                clicked => { Actions.output-menu(self.absolute-position.x, self.absolute-position.y + self.height + 6px); }
+            }
+        }
+        SwitchRow {
+            label: PlatformWords.exclusive-title;
+            hint: PlatformWords.exclusive-hint;
+            more: PlatformWords.exclusive-more;
+            checked: Output.exclusive;
+            toggled => { Actions.toggle-exclusive(); }
+        }
+    }
+}
+
+// ---- Lyrics --------------------------------------------------------------------
+
+export component LyricsSection inherits VerticalLayout {
+    spacing: 16px;
+    SectionHead { title: "Lyrics"; blurb: "The Lyrics tab of Now playing: a track's own lyrics, or found online."; }
+    SettingCard {
+        SwitchRow {
+            divider: false;
+            label: "Look up lyrics online";
+            hint: "For a track without a .lrc file or lyrics in its tags, sends its artist, title, album and length to LRCLIB (lrclib.net). Nothing is sent while this is off.";
+            more: "LRCLIB is a free lyrics service. It is asked a few seconds after a track starts, and nothing else is sent. Answers are kept on this PC, so each track is asked about once. Lyrics of a track's own always win.";
+            checked: Player.lyrics-online;
+            toggled => { Actions.toggle-lyrics-online(); }
+        }
+    }
+}

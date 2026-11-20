@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A still picture of the compact widget, for pickers that show previewImage rather than previewLayout. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="250dp" android:height="64dp" android:drawable="@drawable/widget_preview_bg" />
+    <item android:width="48dp" android:height="48dp" android:left="8dp" android:top="8dp" android:drawable="@drawable/widget_preview_cover" />
+    <item android:width="24dp" android:height="24dp" android:left="20dp" android:top="20dp" android:drawable="@drawable/widget_album" />
+    <item android:width="40dp" android:height="40dp" android:left="158dp" android:top="12dp" android:drawable="@drawable/widget_preview_play" />
+    <item android:width="24dp" android:height="24dp" android:left="166dp" android:top="20dp" android:drawable="@drawable/widget_pause" />
+    <item android:width="24dp" android:height="24dp" android:left="210dp" android:top="20dp" android:drawable="@drawable/widget_next" />
+</layer-list>

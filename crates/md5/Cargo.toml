@@ -1,0 +1,8 @@
+[package]
+name = "md5"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "MD5 (RFC 1321), for the two protocols that ask for it: Last.fm's request signatures and Subsonic's password token. Not for anything that needs security."
