@@ -18,8 +18,9 @@ MP3 waits until its download gets there: see [Streaming](lyrics.md#streaming)).
 
 Track, album or off (player bar, or Settings). Opus files use `R128_*_GAIN` (Q7.8 dB,
 relative to the OpusHead output gain, -23 LUFS) plus 5 dB, so they match
-`REPLAYGAIN_*` files (-18 LUFS). The Opus header gain always applies. Peak tags cap
-the gain when present. Files without tags play unadjusted. Preamp and clipping
+`REPLAYGAIN_*` files (-18 LUFS). The Opus header gain always applies. The matching peak
+tag (`REPLAYGAIN_TRACK_PEAK` for a track gain, `REPLAYGAIN_ALBUM_PEAK` for an album gain)
+caps the gain when present. Files without tags play unadjusted. Preamp and clipping
 protection are in Settings > Playback (Preamp, Clipping protection), and in
 `settings.json` (`preamp_db`, `prevent_clipping`).
 

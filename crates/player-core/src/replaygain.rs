@@ -11,8 +11,9 @@
 //! R128 targets are 5 dB quieter than ReplayGain targets, so R128 gains get +5 dB to
 //! make an Opus album and a FLAC album land at the same loudness.
 //!
-//! Peaks (`REPLAYGAIN_*_PEAK`, linear full-scale) cap the gain when clipping
-//! protection is on. Opus files normally carry no peak, so they are not capped.
+//! Peaks (`REPLAYGAIN_*_PEAK`, linear full-scale) cap the gain from the same source
+//! (track peak with track gain, album peak with album gain) when clipping protection is on.
+//! When the matching peak is absent (as on Opus files), the gain is not capped.
 //! Files with no gain tags for the chosen mode play unadjusted (header gain only).
 
 /// dB difference between the ReplayGain (-18 LUFS) and R128 (-23 LUFS) references.
@@ -156,8 +157,12 @@ pub fn applied(tags: &GainTags, cfg: &GainConfig) -> Option<Applied> {
     let (norm, source) = normalisation?;
     let mut total = header + norm + cfg.preamp_db;
     let mut capped = false;
+    let peak_tag = match source {
+        GainSource::Track => &tags.rg_track_peak,
+        GainSource::Album => &tags.rg_album_peak,
+    };
     if cfg.prevent_clipping
-        && let Some((peak, _)) = pick(&tags.rg_track_peak, &tags.rg_album_peak, parse_peak)
+        && let Some(peak) = peak_tag.as_deref().and_then(parse_peak)
     {
         // Largest gain that keeps the peak at or below full scale.
         let max_db = -20.0 * peak.log10();
@@ -289,5 +294,100 @@ mod tests {
         // The ends of what real material measures still apply.
         assert_eq!(gain_db(&flac("+20 dB", "0 dB", None), &GainConfig::default()), 20.0);
         assert_eq!(gain_db(&flac("-30 dB", "0 dB", None), &GainConfig::default()), -30.0);
+    }
+
+    #[test]
+    fn peak_is_paired_with_the_gains_source() {
+        let album_cfg = GainConfig { mode: GainMode::Album, ..Default::default() };
+        let track_cfg = GainConfig { mode: GainMode::Track, ..Default::default() };
+        // Peak 0.8 caps at +1.9382 dB; peak 0.9 caps at +0.9151 dB.
+        let cap_08 = -20.0 * 0.8f32.log10();
+        let cap_09 = -20.0 * 0.9f32.log10();
+
+        // Album mode, album gain + both peaks: uses album peak.
+        let t = GainTags {
+            rg_track_gain: Some("+6.00 dB".into()),
+            rg_album_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.9".into()),
+            rg_album_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &album_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Album);
+        assert!(a.capped && (a.db - cap_08).abs() < 1e-3, "album gain pairs with album peak: {a:?}");
+
+        // Album mode, album gain + only track peak: no album peak, so uncapped.
+        let t = GainTags {
+            rg_album_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &album_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Album);
+        assert!(!a.capped && (a.db - 6.0).abs() < 1e-4, "album gain must not cap by track peak: {a:?}");
+
+        // Album mode, only track gain (fallback) + both peaks: uses track peak.
+        let t = GainTags {
+            rg_track_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.8".into()),
+            rg_album_peak: Some("0.9".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &album_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Track);
+        assert!(a.capped && (a.db - cap_08).abs() < 1e-3, "track gain fallback pairs with track peak: {a:?}");
+
+        // Album mode, only track gain (fallback) + only album peak: no track peak, so uncapped.
+        let t = GainTags {
+            rg_track_gain: Some("+6.00 dB".into()),
+            rg_album_peak: Some("0.9".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &album_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Track);
+        assert!(!a.capped && (a.db - 6.0).abs() < 1e-4, "track gain fallback must not cap by album peak: {a:?}");
+
+        // Track mode, track gain + both peaks: uses track peak.
+        let t = GainTags {
+            rg_track_gain: Some("+6.00 dB".into()),
+            rg_album_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.9".into()),
+            rg_album_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &track_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Track);
+        assert!(a.capped && (a.db - cap_09).abs() < 1e-3, "track gain pairs with track peak: {a:?}");
+
+        // Track mode, track gain + only album peak: no track peak, so uncapped.
+        let t = GainTags {
+            rg_track_gain: Some("+6.00 dB".into()),
+            rg_album_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &track_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Track);
+        assert!(!a.capped && (a.db - 6.0).abs() < 1e-4, "track gain must not cap by album peak: {a:?}");
+
+        // Track mode, only album gain (fallback) + both peaks: uses album peak.
+        let t = GainTags {
+            rg_album_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.9".into()),
+            rg_album_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &track_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Album);
+        assert!(a.capped && (a.db - cap_08).abs() < 1e-3, "album gain fallback pairs with album peak: {a:?}");
+
+        // Track mode, only album gain (fallback) + only track peak: no album peak, so uncapped.
+        let t = GainTags {
+            rg_album_gain: Some("+6.00 dB".into()),
+            rg_track_peak: Some("0.8".into()),
+            ..Default::default()
+        };
+        let a = applied(&t, &track_cfg).unwrap();
+        assert_eq!(a.source, GainSource::Album);
+        assert!(!a.capped && (a.db - 6.0).abs() < 1e-4, "album gain fallback must not cap by track peak: {a:?}");
     }
 }
