@@ -101,7 +101,8 @@ pub fn read_from<R: Read + Seek>(r: R, len: u64) -> Option<Trim> {
     let top = rd.children(0, len);
     let &(_, ms, me) = top.iter().find(|b| &b.0 == b"moov")?;
     let moov = rd.children(ms, me);
-    let movie_scale = moov.iter().find(|b| &b.0 == b"mvhd").and_then(|&(_, s, e)| rd.bytes(s, e)).and_then(|b| header_times(&b)).map(|t| t.0)?;
+    // Only the edit list needs the movie's timescale: without a readable `mvhd`, iTunSMPB still can.
+    let movie_scale = moov.iter().find(|b| &b.0 == b"mvhd").and_then(|&(_, s, e)| rd.bytes(s, e)).and_then(|b| header_times(&b)).map(|t| t.0);
     for &(kind, ts, te) in &moov {
         if &kind != b"trak" {
             continue;
@@ -116,7 +117,8 @@ pub fn read_from<R: Read + Seek>(r: R, len: u64) -> Option<Trim> {
         let Some((media_scale, media_duration)) = mdia.iter().find(|b| &b.0 == b"mdhd").and_then(|&(_, s, e)| rd.bytes(s, e)).and_then(|b| header_times(&b)) else {
             continue;
         };
-        if let Some(&(_, es, ee)) = trak.iter().find(|b| &b.0 == b"edts")
+        if let Some(movie_scale) = movie_scale
+            && let Some(&(_, es, ee)) = trak.iter().find(|b| &b.0 == b"edts")
             && let Some(&(_, ls, le)) = rd.children(es, ee).iter().find(|b| &b.0 == b"elst")
             && let Some(b) = rd.bytes(ls, le)
             && let Some(trim) = elst(&b, movie_scale, media_scale, media_duration)
@@ -325,6 +327,25 @@ mod tests {
         let got = read(&p);
         let _ = std::fs::remove_file(p);
         assert_eq!(got, Some(Trim { delay: 0x840, frames: 0x40998, scale: 44_100 }));
+    }
+
+    #[test]
+    fn a_missing_movie_header_falls_back_to_itunsmpb() {
+        let mut elst = vec![0u8, 0, 0, 0];
+        elst.extend(1u32.to_be_bytes());
+        elst.extend(6000u32.to_be_bytes());
+        elst.extend(1024u32.to_be_bytes());
+        elst.extend([0, 1, 0, 0]);
+        let want = Some(Trim { delay: 0x840, frames: 0x40998, scale: 44_100 });
+        for edts in [None, Some(bx(b"edts", &bx(b"elst", &elst)))] {
+            let p = file(edts, Some(udta_with_ilst(&itunsmpb_freeform())));
+            let mut data = std::fs::read(&p).unwrap();
+            let _ = std::fs::remove_file(p);
+            // Rename the movie header so it is not found.
+            let at = data.windows(4).position(|w| w == b"mvhd").unwrap();
+            data[at..at + 4].copy_from_slice(b"free");
+            assert_eq!(read_bounded(data), Some(want));
+        }
     }
 
     #[test]
