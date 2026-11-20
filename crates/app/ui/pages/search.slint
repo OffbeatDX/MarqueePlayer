@@ -61,10 +61,10 @@ component SearchHelp inherits Rectangle {
         Text { text: "Search syntax"; font-size: Theme.font-body; font-weight: 700; color: Theme.text; }
         for row in [
             { a: "artist:\"nina simone\" live", b: "a field, and words anywhere: artist, albumartist, album, title, genre, label, format, path (=x: exactly x)" },
-            { a: "year:1994   year:1990..1999", b: "numbers: year, rating, plays, length, bitrate, samplerate, bitdepth, disc, track" },
-            { a: "rating:>=4   plays:>10   length:<3:00", b: "compare with >, >=, <, <=; ranges a..b; lengths 3:30, 90s, 5m" },
+            { a: "year:1994   year:1990..1999", b: "numbers: year, plays, length, bitrate, samplerate, bitdepth, disc, track" },
+            { a: "year:>=2000   plays:>10   length:<3:00", b: "compare with >, >=, <, <=; ranges a..b; lengths 3:30, 90s, 5m" },
             { a: "added:<30d   played:>1y   added:2024", b: "dates: in the last (d, w, m, y), longer ago, or a year, month or day" },
-            { a: "is:favourite   is:local   is:remote", b: "also is:favalbum, lossless, lossy, played, unplayed, rated, unrated" },
+            { a: "is:favourite   is:local   is:remote", b: "also is:favalbum, lossless, lossy, played, unplayed" },
             { a: "playlist:\"Road trip\"", b: "in a playlist" },
             { a: "-genre:live   -is:remote", b: "not" },
             { a: "genre:jazz OR genre:soul", b: "either (OR in capitals); everything else must all match" },

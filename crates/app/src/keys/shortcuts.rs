@@ -199,14 +199,6 @@ pub fn run(st: &Rc<State>, s: Shortcut) {
                 views::go(st, Page::NowPlaying);
             }
         }
-        Action::Rate(n) => {
-            let id = views::playing_track_id(st);
-            if id == -1 && st.queue.borrow().current().is_none() {
-                views::flash(st, "Nothing is playing");
-            } else {
-                crate::menus::rate(st, id, n);
-            }
-        }
         Action::Lyrics => {
             let l = app.global::<crate::Lyrics>();
             // The panel's visualizer tab gives way to the lyrics.

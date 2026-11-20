@@ -370,17 +370,6 @@ export component PlayerBar inherits Rectangle {
                 label: Keys.with-key(Player.favourite ? "Remove the playing track from favourites" : "Add the playing track to favourites", Keys.favourite);
                 clicked => { Actions.toggle-favourite-current(); }
             }
-            IconButton {
-                y: (parent.height - self.height) / 2;
-                visible: Player.has-track;
-                glyph: Player.rating > 0 ? Icons.star : Icons.star-outline;
-                active: Player.rating > 0;
-                size: 32px;
-                icon-size: 18px;
-                zone: "bar";
-                label: (Player.rating > 0 ? "Rated " + Player.rating + " of 5 stars" : "Not rated") + ". " + Keys.with-key("Rate the playing track", Keys.rate);
-                clicked => { Actions.rating-menu(self.absolute-position.x, self.absolute-position.y - 6px); }
-            }
         }
         // Transport and seek.
         VerticalLayout {

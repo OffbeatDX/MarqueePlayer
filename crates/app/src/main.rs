@@ -268,7 +268,10 @@ fn run() {
         });
     }
     playlists::smart::install(&st);
-    rows::load_ratings(&st.db);
+    // Smart playlists saved with rules about ratings (no longer kept): those rules dropped.
+    if let Err(e) = library::query::forget_rating_rules(&st.db) {
+        log::warn!("smart playlists: rules about ratings not dropped ({e})");
+    }
     connections::scrobble::install(&st);
     connections::listens::install(&st);
     server::install(&st);
@@ -463,7 +466,7 @@ fn open_database(path: &std::path::Path) -> Option<rusqlite::Connection> {
             let ask = format!(
                 "The library database is damaged and cannot be read ({why}):\n{file}\n\n\
                  Start with a new library? Your music files are not touched; the damaged file is kept beside the new one, renamed, \
-                 and your music folders are read again. Plays, favourites, ratings and playlists start afresh.{backup_note}\n\n\
+                 and your music folders are read again. Plays, favourites and playlists start afresh.{backup_note}\n\n\
                  Choose No to close Marquee Player and leave everything as it is."
             );
             log::error!("{ask}");
@@ -1266,9 +1269,6 @@ fn wire(app: &AppWindow) {
     });
     a.on_toggle_shuffle(|| {
         state::with(playback::toggle_shuffle);
-    });
-    a.on_rating_menu(|x, y| {
-        state::with(|st| menus::request_rating(st, x, y));
     });
     a.on_toggle_favourite_current(|| {
         state::with(playback::toggle_favourite_current);

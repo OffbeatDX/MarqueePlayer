@@ -7,7 +7,7 @@
 //! `getScanStatus`, `getAlbumList2` (every `type` lists by name, paged by `size` and `offset`,
 //! at most 500), `getAlbum`, `getCoverArt`, `stream` (a song's bytes, with ranges), and the
 //! user's own data on songs as Navidrome keeps it: `getStarred2`, `star` / `unstar` (a song's
-//! `starred` time), `setRating` (its `userRating`) and `scrobble` (each kept in
+//! `starred` time) and `scrobble` (each kept in
 //! [`Library::scrobbles`]; a play counts on the song's `playCount`). What it serves can be
 //! changed while it runs ([`Mock::edit`]), and it can be made to misbehave ([`Trouble`]) or slow
 //! ([`Mock::set_delay_ms`]). It keeps the endpoint and `id`s of every request
@@ -50,7 +50,7 @@ pub struct Scrobbled {
 }
 
 impl Library {
-    /// A song by id, to change what the server says of it (its star, its rating).
+    /// A song by id, to change what the server says of it (its star).
     pub fn song_mut(&mut self, id: &str) -> Option<&mut Song> {
         self.albums.iter_mut().flat_map(|a| a.song.iter_mut()).find(|s| s.id == id)
     }
@@ -368,19 +368,6 @@ fn serve(endpoint: &str, params: &[(String, String)], range: Option<u64>, lib: &
             }
             ok("")
         }
-        "setRating" => {
-            let rating = param("rating").and_then(|r| r.parse::<u8>().ok());
-            match (param("id").map(str::to_owned), rating) {
-                (Some(id), Some(r)) if r <= 5 => match lib.song_mut(&id) {
-                    Some(s) => {
-                        s.user_rating = (r > 0).then_some(r);
-                        ok("")
-                    }
-                    None => failed(70, "Song not found"),
-                },
-                _ => failed(10, "Required parameter is missing"),
-            }
-        }
         "scrobble" => {
             let ids = all("id");
             let times: Vec<i64> = all("time").iter().filter_map(|t| t.parse().ok()).collect();
@@ -487,20 +474,19 @@ mod tests {
     }
 
     #[test]
-    fn the_mock_keeps_stars_ratings_and_plays() {
+    fn the_mock_keeps_stars_and_plays() {
         let lib = Library { albums: vec![album("a", "Ann", "A", 2000, "2026-01-01T00:00:00Z", &[("One", 1, 100, 1000, ""), ("Two", 2, 100, 1000, "")])], ..Default::default() };
         let m = Mock::start("ann", "pw", lib).unwrap();
         let (creds, _) = crate::sign_in(&m.url, "ann", "pw").unwrap();
         let c = Client::new(creds, false).unwrap();
         c.star(&["a-1", "a-2"], &[], &[]).unwrap();
         c.unstar(&["a-2"], &[], &[]).unwrap();
-        c.set_rating("a-1", 4).unwrap();
         c.scrobble("a-1", Some(1_000), true).unwrap();
         c.scrobble("a-2", None, false).unwrap();
         assert!(matches!(c.star(&["nope"], &[], &[]), Err(Error::NotFound(_))));
         let s = c.album("a").unwrap().song;
         assert!(s[0].starred.is_some() && s[1].starred.is_none());
-        assert_eq!((s[0].user_rating, s[0].play_count, s[1].play_count), (Some(4), Some(1), None));
+        assert_eq!((s[0].play_count, s[1].play_count), (Some(1), None));
         assert_eq!(c.starred2(None).unwrap().song.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a-1"]);
         m.edit(|l| assert_eq!(l.scrobbles, [Scrobbled { id: "a-1".into(), time: Some(1_000), submission: true }, Scrobbled { id: "a-2".into(), time: None, submission: false }]));
         assert_eq!(m.requests()[1], "star a-1,a-2");

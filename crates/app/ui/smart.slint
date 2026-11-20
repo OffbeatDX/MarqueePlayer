@@ -2,15 +2,15 @@
 // rules are made, and the list a choice of the editor opens (`SmartPicker`, over the window).
 //
 // The editor reads as sentences: "Tracks that match [all] of these rules", then a line per
-// rule, "[Genre] [is] [Jazz]", "[Rating] [is at least] [★★★★☆]", "[Last played] [is not in
+// rule, "[Genre] [is] [Jazz]", "[Play count] [is at least] [3]", "[Last played] [is not in
 // the last] [6] [months]", and under the rules "Sort by [Play count] [most first]" and
 // "[○] Limit to [50] [tracks] chosen by [Random]". Every control is one Tab stop: a choice
-// opens its list with Enter (or Down, or a click), a typed value is a field, stars step with
-// the arrows. What a line cannot be yet is said under it.
+// opens its list with Enter (or Down, or a click), a typed value is a field. What a line
+// cannot be yet is said under it.
 import { Theme } from "theme.slint";
 import { SmartRow, SmartSlot, TrackRow } from "types.slint";
 import { SmartEdit, SmartList, Picker, Nav, Focus, Actions, Playlists } from "stores.slint";
-import { Icon, Icons, IconButton, TextButton, LineField, Switch, Stepper, FocusRing, SectionTitle, SettingCard } from "widgets.slint";
+import { Icon, Icons, IconButton, TextButton, LineField, Switch, FocusRing, SectionTitle, SettingCard } from "widgets.slint";
 import { TrackList, LongTrackList } from "lists.slint";
 import { AutoFlickable } from "autoscroll.slint";
 
@@ -119,15 +119,6 @@ component SlotControl inherits HorizontalLayout {
         font-size: Theme.font-body;
         color: Theme.text-dim;
         accessible-role: none;
-    }
-    if root.slot.kind == 3: VerticalLayout {
-        alignment: center;
-        Stepper {
-            value: root.slot.text;
-            label: root.slot.label;
-            value-width: 88px;
-            step(d) => { SmartEdit.stars(root.key, root.slot.role, d); }
-        }
     }
     if root.slot.kind == 4: VerticalLayout {
         alignment: center;

@@ -9,7 +9,7 @@
 //! if exactly those are still chosen: never on rows the user no longer sees chosen. Each action
 //! acts once on all of them, in list order; what it writes is one transaction, and the pill says
 //! what was done with how many ("Added 12 tracks to “Mix”"). Files from outside the library in
-//! the queue have no place in a playlist, a favourite or a rating: they are left out and counted.
+//! the queue have no place in a playlist or a favourite: they are left out and counted.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -150,13 +150,13 @@ fn in_library(tracks: Vec<Track>) -> (Vec<Track>, String) {
 
 // ---- marks: one track or several ---------------------------------------------------
 
-/// The user changed these tracks' favourites or ratings: noted for the server, one per track
-/// (`server::write::changed`: sent at once when the server has the track and "Sync favourites
-/// and ratings" is on). Several notes in one transaction.
-fn tell_server(st: &Rc<State>, ids: &[i64], what: library::marks::Mark) {
+/// The user changed these tracks' favourites: noted for the server, one per track
+/// (`server::write::changed`: sent at once when the server has the track and "Sync favourites"
+/// is on). Several notes in one transaction.
+fn tell_server(st: &Rc<State>, ids: &[i64]) {
     let tx = if ids.len() > 1 { library::db::write(&st.db).ok() } else { None };
     for &id in ids {
-        crate::server::write::changed(st, id, what);
+        crate::server::write::changed(st, id);
     }
     if let Some(tx) = tx
         && let Err(e) = tx.commit()
@@ -169,7 +169,7 @@ fn tell_server(st: &Rc<State>, ids: &[i64], what: library::marks::Mark) {
 /// every list, the smart playlists and the player bar in step. Every change of a track's
 /// favourite the user makes goes through here (not those the server's own sync takes).
 pub fn favourites_written(st: &Rc<State>, ids: &[i64], fav: bool) {
-    tell_server(st, ids, library::marks::Mark::Favourite);
+    tell_server(st, ids);
     crate::connections::listens::love(st, ids, fav);
     crate::playlists::smart::changed(st);
     let set: HashSet<i64> = ids.iter().copied().collect();
@@ -183,26 +183,6 @@ pub fn favourites_written(st: &Rc<State>, ids: &[i64], fav: bool) {
     }
 }
 
-/// Ratings were written (one track's, or a selection's in one transaction): the server told,
-/// every list, the smart playlists and the player bar in step. Every change of a track's rating
-/// the user makes goes through here (not those the server's own sync takes).
-pub fn ratings_written(st: &Rc<State>, ids: &[i64], stars: u8) {
-    for id in ids {
-        crate::rows::remember_rating(*id, stars);
-    }
-    tell_server(st, ids, library::marks::Mark::Rating);
-    crate::playlists::smart::changed(st);
-    let set: HashSet<i64> = ids.iter().copied().collect();
-    for l in st.lists.all() {
-        l.ratings_changed(&set);
-    }
-    if ids.contains(&views::playing_track_id(st))
-        && let Some(app) = st.app.upgrade()
-    {
-        app.global::<crate::Player>().set_rating(i32::from(stars));
-    }
-}
-
 // ---- the menu of several tracks ---------------------------------------------------
 
 /// What an entry of the menu of several tracks does.
@@ -211,8 +191,6 @@ pub enum Many {
     Play,
     Enqueue { next: bool },
     Favourite(bool),
-    RateMenu,
-    Rate(u8),
     RemoveFromPlaylist,
     QueueRemove,
 }
@@ -250,27 +228,15 @@ fn target(st: &Rc<State>) -> Option<(String, Vec<usize>)> {
     Some((ctx, rows))
 }
 
-/// The tracks of the open menu, whether they are all favourites, and their rating when they
-/// share one (for its entries).
-pub fn marks_of(st: &State, ctx: &str) -> (bool, Option<u8>) {
+/// Whether the tracks of the open menu are all favourites (for its entries).
+pub fn all_favourites(st: &State, ctx: &str) -> bool {
     let tracks = tracks_at(st, ctx, &rows(st, ctx));
     let favs = views::favourite_set(st, tracks.iter().map(|t| t.id));
-    let all_fav = !tracks.is_empty() && tracks.iter().all(|t| favs.contains(&t.id));
-    let first = tracks.first().map(|t| crate::rows::rating_of(t.id));
-    let same = first.filter(|r| tracks.iter().all(|t| crate::rows::rating_of(t.id) == *r));
-    (all_fav, same)
+    !tracks.is_empty() && tracks.iter().all(|t| favs.contains(&t.id))
 }
 
 /// An entry of the menu of several tracks chosen.
 pub fn act(st: &Rc<State>, what: Many) {
-    if what == Many::RateMenu {
-        let Some((ctx, _)) = target(st) else { return };
-        let (_, rating) = marks_of(st, &ctx);
-        let saved = OPENED.with(|o| o.borrow().clone());
-        crate::menus::show_rating_many(st, rating);
-        OPENED.with(|o| *o.borrow_mut() = saved);
-        return;
-    }
     let Some((ctx, rows)) = target(st) else { return };
     menu_closed();
     let tracks = tracks_at(st, &ctx, &rows);
@@ -298,24 +264,11 @@ pub fn act(st: &Rc<State>, what: Many) {
             let done = if fav { format!("Added {} to favourites", tracks_word(ids.len())) } else { format!("Removed {} from favourites", tracks_word(ids.len())) };
             views::flash(st, &format!("{done}{note}"));
         }
-        Many::Rate(stars) => {
-            let (kept, note) = in_library(tracks);
-            let ids: Vec<i64> = kept.iter().map(|t| t.id).collect();
-            if !ids.is_empty() {
-                if let Err(e) = query::set_ratings(&st.db, &ids, stars) {
-                    return views::not_written(st, "Could not change the ratings", &e);
-                }
-                ratings_written(st, &ids, stars);
-            }
-            let done = if stars == 0 { format!("Ratings cleared for {}", tracks_word(ids.len())) } else { format!("Rated {} {}", tracks_word(ids.len()), crate::rows::stars(stars)) };
-            views::flash(st, &format!("{done}{note}"));
-        }
         Many::RemoveFromPlaylist => remove_from_playlist(st, &rows),
         Many::QueueRemove => {
             playback::queue_remove_many(st, &rows);
             views::flash(st, &format!("Removed {} from the queue", tracks_word(n)));
         }
-        Many::RateMenu => {}
     }
 }
 

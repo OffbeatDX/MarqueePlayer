@@ -11,7 +11,7 @@
 //! - `added:` and `played:` with `<30d` (within the last 30 days), `>1y` (longer ago, or never
 //!   played), `2024`, `2024-03`, `>2023`, `2023..2024`; `played:never`;
 //! - `is:favourite` (and `favorite`, `fav`), `is:favalbum`, `is:local`, `is:remote`, `is:lossless`,
-//!   `is:lossy`, `is:played`, `is:unplayed`, `is:rated`, `is:unrated`; `playlist:name`;
+//!   `is:lossy`, `is:played`, `is:unplayed`; `playlist:name`;
 //! - a leading `-` negates a term; `OR` (upper case) between terms makes them one term that any
 //!   of them satisfies; everything else is ANDed.
 //!
@@ -52,7 +52,7 @@ impl Parsed {
     }
 
     /// The query as smart playlist rules, evaluated at `level`; None when a term cannot apply
-    /// there (a rating says nothing about an album). Text is title, artist, album or album artist
+    /// there (a play count says nothing about an album). Text is title, artist, album or album artist
     /// for tracks, and album, album artist or label for albums, as plain search looks.
     pub fn rules(&self, level: Level) -> Option<Smart> {
         let mut root: Vec<Node> = Vec::new();
@@ -85,7 +85,6 @@ impl Parsed {
     pub fn sort(&self) -> Sort {
         let key = self.clauses.iter().flatten().find_map(|a| match a {
             Atom::Rule(n) => fields(n).into_iter().find_map(|f| match f {
-                Field::Rating => Some(SortKey::Rating),
                 Field::Plays => Some(SortKey::Plays),
                 Field::Added => Some(SortKey::Added),
                 Field::LastPlayed => Some(SortKey::LastPlayed),
@@ -360,7 +359,6 @@ fn key(k: &str) -> Option<Key> {
         "format" | "codec" => Field::Format,
         "path" | "file" | "folder" => Field::Path,
         "year" | "date" => Field::Year,
-        "rating" | "rated" | "stars" => Field::Rating,
         "plays" | "playcount" | "count" => Field::Plays,
         "length" | "duration" | "time" | "len" => Field::Duration,
         "bitrate" | "kbps" => Field::Bitrate,
@@ -376,6 +374,7 @@ fn key(k: &str) -> Option<Key> {
         "composer" => return Some(Key::Missing("the library does not keep composers")),
         "lyrics" => return Some(Key::Missing("lyrics are read from the files only when shown")),
         "mood" | "bpm" | "comment" => return Some(Key::Missing("the library does not keep it")),
+        "rating" | "rated" | "stars" => return Some(Key::Missing("the library does not keep ratings")),
         _ => return None,
     }))
 }
@@ -446,9 +445,9 @@ fn atom(t: &Tok, playlist: &dyn Fn(&str) -> Option<i64>, notes: &mut Vec<String>
         Key::Field(f) => field_rule(f, &value),
         Key::Is => flag(&value),
         Key::Has => match value.to_ascii_lowercase().as_str() {
-            "rating" | "stars" => Ok(Node::Cond(Cond::new(Field::Rating, Op::IsNot, Value::Num(0.0)))),
+            "rating" | "stars" => Err("the library does not keep ratings".into()),
             "lyrics" => Err("lyrics are read from the files only when shown, so search cannot tell".into()),
-            _ => Err(format!("has: takes rating, not \u{201c}{value}\u{201d}")),
+            _ => Err(format!("search cannot tell whether a track has \u{201c}{value}\u{201d}")),
         },
         Key::Playlist => match playlist(&value) {
             Some(id) => Ok(Node::Cond(Cond::new(Field::Playlist, Op::In, Value::Id(id)))),
@@ -477,9 +476,8 @@ fn flag(v: &str) -> Result<Node, String> {
         "lossy" => c(Field::Lossless, Op::No),
         "played" => c(Field::Played, Op::Yes),
         "unplayed" | "new" | "neverplayed" => c(Field::Played, Op::No),
-        "rated" => Ok(Node::Cond(Cond::new(Field::Rating, Op::IsNot, Value::Num(0.0)))),
-        "unrated" => Ok(Node::Cond(Cond::new(Field::Rating, Op::Is, Value::Num(0.0)))),
-        _ => Err("is: takes favourite, favalbum, local, remote, lossless, lossy, played, unplayed, rated or unrated".into()),
+        "rated" | "unrated" => Err("the library does not keep ratings".into()),
+        _ => Err("is: takes favourite, favalbum, local, remote, lossless, lossy, played or unplayed".into()),
     }
 }
 

@@ -2,8 +2,7 @@
 //! picked goes in as a bound parameter; the SQL text is made only of this file's own
 //! fragments, so no value can change what the query does. Multi-valued fields and
 //! favourites are non-correlated `IN (...)` subqueries (evaluated once, then looked up);
-//! plays, last played and ratings are correlated lookups on their indexes
-//! (`plays_track_time`, schema 9; `track_ratings`' key).
+//! plays and last played are correlated lookups on their index (`plays_track_time`, schema 9).
 
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
@@ -53,7 +52,6 @@ const FROM: &str = " FROM tracks t JOIN albums a ON a.id = t.album_id";
 const YEAR: &str = "(CASE WHEN a.date GLOB '[0-9][0-9][0-9][0-9]*' THEN CAST(substr(a.date, 1, 4) AS INTEGER) END)";
 const PLAYS: &str = "(SELECT COUNT(*) FROM plays p WHERE p.track_id = t.id)";
 const LAST: &str = "(SELECT MAX(p.played_at) FROM plays p WHERE p.track_id = t.id)";
-const RATING: &str = "COALESCE((SELECT r.rating FROM track_ratings r WHERE r.track_id = t.id), 0)";
 const LOSSLESS: &str = "t.codec IN ('FLAC', 'ALAC', 'WAV', 'AIFF')";
 const LOSSY: &str = "t.codec IN ('MP3', 'MP2', 'AAC', 'Opus', 'Vorbis')";
 /// The tie-breakers after every order: an album's tracks in their order, then the id, so
@@ -235,7 +233,6 @@ impl Compiler<'_> {
                 f.p(ago(self.ctx, n, unit)).s(")");
                 f
             }
-            Field::Rating => Frag::of(RATING),
             // Whole seconds, as lengths are shown.
             Field::Duration => Frag::of("CAST(t.duration AS INTEGER)"),
             Field::Bitrate => Frag::of("t.bitrate"),
@@ -379,9 +376,6 @@ impl Compiler<'_> {
             }
             SortKey::PlaysIn(n, unit) => {
                 f.s("(SELECT COUNT(*) FROM plays p WHERE p.track_id = t.id AND p.played_at >= ").p(ago(self.ctx, n, unit)).s(&format!("){dir}, "));
-            }
-            SortKey::Rating => {
-                f.s(&format!("{RATING}{dir}, "));
             }
             SortKey::Duration => {
                 f.s(&format!("t.duration{dir}, "));

@@ -73,7 +73,6 @@ pub enum Field {
     Played,
     Favourite,
     AlbumFavourite,
-    Rating,
     Duration,
     Format,
     Lossless,
@@ -90,7 +89,7 @@ pub enum Field {
 
 impl Field {
     /// In the order the field picker lists them.
-    pub const ALL: [Field; 26] = [
+    pub const ALL: [Field; 25] = [
         Field::Title,
         Field::Artist,
         Field::AlbumArtist,
@@ -98,7 +97,6 @@ impl Field {
         Field::Genre,
         Field::Label,
         Field::Year,
-        Field::Rating,
         Field::Favourite,
         Field::AlbumFavourite,
         Field::Plays,
@@ -135,7 +133,6 @@ impl Field {
             Field::Played => "played",
             Field::Favourite => "favourite",
             Field::AlbumFavourite => "album_favourite",
-            Field::Rating => "rating",
             Field::Duration => "duration",
             Field::Format => "format",
             Field::Lossless => "lossless",
@@ -171,7 +168,6 @@ impl Field {
             Field::Played => "Played",
             Field::Favourite => "Favourite",
             Field::AlbumFavourite => "Favourite album",
-            Field::Rating => "Rating",
             Field::Duration => "Length",
             Field::Format => "Format",
             Field::Lossless => "Lossless",
@@ -193,7 +189,6 @@ impl Field {
             Field::Year
             | Field::Plays
             | Field::PlaysIn
-            | Field::Rating
             | Field::Duration
             | Field::Bitrate
             | Field::SampleRate
@@ -238,7 +233,7 @@ impl Field {
     /// The operator a new condition on this field starts with.
     pub fn default_op(self) -> Op {
         match self {
-            Field::Rating | Field::Plays | Field::PlaysIn | Field::Bitrate | Field::SampleRate | Field::BitDepth => Op::AtLeast,
+            Field::Plays | Field::PlaysIn | Field::Bitrate | Field::SampleRate | Field::BitDepth => Op::AtLeast,
             Field::Duration => Op::AtLeast,
             Field::Played => Op::No,
             _ => self.ops()[0],
@@ -340,7 +335,7 @@ impl Op {
 }
 
 /// A condition's value, in the field's own units: durations in seconds, sample rates in Hz,
-/// bitrates in kbps, ratings 0 (not rated) to 5, dates added and plays by the calendar.
+/// bitrates in kbps, dates added and plays by the calendar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     None,
@@ -382,9 +377,6 @@ impl Cond {
         let number = |v: f64| -> Result<(), String> {
             if !v.is_finite() || v < 0.0 {
                 return Err("Type a number".into());
-            }
-            if self.field == Field::Rating && v > 5.0 {
-                return Err("A rating is 0 to 5".into());
             }
             Ok(())
         };
@@ -458,14 +450,13 @@ pub enum SortKey {
     Plays,
     /// Plays within a recent period.
     PlaysIn(u32, Unit),
-    Rating,
     Duration,
     /// A stable shuffle: the same for one seed (`Smart::seed`), new when reshuffled.
     Random,
 }
 
 impl SortKey {
-    pub const CHOICES: [SortKey; 12] = [
+    pub const CHOICES: [SortKey; 11] = [
         SortKey::ArtistAlbum,
         SortKey::Title,
         SortKey::Artist,
@@ -475,7 +466,6 @@ impl SortKey {
         SortKey::LastPlayed,
         SortKey::Plays,
         SortKey::PlaysIn(30, Unit::Days),
-        SortKey::Rating,
         SortKey::Duration,
         SortKey::Random,
     ];
@@ -491,7 +481,6 @@ impl SortKey {
             SortKey::LastPlayed => "last_played",
             SortKey::Plays => "plays",
             SortKey::PlaysIn(..) => "plays_in",
-            SortKey::Rating => "rating",
             SortKey::Duration => "duration",
             SortKey::Random => "random",
         }
@@ -508,7 +497,6 @@ impl SortKey {
             SortKey::LastPlayed => "Last played",
             SortKey::Plays => "Play count",
             SortKey::PlaysIn(..) => "Plays in the last",
-            SortKey::Rating => "Rating",
             SortKey::Duration => "Length",
             SortKey::Random => "Random",
         }
@@ -659,6 +647,7 @@ impl Smart {
     }
 
     fn from_map(mut m: Map<String, Json>) -> Smart {
+        strip_ratings(&mut m);
         let version = m.remove("v").and_then(|v| v.as_u64()).map_or(FORMAT, |v| v.min(u64::from(u32::MAX)) as u32);
         let all = match m.remove("match") {
             Some(Json::String(s)) if s == "any" => false,
@@ -777,6 +766,49 @@ impl Smart {
         }
         None
     }
+}
+
+/// Take out of a stored rule set what was about ratings, which the app no longer keeps: each
+/// rating condition is dropped from its group (a group left with no rules goes too), and an
+/// order or a limit's selection by rating becomes the default order. The other rules stay as
+/// they were. Whether anything was taken out.
+pub fn strip_ratings(m: &mut Map<String, Json>) -> bool {
+    fn rules(nodes: &mut Vec<Json>) -> bool {
+        let before = nodes.len();
+        let mut changed = false;
+        nodes.retain_mut(|n| {
+            if n.get("field").and_then(Json::as_str) == Some("rating") {
+                return false;
+            }
+            if n.get("group").is_some()
+                && let Some(Json::Array(inner)) = n.get_mut("rules")
+                && rules(inner)
+            {
+                changed = true;
+                return !inner.is_empty();
+            }
+            true
+        });
+        changed || nodes.len() != before
+    }
+    fn by_rating(s: Option<&Json>) -> bool {
+        s.and_then(|s| s.get("by")).and_then(Json::as_str) == Some("rating")
+    }
+    let mut changed = match m.get_mut("rules") {
+        Some(Json::Array(a)) => rules(a),
+        _ => false,
+    };
+    if by_rating(m.get("sort")) {
+        m.remove("sort");
+        changed = true;
+    }
+    if let Some(Json::Object(l)) = m.get_mut("limit")
+        && by_rating(l.get("by"))
+    {
+        l.remove("by");
+        changed = true;
+    }
+    changed
 }
 
 fn sort_from(j: Option<Json>) -> Sorting {
@@ -949,7 +981,6 @@ pub fn templates() -> Vec<(&'static str, Smart)> {
                 None,
             ),
         ),
-        ("Top rated", rules(true, vec![Cond::new(Field::Rating, Op::AtLeast, Value::Num(4.0))], Sort::new(SortKey::Rating), None)),
         (
             "Most played this year",
             rules(

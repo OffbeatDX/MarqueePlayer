@@ -1,6 +1,6 @@
 //! A library as its user knows it, as text: everything a page can show of its tracks, albums,
 //! artists and genres, and every piece of the user's own data (plays, favourites and their
-//! times, ratings, playlists, the queue), keyed by what the user knows a thing by (a track by
+//! times, playlists, the queue), keyed by what the user knows a thing by (a track by
 //! its file, an album by its identity), never by row numbers, which may be handed out in
 //! another order. Two libraries that dump alike are the same to the user.
 //!
@@ -88,10 +88,6 @@ pub fn dump(conn: &Connection, since_ms: i64, ids_up_to: i64) -> Vec<(&'static s
         q(
             "favourite tracks",
             "SELECT t.path, f.added_at FROM favourite_tracks f JOIN tracks t ON t.id = f.track_id WHERE ?1 = ?1 AND ?2 = ?2 ORDER BY 1",
-        ),
-        q(
-            "ratings",
-            "SELECT t.path, r.rating, r.rated_at FROM track_ratings r JOIN tracks t ON t.id = r.track_id WHERE ?1 = ?1 AND ?2 = ?2 ORDER BY 1",
         ),
         q(
             "playlists",

@@ -12,7 +12,7 @@ component ServerSettings inherits VerticalLayout {
         padding-top: 12px;
         ServiceHead {
             title: "Server";
-            blurb: "Add the music on your Navidrome (or another Subsonic) server: it shows with your folders' music as one library, each album and track once. Its music files are never changed: only your favourites, ratings and plays go back to it, as the switches below say.";
+            blurb: "Add the music on your Navidrome (or another Subsonic) server: it shows with your folders' music as one library, each album and track once. Its music files are never changed: only your favourites and plays go back to it, as the switches below say.";
         }
     }
     if Server.held != "": StatusNote {
@@ -121,9 +121,9 @@ component ServerSettings inherits VerticalLayout {
     SettingCard {
         SwitchRow {
             divider: false;
-            label: "Sync favourites and ratings with the server";
-            hint: "Both ways, for the tracks the server has: a heart or stars changed here go to the server at once, and one changed there comes here at the next sync.";
-            more: "When both sides changed the same track, a rating made here wins, and for a favourite the later change wins. The first sync keeps every favourite of either side and a rating made here. Only the server's own record of your stars and ratings changes, never a music file. Off: nothing is sent or taken.";
+            label: "Sync favourites with the server";
+            hint: "Both ways, for the tracks the server has: a heart changed here goes to the server at once, and one changed there comes here at the next sync.";
+            more: "When both sides changed the same track, the later change wins. The first sync keeps every favourite of either side. Only the server's own record of your favourites changes, never a music file. Off: nothing is sent or taken.";
             checked: Server.sync-marks;
             toggled => { Actions.server-toggle(0); }
         }

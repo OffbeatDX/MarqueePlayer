@@ -1,30 +1,28 @@
-//! Favourites, ratings and plays of the tracks a server has, kept in step with the server
+//! Favourites and plays of the tracks a server has, kept in step with the server
 //! (docs/features/navidrome.md). The database side and the rules only; the app asks the server and
 //! sends what is decided here (no network code here).
 //!
 //! **What is compared.** Per server song (`remote_marks`, keyed by its id, so it follows the
-//! song through a merge with a file and back): the favourite and the rating last agreed with
-//! the server. Each sync that read the server's own values (`Seen`) compares three things: the
-//! local value now, the server's now and the agreed one. Only the server's changed: the
-//! server's is taken. Only the local one changed: it is sent. Both changed (to different
-//! values): for a rating the local one wins; for a favourite the newer change wins when both
-//! times are known (the server's star time, the app's own change time), else the local one. A
-//! change made in the app since the agreement (`star_local`, `rating_local`) is a local change
-//! even when it came back to the agreed value.
+//! song through a merge with a file and back): the favourite last agreed with the server.
+//! Each sync that read the server's own values (`Seen`) compares three things: the local
+//! value now, the server's now and the agreed one. Only the server's changed: the server's is
+//! taken. Only the local one changed: it is sent. Both changed (to different values): the
+//! newer change wins when both times are known (the server's star time, the app's own change
+//! time), else the local one. A change made in the app since the agreement (`star_local`) is
+//! a local change even when it came back to the agreed value.
 //!
 //! **Never agreed** (the first sync after this came, or a song new to the library): favourites
-//! are the union (starred on either side: starred on both), a local rating other than none is
-//! kept (and sent), else the server's is taken. A value the user changed in the app before any
-//! agreement wins as a local change does.
+//! are the union (starred on either side: starred on both). A value the user changed in the
+//! app before any agreement wins as a local change does.
 //!
-//! **The scale** is the same on both sides: 1 to 5 whole stars, 0 for none (`setRating` 0 removes
-//! a rating). Nothing is rounded, so a value sent and read back is the value that was sent, and
-//! a local value is written only when it is to change.
+//! **Ratings** are no longer kept: `remote_marks`' rating columns (`rating`, `rating_agreed`,
+//! `rating_local`) stay in the table, read and written by nothing, and a rating changed in an
+//! older build and not yet sent is never sent.
 //!
 //! **Plays** of tracks the server has are queued (`remote_plays`, written with the play) until
 //! the server took them: offline, they wait for the next sync.
 //!
-//! What is pending needs no queue of its own for favourites and ratings: a local value that
+//! What is pending needs no queue of its own for favourites: a local value that
 //! differs from the agreed one is what is still to send, so a change made offline goes at the
 //! next sync, and one made while the app was closed too.
 
@@ -42,9 +40,6 @@ pub struct Agreed {
     pub starred_at: Option<i64>,
     pub star_agreed: Option<i64>,
     pub star_local: Option<i64>,
-    pub rating: Option<u8>,
-    pub rating_agreed: Option<i64>,
-    pub rating_local: Option<i64>,
 }
 
 /// What the server says of a song now, when it was read (None: not known this time).
@@ -52,7 +47,6 @@ pub struct Agreed {
 pub struct Seen {
     /// Some(Some(time)): starred then (Unix ms; 0 when it gave no time); Some(None): not starred.
     pub starred: Option<Option<i64>>,
-    pub rating: Option<u8>,
 }
 
 /// What to do with one value of a song: write it locally, send it to the server, record it as
@@ -147,66 +141,21 @@ pub fn decide_star(local: Option<i64>, m: &Agreed, seen: Option<Option<i64>>) ->
     }
 }
 
-/// The rating (0: none).
-pub fn decide_rating(local: u8, m: &Agreed, seen: Option<u8>) -> Plan<u8> {
-    let touched = touched_since(m.rating_local, m.rating_agreed);
-    match (m.rating, seen) {
-        (None, None) => {
-            if local != 0 || m.rating_local.is_some() {
-                Plan::push(local)
-            } else {
-                Plan::none()
-            }
-        }
-        (None, Some(s)) => {
-            if local != 0 || m.rating_local.is_some() {
-                if local == s { Plan::agree(local, None) } else { Plan::push(local) }
-            } else if s != 0 {
-                Plan::take(s, None)
-            } else {
-                Plan::agree(0, None)
-            }
-        }
-        (Some(a), None) => {
-            if local != a || touched {
-                Plan::push(local)
-            } else {
-                Plan::none()
-            }
-        }
-        (Some(a), Some(s)) => {
-            let local_changed = local != a || touched;
-            if local == s {
-                if s == a && !touched { Plan::none() } else { Plan::agree(local, None) }
-            } else if local_changed {
-                // Only local changed, or both: the local rating wins.
-                Plan::push(local)
-            } else {
-                Plan::take(s, None)
-            }
-        }
-    }
-}
-
 // ---- the database -----------------------------------------------------------------
 
-/// A track the server has, as compared: its song, its local favourite and rating, what was
-/// agreed.
+/// A track the server has, as compared: its song, its local favourite, what was agreed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Row {
     pub song_id: String,
     pub track_id: i64,
     /// The local favourite's time (Unix ms) when it is one.
     pub starred: Option<i64>,
-    pub rating: u8,
     pub agreed: Agreed,
 }
 
-const ROWS: &str = "SELECT t.remote_id, t.id, f.added_at, r.rating,
-        m.starred, m.starred_at, m.star_agreed, m.star_local, m.rating, m.rating_agreed, m.rating_local
+const ROWS: &str = "SELECT t.remote_id, t.id, f.added_at, m.starred, m.starred_at, m.star_agreed, m.star_local
      FROM tracks t
      LEFT JOIN favourite_tracks f ON f.track_id = t.id
-     LEFT JOIN track_ratings r ON r.track_id = t.id
      LEFT JOIN remote_marks m ON m.song_id = t.remote_id
      WHERE t.remote_id IS NOT NULL";
 
@@ -215,16 +164,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
         song_id: r.get(0)?,
         track_id: r.get(1)?,
         starred: r.get::<_, Option<i64>>(2)?.map(|s| s * 1000),
-        rating: r.get::<_, Option<i64>>(3)?.unwrap_or(0).clamp(0, 5) as u8,
-        agreed: Agreed {
-            starred: r.get::<_, Option<bool>>(4)?,
-            starred_at: r.get(5)?,
-            star_agreed: r.get(6)?,
-            star_local: r.get(7)?,
-            rating: r.get::<_, Option<i64>>(8)?.map(|v| v.clamp(0, 5) as u8),
-            rating_agreed: r.get(9)?,
-            rating_local: r.get(10)?,
-        },
+        agreed: Agreed { starred: r.get::<_, Option<bool>>(3)?, starred_at: r.get(4)?, star_agreed: r.get(5)?, star_local: r.get(6)? },
     })
 }
 
@@ -239,24 +179,13 @@ pub fn row_of(conn: &Connection, track_id: i64) -> rusqlite::Result<Option<Row>>
     conn.prepare_cached(&format!("{ROWS} AND t.id = ?1"))?.query_row([track_id], row).optional()
 }
 
-/// Which value the app changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mark {
-    Favourite,
-    Rating,
-}
-
-/// The app changed a track's favourite or rating (the user did): noted, with the time, for a
-/// track the server has. Its song, when it has one.
-pub fn touched(conn: &Connection, track_id: i64, what: Mark) -> rusqlite::Result<Option<String>> {
+/// The app changed a track's favourite (the user did): noted, with the time, for a track the
+/// server has. Its song, when it has one.
+pub fn touched(conn: &Connection, track_id: i64) -> rusqlite::Result<Option<String>> {
     let Some(song): Option<String> = conn.prepare_cached("SELECT remote_id FROM tracks WHERE id = ?1")?.query_row([track_id], |r| r.get(0)).optional()?.flatten() else {
         return Ok(None);
     };
-    let col = match what {
-        Mark::Favourite => "star_local",
-        Mark::Rating => "rating_local",
-    };
-    conn.prepare_cached(&format!("INSERT INTO remote_marks (song_id, {col}) VALUES (?1, ?2) ON CONFLICT(song_id) DO UPDATE SET {col} = excluded.{col}"))?
+    conn.prepare_cached("INSERT INTO remote_marks (song_id, star_local) VALUES (?1, ?2) ON CONFLICT(song_id) DO UPDATE SET star_local = excluded.star_local")?
         .execute(params![song, now_ms()])?;
     Ok(Some(song))
 }
@@ -273,20 +202,6 @@ pub fn set_local_star(conn: &Connection, track_id: i64, starred: bool, at: Optio
     Ok(())
 }
 
-/// The local rating as the server has it (0: none).
-pub fn set_local_rating(conn: &Connection, track_id: i64, rating: u8) -> rusqlite::Result<()> {
-    if rating == 0 {
-        conn.prepare_cached("DELETE FROM track_ratings WHERE track_id = ?1")?.execute([track_id])?;
-    } else {
-        conn.prepare_cached(
-            "INSERT INTO track_ratings (track_id, rating, rated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(track_id) DO UPDATE SET rating = excluded.rating, rated_at = excluded.rated_at WHERE rating != excluded.rating",
-        )?
-        .execute(params![track_id, i64::from(rating.min(5)), crate::db::now()])?;
-    }
-    Ok(())
-}
-
 /// The favourite agreed with the server, now.
 pub fn agree_star(conn: &Connection, song: &str, starred: bool, at: Option<i64>) -> rusqlite::Result<()> {
     conn.prepare_cached(
@@ -294,16 +209,6 @@ pub fn agree_star(conn: &Connection, song: &str, starred: bool, at: Option<i64>)
          ON CONFLICT(song_id) DO UPDATE SET starred = excluded.starred, starred_at = excluded.starred_at, star_agreed = excluded.star_agreed",
     )?
     .execute(params![song, starred, at, now_ms()])?;
-    Ok(())
-}
-
-/// The rating agreed with the server, now.
-pub fn agree_rating(conn: &Connection, song: &str, rating: u8) -> rusqlite::Result<()> {
-    conn.prepare_cached(
-        "INSERT INTO remote_marks (song_id, rating, rating_agreed) VALUES (?1, ?2, ?3)
-         ON CONFLICT(song_id) DO UPDATE SET rating = excluded.rating, rating_agreed = excluded.rating_agreed",
-    )?
-    .execute(params![song, i64::from(rating.min(5)), now_ms()])?;
     Ok(())
 }
 
@@ -407,38 +312,6 @@ mod tests {
         assert_eq!(decide_star(None, &touched, None), Plan::push(false));
     }
 
-    fn rated(r: u8) -> Agreed {
-        Agreed { rating: Some(r), rating_agreed: Some(1_000), ..Agreed::default() }
-    }
-
-    #[test]
-    fn ratings_go_both_ways_and_local_wins_when_both_changed() {
-        assert_eq!(decide_rating(3, &rated(3), Some(5)), Plan::take(5, None), "only the server");
-        assert_eq!(decide_rating(4, &rated(3), Some(3)), Plan::push(4), "only local");
-        assert_eq!(decide_rating(0, &rated(3), Some(3)), Plan::push(0), "cleared locally");
-        assert_eq!(decide_rating(4, &rated(3), Some(1)), Plan::push(4), "both: local wins");
-        assert_eq!(decide_rating(4, &rated(3), Some(4)), Plan::agree(4, None), "both, the same");
-        assert_eq!(decide_rating(3, &rated(3), Some(3)), Plan::none());
-        assert_eq!(decide_rating(3, &rated(3), Some(0)), Plan::take(0, None), "cleared on the server");
-        assert_eq!(decide_rating(2, &rated(3), None), Plan::push(2), "the server not read: a local change goes");
-        assert_eq!(decide_rating(3, &rated(3), None), Plan::none());
-        // Rated 4 then 3 again in the app after the agreement; 5 on the server: the app's.
-        let mut m = rated(3);
-        m.rating_local = Some(2_000);
-        assert_eq!(decide_rating(3, &m, Some(5)), Plan::push(3));
-    }
-
-    #[test]
-    fn the_first_sync_keeps_a_local_rating_else_takes_the_server_s() {
-        let never = Agreed::default();
-        assert_eq!(decide_rating(4, &never, Some(2)), Plan::push(4));
-        assert_eq!(decide_rating(4, &never, Some(4)), Plan::agree(4, None));
-        assert_eq!(decide_rating(0, &never, Some(2)), Plan::take(2, None));
-        assert_eq!(decide_rating(0, &never, Some(0)), Plan::agree(0, None));
-        assert_eq!(decide_rating(4, &never, None), Plan::push(4));
-        assert_eq!(decide_rating(0, &never, None), Plan::none());
-    }
-
     #[test]
     fn rows_touches_and_agreements() {
         let conn = crate::db::open_in_memory().unwrap();
@@ -448,25 +321,27 @@ mod tests {
                  VALUES (10, 'M:/a/01.flac', 1, 'One', 'B', 200.5, 123, 456, 7, 's1'), (11, 'M:/a/02.flac', 1, 'Two', 'B', 180.0, 124, 457, 8, NULL),
                         (12, 'navidrome:song/s3', 1, 'Three', 'B', 90.0, 0, 999, 9, 's3');
              INSERT INTO favourite_tracks VALUES (12, 10);
-             INSERT INTO track_ratings VALUES (10, 4, 11);",
+             INSERT INTO track_ratings VALUES (10, 4, 11);
+             INSERT INTO remote_marks (song_id, rating, rating_agreed, rating_local) VALUES ('s3', 2, 1, 5);",
         )
         .unwrap();
         let rows = rows(&conn).unwrap();
-        assert_eq!(rows.iter().map(|r| (r.song_id.as_str(), r.track_id, r.starred, r.rating)).collect::<Vec<_>>(), [("s1", 10, None, 4), ("s3", 12, Some(10_000), 0)], "only the server's tracks");
+        // A rating and a rating change not yet sent, left by a build that kept them: nothing
+        // to compare or to send.
+        assert_eq!(rows.iter().map(|r| (r.song_id.as_str(), r.track_id, r.starred)).collect::<Vec<_>>(), [("s1", 10, None), ("s3", 12, Some(10_000))], "only the server's tracks");
         assert_eq!(rows[0].agreed, Agreed::default());
-        assert_eq!(touched(&conn, 11, Mark::Favourite).unwrap(), None, "a track the server does not have");
-        assert_eq!(touched(&conn, 10, Mark::Rating).unwrap().as_deref(), Some("s1"));
+        assert_eq!(rows[1].agreed, Agreed::default(), "a pending rating is no pending favourite");
+        assert_eq!(touched(&conn, 11).unwrap(), None, "a track the server does not have");
+        assert_eq!(touched(&conn, 10).unwrap().as_deref(), Some("s1"));
         agree_star(&conn, "s1", true, Some(77)).unwrap();
-        agree_rating(&conn, "s1", 4).unwrap();
         let r = row_of(&conn, 10).unwrap().unwrap();
-        assert!(r.agreed.rating_local.is_some() && r.agreed.rating == Some(4) && r.agreed.starred == Some(true) && r.agreed.starred_at == Some(77));
+        assert!(r.agreed.star_local.is_some() && r.agreed.starred == Some(true) && r.agreed.starred_at == Some(77));
         set_local_star(&conn, 10, true, Some(5_000)).unwrap();
-        set_local_rating(&conn, 12, 3).unwrap();
         set_local_star(&conn, 12, false, None).unwrap();
         let r = row_of(&conn, 10).unwrap().unwrap();
-        assert_eq!((r.starred, r.rating), (Some(5_000), 4), "starred at the server's time");
+        assert_eq!(r.starred, Some(5_000), "starred at the server's time");
         let r = row_of(&conn, 12).unwrap().unwrap();
-        assert_eq!((r.starred, r.rating), (None, 3));
+        assert_eq!(r.starred, None);
         // Plays: only of the server's tracks, oldest first, off once reported.
         assert!(queue_play(&conn, 12, 200).unwrap());
         assert!(queue_play(&conn, 10, 100).unwrap());

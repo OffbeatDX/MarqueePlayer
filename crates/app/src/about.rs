@@ -110,7 +110,7 @@ pub fn places(p: &Paths) -> Vec<Place> {
     vec![
         Place { what: "Settings", path: p.settings(), folder: false, note: "Folders, playback, window, keys" },
         Place { what: "Theme", path: p.theme(), folder: false, note: "Colours and sizes; edit it and the window follows" },
-        Place { what: "Library database", path: p.database(), folder: false, note: "Plays, favourites, ratings, playlists, the saved queue" },
+        Place { what: "Library database", path: p.database(), folder: false, note: "Plays, favourites, playlists, the saved queue" },
         Place { what: "Art cache", path: p.art(), folder: true, note: "Safe to delete: the next scan makes it again" },
         Place { what: "Lyrics cache", path: p.lyrics(), folder: true, note: "Safe to delete: tracks are looked up again as they play" },
         Place { what: "Log", path: p.log(), folder: false, note: "This run's log; the previous run's is kept beside it as marquee-player.previous.log" },

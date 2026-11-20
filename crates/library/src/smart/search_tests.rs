@@ -70,9 +70,7 @@ fn numbers_compare_and_range() {
     assert_eq!(one("year:>=2010"), cond(Field::Year, Op::AtLeast, num(2010.0)));
     assert_eq!(one("year:2010.."), cond(Field::Year, Op::AtLeast, num(2010.0)));
     assert_eq!(one("year:..1980"), cond(Field::Year, Op::AtMost, num(1980.0)));
-    assert_eq!(one("rating:>=4"), cond(Field::Rating, Op::AtLeast, num(4.0)));
-    assert_eq!(one("rating:4+"), cond(Field::Rating, Op::AtLeast, num(4.0)));
-    assert_eq!(one("rating:<3"), cond(Field::Rating, Op::AtMost, num(2.0)));
+    assert_eq!(one("plays:4+"), cond(Field::Plays, Op::AtLeast, num(4.0)));
     assert_eq!(one("plays:0"), cond(Field::Plays, Op::Is, num(0.0)));
     assert_eq!(one("plays:>10"), cond(Field::Plays, Op::AtLeast, num(11.0)));
     assert_eq!(one("plays:<=3"), cond(Field::Plays, Op::AtMost, num(3.0)));
@@ -143,8 +141,12 @@ fn flags_and_playlists() {
     ] {
         assert_eq!(one(q), cond(f, op, Value::None), "{q}");
     }
-    assert_eq!(one("is:unrated"), cond(Field::Rating, Op::Is, num(0.0)));
-    assert_eq!(one("has:rating"), cond(Field::Rating, Op::IsNot, num(0.0)));
+    // Ratings are no longer kept: their operators are text, and say so.
+    for q in ["rating:>=4", "stars:5", "is:rated", "is:unrated", "has:rating"] {
+        let parsed = p(q);
+        assert!(!parsed.has_operators() && parsed.notes.len() == 1 && parsed.notes[0].contains("ratings"), "{q}: {parsed:?}");
+        assert_eq!(parsed.clauses, vec![vec![text(false, q)]], "{q}");
+    }
     assert_eq!(one(r#"playlist:"Road Trip""#), cond(Field::Playlist, Op::In, Value::Id(7)));
     assert_eq!(one("-in:\"road trip\""), cond(Field::Playlist, Op::NotIn, Value::Id(7)));
     let parsed = p("playlist:nope");
@@ -159,7 +161,7 @@ fn negation_flips_to_the_rules_own_opposites() {
     assert_eq!(one("-genre:live"), cond(Field::Genre, Op::NotContains, Value::Text("live".into())));
     assert_eq!(one("-is:remote"), cond(Field::Remote, Op::No, Value::None));
     assert_eq!(one("-label:=ECM"), cond(Field::Label, Op::IsNot, Value::Text("ECM".into())));
-    assert_eq!(one("-rating:>=4"), cond(Field::Rating, Op::AtMost, num(3.0)));
+    assert_eq!(one("-plays:>=4"), cond(Field::Plays, Op::AtMost, num(3.0)));
     assert_eq!(one("-plays:0"), cond(Field::Plays, Op::IsNot, num(0.0)));
     assert_eq!(one("-added:<30d"), cond(Field::Added, Op::NotInLast, Value::Ago(30, Unit::Days)));
     let any = |nodes: Vec<Node>| Atom::Rule(Node::Group(Group { all: false, nodes }));
@@ -235,12 +237,12 @@ fn what_is_not_understood_is_text_and_said() {
         assert!(!parsed.has_operators(), "{q}: {parsed:?}");
     }
     assert!(p("4:33").notes.is_empty() && p(":)").notes.is_empty() && p("Mission: Impossible").notes.is_empty());
-    for q in ["rating:9", "rating:great", "year:85", "plays:-1", "bitrate:fast", "artist:", "composer:bach", "is:shiny", "has:art", "length:"] {
+    for q in ["rating:9", "plays:great", "year:85", "plays:-1", "bitrate:fast", "artist:", "composer:bach", "is:shiny", "has:art", "length:"] {
         let parsed = p(q);
         assert!(!parsed.has_operators(), "{q}: {parsed:?}");
         assert_eq!(parsed.notes.len(), 1, "{q}: {parsed:?}");
     }
-    assert!(p("rating:9").notes[0].contains("0 to 5"), "{:?}", p("rating:9").notes);
+    assert!(p("rating:9").notes[0].contains("does not keep ratings"), "{:?}", p("rating:9").notes);
     // A plain query reads as plain: one text term per word, no operators.
     let parsed = p("nina simone");
     assert!(!parsed.has_operators() && parsed.notes.is_empty());
@@ -313,8 +315,6 @@ fn queries_select_what_they_say_on_the_fixture() {
     let want = |f: &dyn Fn(&super::super::reference::RTrack) -> bool| -> HashSet<i64> { lib.tracks.iter().filter(|t| f(t)).map(|t| t.id).collect() };
     let words = |t: &super::super::reference::RTrack, w: &str| has(&t.title, w) || t.credited.iter().any(|a| has(a, w)) || has(&t.album, w) || t.album_artists.iter().any(|a| has(a, w));
 
-    assert_eq!(set(ids(&conn, "rating:>=4")), want(&|t| t.rating >= 4));
-    assert_eq!(set(ids(&conn, "-rating:>=4")), want(&|t| t.rating < 4));
     assert_eq!(set(ids(&conn, "plays:0")), want(&|t| t.plays.is_empty()));
     assert_eq!(set(ids(&conn, "plays:>2")), want(&|t| t.plays.len() > 2));
     assert_eq!(set(ids(&conn, "length:<3:00")), want(&|t| (t.duration as i64) < 180));
@@ -329,21 +329,21 @@ fn queries_select_what_they_say_on_the_fixture() {
     assert_eq!(set(ids(&conn, "genre:rock OR genre:ambient")), want(&|t| t.genres.iter().any(|g| has(g, "rock") || has(g, "ambient"))));
     assert_eq!(set(ids(&conn, "artist:beyonce")), want(&|t| t.credited.iter().any(|a| has(a, "beyonce"))));
     assert_eq!(set(ids(&conn, "love is:lossless")), want(&|t| words(t, "love") && matches!(t.codec.as_deref(), Some("FLAC" | "ALAC" | "WAV" | "AIFF"))));
-    assert_eq!(set(ids(&conn, "-love rating:5")), want(&|t| !words(t, "love") && t.rating == 5));
+    assert_eq!(set(ids(&conn, "-love plays:0")), want(&|t| !words(t, "love") && t.plays.is_empty()));
     assert_eq!(set(ids(&conn, "band OR café plays:0")), want(&|t| (words(t, "band") || words(t, "café")) && t.plays.is_empty()));
     let ago = |n: i64| ctx().now - n * 86_400;
     assert_eq!(set(ids(&conn, "played:<30d")), want(&|t| t.plays.iter().any(|p| *p >= ago(30))));
     assert_eq!(set(ids(&conn, "played:>1y")), want(&|t| t.plays.iter().all(|p| *p < super::super::ago(ctx(), 1, Unit::Years))));
     assert_eq!(set(ids(&conn, "added:<90d")), want(&|t| t.added_ms >= ago(90) * 1000));
     // A term and its negation never overlap; for a value every track has, they cover the library.
-    for q in ["rating:>=3", "plays:1..3", "length:>5", "is:favourite", "is:remote", "title:love", "played:<6m", "added:2024", "played:2024", "is:played", "label:=ECM"] {
+    for q in ["plays:>=3", "plays:1..3", "length:>5", "is:favourite", "is:remote", "title:love", "played:<6m", "added:2024", "played:2024", "is:played", "label:=ECM"] {
         let a = set(ids(&conn, q));
         let b = set(ids(&conn, &format!("-{q}")));
         assert!(a.is_disjoint(&b), "{q}");
         assert_eq!(&a | &b, all, "{q} and its opposite cover the library");
     }
     // Every query's SQL agrees with the reference evaluation.
-    for q in ["year:1990s OR is:favalbum rating:2..4", "-played:2024-06 artist:=Guest", "added:>=2024 -is:lossy", "bitrate:>=320 samplerate:>48 bitdepth:24", "disc:2 track:<=3"] {
+    for q in ["year:1990s OR is:favalbum plays:2..4", "-played:2024-06 artist:=Guest", "added:>=2024 -is:lossy", "bitrate:>=320 samplerate:>48 bitdepth:24", "disc:2 track:<=3"] {
         let s = p(q).rules(Level::Tracks).unwrap();
         assert_eq!(evaluate_ids(&conn, &s, None, ctx()).unwrap().0, lib.eval(&s, None, ctx()), "{q}");
     }
@@ -351,7 +351,7 @@ fn queries_select_what_they_say_on_the_fixture() {
 
 #[test]
 fn track_only_terms_leave_albums_and_artists_out() {
-    for q in ["rating:4", "love plays:0", "length:<3:00", "is:lossless", "title:x"] {
+    for q in ["plays:4", "love plays:0", "length:<3:00", "is:lossless", "title:x"] {
         assert!(p(q).rules(Level::Albums).is_none(), "{q}");
         assert!(p(q).artist_terms().is_none(), "{q}");
     }
@@ -378,14 +378,14 @@ fn search_takes_the_rules_path_only_with_operators() {
     let want: HashSet<i64> = r.tracks.iter().map(|t| t.album_id).collect();
     assert_eq!(r.albums.iter().map(|a| a.id).collect::<HashSet<_>>(), want);
     assert!(r.artists.is_empty());
-    let r = crate::query::search(&conn, "rating:5", 1000).unwrap();
+    let r = crate::query::search(&conn, "plays:0", 1000).unwrap();
     assert!(r.albums.is_empty() && r.artists.is_empty() && r.tracks.iter().all(|t| !t.title.is_empty()));
     let n = r.tracks.len();
-    assert_eq!(n, Lib::load(&conn).tracks.iter().filter(|t| t.rating == 5).count());
+    assert_eq!(n, Lib::load(&conn).tracks.iter().filter(|t| t.plays.is_empty()).count());
     // The limit and "more".
-    let r = crate::query::search(&conn, "rating:5", 3).unwrap();
+    let r = crate::query::search(&conn, "plays:0", 3).unwrap();
     assert!(r.tracks.len() == 3 && r.more_tracks && !r.more_albums);
-    let all = crate::query::search_section(&conn, "rating:5", crate::query::SearchKind::Tracks, usize::MAX).unwrap();
+    let all = crate::query::search_section(&conn, "plays:0", crate::query::SearchKind::Tracks, usize::MAX).unwrap();
     assert_eq!(all.tracks.len(), n);
     // Artists by name, with a negation and album artists only.
     let r = crate::query::search(&conn, "artist:band -artist:abc", 100).unwrap();

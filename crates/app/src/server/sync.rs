@@ -4,8 +4,8 @@
 //! **A sync** (`run`, on a thread of its own with its own database connection):
 //! 1. `getScanStatus`. Unless asked to list anyway (`Job::force`: sign-in, Sync now, a removal
 //!    confirmed), a server that has not scanned since the last sync that saw its whole catalog
-//!    is not listed again: nothing on it can have changed (`UpToDate`). With favourites and
-//!    ratings synced, its stars are read then (`getStarred2`, one request): a star changed on
+//!    is not listed again: nothing on it can have changed (`UpToDate`). With favourites
+//!    synced, its stars are read then (`getStarred2`, one request): a star changed on
 //!    the server needs no scan of its own.
 //! 2. The albums, `getAlbumList2` by name, 500 a page (the most Navidrome gives), until a page
 //!    comes back short; then each album with its songs (`getAlbum`), three at a time: gentle on a
@@ -76,7 +76,7 @@ pub struct Job {
     pub force: bool,
     pub confirm_removal: bool,
     pub cancel: Arc<AtomicBool>,
-    /// Favourites and ratings are synced with the server: a sync that does not list the catalog
+    /// Favourites are synced with the server: a sync that does not list the catalog
     /// reads the server's stars (`getStarred2`, a read) for the pass that follows.
     pub marks: bool,
 }
@@ -464,7 +464,7 @@ pub fn album_of(a: &subsonic::Album) -> RemoteAlbum {
         created: a.created.as_deref().and_then(iso_ms),
         cover_art: a.cover_art.clone().filter(|c| !c.trim().is_empty()),
         starred: a.starred.as_deref().and_then(iso_ms),
-        rating: a.user_rating.filter(|r| *r > 0),
+        rating: None,
         play_count: a.play_count.map(|n| n as i64),
         songs,
     }
@@ -496,7 +496,7 @@ fn song_of(s: &subsonic::Song, album_artist: &str) -> RemoteSong {
         channels: s.channel_count.and_then(|c| u8::try_from(c).ok()).filter(|c| *c > 0),
         cover_art: s.cover_art.clone().filter(|c| !c.trim().is_empty()),
         starred: s.starred.as_deref().and_then(iso_ms),
-        rating: s.user_rating.filter(|r| *r > 0),
+        rating: None,
         play_count: s.play_count.map(|n| n as i64),
         path: opt(&s.path),
     }

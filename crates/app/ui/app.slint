@@ -53,7 +53,7 @@ export component AppWindow inherits Window {
     // (on its buttons and sliders too: `bar-area` is their parent, so it sees the events
     // they take), a slider of it being dragged, or the keyboard focus on one of its
     // controls holds it up. Once nothing does, it stays for Theme.bar-linger, and also
-    // while a menu is open (the rating menu opens from it); then it goes.
+    // while a menu is open; then it goes.
     private property <bool> bar-held: !Player.bar-autohide || !Player.playing || Nav.page == Page.now-playing
         || bar-area.has-hover || bar-reveal.has-hover || player-bar.dragging || Focus.zone == "bar";
     changed bar-held => {

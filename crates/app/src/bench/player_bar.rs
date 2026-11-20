@@ -4,7 +4,7 @@
 //! - the auto-hiding player bar, driven by pointer events through Slint's own dispatch
 //!   (`Window::dispatch_event`; no OS input, the real pointer never moves): hidden and
 //!   shown, the pointer on the bar's own buttons, a slider drag, the keyboard focus in
-//!   the bar, the rating menu, the pointer leaving the window, and clicks just above the
+//!   the bar, a menu open over it, the pointer leaving the window, and clicks just above the
 //!   bar and on the bar's empty parts (do they reach the page beneath?);
 //! - removing the current queue item while paused;
 //! - the order of artists, genres and labels;
@@ -229,11 +229,11 @@ pub fn run() {
     step(1500, Box::new(move |_st, app, r| {
         snapshot(app, "c-03-pointer-on-play");
         let (w, h) = size(app);
-        // The favourite button, at the left (now playing block).
+        // The favourite button, the now playing block's last.
         let y = h - theme_bar(app) / 2.0;
         let x = 18.0 + w * 0.3 - 32.0 - 16.0;
         let r = r.clone();
-        sample_bar(app, x, y, 20, 40, move |s| line(&r, format!("[bar] pointer held on the rating button: {}", summary(&s))));
+        sample_bar(app, x, y, 20, 40, move |s| line(&r, format!("[bar] pointer held on the favourite button: {}", summary(&s))));
     }));
     step(1200, Box::new(move |_st, app, r| {
         // Drag the seek slider: press on it, move up out of the bar, release.
@@ -276,14 +276,15 @@ pub fn run() {
     step(800, Box::new(move |st, app, r| {
         line(r, format!("[bar] focus back on the page, pointer on the bar: bar up {}", bar(app)));
         let (w, h) = size(app);
-        // The rating menu opens above its button; move the pointer up onto it.
+        // A menu over the bar (the output devices'); move the pointer up onto it.
         let x = 18.0 + w * 0.3 - 32.0 - 16.0;
-        crate::menus::request_rating(st, x, h - theme_bar(app) + 28.0 - 6.0);
-        move_to(app, x + 20.0, h - theme_bar(app) - 60.0);
+        let _ = st;
+        crate::output::open_menu(x, h - theme_bar(app) - 120.0);
+        move_to(app, x + 20.0, h - theme_bar(app) - 100.0);
     }));
     step(1200, Box::new(|_st, app, r| {
-        line(r, format!("[bar] rating menu open {}, pointer on it, 1.2 s later: bar up {}", app.global::<crate::MenuStore>().get_open(), bar(app)));
-        snapshot(app, "c-05-rating-menu");
+        line(r, format!("[bar] menu open {}, pointer on it, 1.2 s later: bar up {}", app.global::<crate::MenuStore>().get_open(), bar(app)));
+        snapshot(app, "c-05-menu-over-bar");
         app.global::<crate::MenuStore>().set_open(false);
         let (w, h) = size(app);
         move_to(app, w / 2.0 - 160.0, h - theme_bar(app) + 6.0);
@@ -523,7 +524,7 @@ pub fn run() {
         let after_m = st.settings.borrow().muted;
         line(r, format!("[keys] then K (focus still on the key button) mutes: {before} -> {after_k}; M after it: -> {after_m} (unchanged: M is free)"));
         type_text(app, "k");
-        line(r, format!("[keys] labels: mute {:?}, play {:?}, rate {:?}", app.global::<crate::Keys>().get_mute().to_string(), app.global::<crate::Keys>().get_play_pause().to_string(), app.global::<crate::Keys>().get_rate().to_string()));
+        line(r, format!("[keys] labels: mute {:?}, play {:?}", app.global::<crate::Keys>().get_mute().to_string(), app.global::<crate::Keys>().get_play_pause().to_string()));
         press_at(app, key_x(app, 0, 1), row_y(app, SHUFFLE));
     }));
     step(150, Box::new(|_st, app, _r| release(app)));
@@ -710,8 +711,8 @@ pub fn run() {
 const MUTE: usize = 7;
 const SHUFFLE: usize = 8;
 const REPEAT: usize = 9;
-const SEARCH: usize = 20;
-const PIN_QUEUE: usize = 24;
+const SEARCH: usize = 16;
+const PIN_QUEUE: usize = 20;
 /// The first row's centre, from the top of the column (Settings > Keys at the top, on a
 /// window 1920 px wide: the text above the rows takes two lines), each row KEY_ROW_H
 /// below the one before, and each group's heading (above the rows KEY_GROUPS start)
@@ -719,7 +720,7 @@ const PIN_QUEUE: usize = 24;
 const KEY_FIRST: f32 = 160.0;
 const KEY_ROW_H: f32 = 46.0;
 const KEY_GROUP_H: f32 = 47.0;
-const KEY_GROUPS: [usize; 2] = [10, 17];
+const KEY_GROUPS: [usize; 2] = [10, 11];
 
 /// A row's centre in the column's content, at scroll 0.
 fn row_offset(row: usize) -> f32 {

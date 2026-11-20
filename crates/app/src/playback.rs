@@ -872,7 +872,6 @@ pub fn refresh_now_playing(st: &Rc<State>) {
     p.set_album_id(t.album_id as i32);
     p.set_has_cover(t.art.is_some());
     p.set_favourite(t.id > 0 && query::is_favourite_track(&st.db, t.id).unwrap_or(false));
-    p.set_rating(i32::from(crate::rows::rating_of(t.id)));
     p.set_cover(Default::default());
     p.set_full(Default::default());
     crate::theme::accent::follow(&st.art, t.art.clone());

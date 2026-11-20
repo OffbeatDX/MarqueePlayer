@@ -36,7 +36,6 @@ pub struct RTrack {
     pub plays: Vec<i64>,
     pub favourite: bool,
     pub album_favourite: bool,
-    pub rating: i64,
 }
 
 /// (playlist, the playlists around it) -> what it holds.
@@ -79,8 +78,6 @@ impl Lib {
         let set = |sql: &str| -> std::collections::HashSet<i64> { conn.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect() };
         let fav = set("SELECT track_id FROM favourite_tracks");
         let afav = set("SELECT album_id FROM favourite_albums");
-        let ratings: HashMap<i64, i64> =
-            conn.prepare("SELECT track_id, rating FROM track_ratings").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
         let mut st = conn
             .prepare(
                 "SELECT t.id, t.album_id, t.title, t.artist, t.path, t.duration, t.disc_no, t.track_no, t.codec, t.sample_rate, t.bit_depth, t.bitrate,
@@ -121,7 +118,6 @@ impl Lib {
                 t.plays = plays.get(&t.id).cloned().unwrap_or_default();
                 t.favourite = fav.contains(&t.id);
                 t.album_favourite = afav.contains(&t.album_id);
-                t.rating = ratings.get(&t.id).copied().unwrap_or(0);
                 t
             })
             .collect();
@@ -224,7 +220,6 @@ impl Lib {
                         let since = ago(ctx, n, u);
                         Some(t.plays.iter().filter(|&&p| p >= since).count() as f64)
                     }
-                    Field::Rating => Some(t.rating as f64),
                     Field::Duration => Some((t.duration as i64) as f64),
                     Field::Bitrate => t.bitrate.map(|v| v as f64),
                     Field::SampleRate => t.sample_rate.map(|v| v as f64),
@@ -329,7 +324,6 @@ impl Lib {
             SortKey::LastPlayed => nullable(a.plays.iter().max().map(|&p| p as f64), b.plays.iter().max().map(|&p| p as f64)),
             SortKey::Plays => dir(a.plays.len().cmp(&b.plays.len())),
             SortKey::PlaysIn(n, u) => dir(plays_since(a, n, u).cmp(&plays_since(b, n, u))),
-            SortKey::Rating => dir(a.rating.cmp(&b.rating)),
             SortKey::Duration => dir(a.duration.partial_cmp(&b.duration).unwrap()),
             SortKey::Random => crate::fold::seeded_rand(seed, a.id).cmp(&crate::fold::seeded_rand(seed, b.id)),
         };

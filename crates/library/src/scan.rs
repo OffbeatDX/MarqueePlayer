@@ -159,7 +159,7 @@ pub struct Report {
     /// Transactions the scan wrote the library in.
     pub batches: usize,
     /// The longest of them, in seconds: how long a write of the app's own (a play counted, a
-    /// rating) could have waited for one.
+    /// favourite) could have waited for one.
     pub longest_write: f64,
 }
 
@@ -587,7 +587,7 @@ const TAGS_BATCH: usize = 384;
 /// artists and genres, MusicBrainz artist ids, the compilation flag, each track's own album
 /// fields. Only files found where they were (`present`), unchanged since (a changed file
 /// was read in full by the scan already). The rows are updated in place (ids, plays,
-/// favourites, ratings, playlists and "added" dates stay), a batch of whole folders at a
+/// favourites, playlists and "added" dates stay), a batch of whole folders at a
 /// time, each in its own transaction, so a quit keeps what was done; the albums of each
 /// batch are regrouped by the rules of `group` and keep their dates and favourites when
 /// they change identity (`sync`). Only albums that are new or whose tracks changed get
@@ -2722,7 +2722,6 @@ mod tests {
             let one = lib.id("Band/Old Name/1.wav").unwrap();
             let two = lib.id("Band/Old Name/2.wav").unwrap();
             let pl = lib.history(one);
-            crate::query::set_rating(&lib.conn, two, 4).unwrap();
             crate::query::toggle_favourite_album(&lib.conn, album).unwrap();
             lib.conn.execute("UPDATE albums SET added_at = 1234 WHERE id = ?1", [album]).unwrap();
             let ids_before: Vec<i64> = lib.conn.prepare("SELECT id FROM tracks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
@@ -2753,7 +2752,6 @@ mod tests {
             let ids_after: Vec<i64> = lib.conn.prepare("SELECT id FROM tracks ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
             assert_eq!(ids_after, ids_before);
             assert!(lib.has_history(one, pl));
-            assert_eq!(crate::query::rating(&lib.conn, two).unwrap(), 4);
             let title: String = lib.conn.query_row("SELECT title FROM tracks WHERE id = ?1", [two], |r| r.get(0)).unwrap();
             assert_eq!(title, "Song Two");
             // The album under its new name: one album, its favourite and date taken over.
@@ -2985,10 +2983,10 @@ mod tests {
         }
 
         /// A library the previous version scanned (its compilation split in one album per
-        /// artist, an album split by a featured credit, with plays, favourites, a rating
-        /// and a playlist on them) is migrated, and the next scan reads the tags again in
-        /// the background and regroups it: one compilation, one album; every play, rating
-        /// and playlist entry stays on its track (same ids), the favourites go with the
+        /// artist, an album split by a featured credit, with plays, favourites and a
+        /// playlist on them) is migrated, and the next scan reads the tags again in the
+        /// background and regroups it: one compilation, one album; every play and playlist
+        /// entry stays on its track (same ids), the favourites go with the
         /// albums, the "added" dates are the oldest, nothing is left orphaned.
         #[test]
         fn regrouping_an_old_library_keeps_every_piece_of_user_data() {
@@ -3017,7 +3015,6 @@ mod tests {
             let low2 = lib.id("HL/Low Tide/2.wav").unwrap();
             let pl = lib.history(comp2);
             crate::query::record_play(&lib.conn, low2).unwrap();
-            crate::query::set_rating(&lib.conn, low2, 5).unwrap();
             lib.conn.execute("INSERT INTO favourite_albums VALUES (2, 50), (5, 70)", []).unwrap();
             let plays = lib.plays_total();
             // Migrated: same albums, nothing regrouped yet.
@@ -3038,7 +3035,6 @@ mod tests {
             assert_eq!(ids_after, ids_before, "every track keeps its row");
             assert!(lib.has_history(comp2, pl));
             assert_eq!(lib.plays_total(), plays);
-            assert_eq!(crate::query::rating(&lib.conn, low2).unwrap(), 5);
             // The favourites went with the albums; the dates are the oldest.
             assert!(crate::query::is_favourite_album(&lib.conn, comp).unwrap(), "a favourite part of the compilation");
             assert!(crate::query::is_favourite_album(&lib.conn, low).unwrap(), "the favourite featured split");
@@ -3061,7 +3057,7 @@ mod tests {
 
         /// A soundtrack the previous scanner split in one album per artist (every track
         /// numbered 1, "feat." with no space a credit of its own) is regrouped by the next
-        /// scan: one compilation, every play, rating and favourite kept.
+        /// scan: one compilation, every play and favourite kept.
         #[test]
         fn a_split_soundtrack_is_regrouped_keeping_user_data() {
             let mut lib = Lib::new("regroup-gst");
@@ -3083,7 +3079,6 @@ mod tests {
             let three = lib.id("GST/3.wav").unwrap();
             let pl = lib.history(two);
             crate::query::record_play(&lib.conn, three).unwrap();
-            crate::query::set_rating(&lib.conn, three, 4).unwrap();
             lib.conn.execute("INSERT INTO favourite_albums VALUES (3, 60)", []).unwrap();
             let plays = lib.plays_total();
             assert_eq!(lib.albums(), 3);
@@ -3096,7 +3091,6 @@ mod tests {
             assert_eq!(ids_after, ids_before, "every track keeps its row");
             assert!(lib.has_history(two, pl));
             assert_eq!(lib.plays_total(), plays);
-            assert_eq!(crate::query::rating(&lib.conn, three).unwrap(), 4);
             assert!(crate::query::is_favourite_album(&lib.conn, gst).unwrap(), "the favourite goes with the album");
             assert_eq!(lib.added("O.N.G.E.K.I. GST"), 2000, "the oldest date");
             assert!(crate::query::find_artist(&lib.conn, "40mP feat.\u{30b7}\u{30e3}\u{30ce}").unwrap().is_none(), "the credit split");
@@ -3216,7 +3210,7 @@ mod tests {
             img.save(lib.music().join("Band 0/Album 00/cover.png")).unwrap();
         }
 
-        /// The user's data on a scanned library: plays, favourites, a rating, a playlist (an
+        /// The user's data on a scanned library: plays, favourites, a playlist (an
         /// ordinary one and a smart one), the queue.
         fn user_data(lib: &Lib) {
             let id = |rel: &str| lib.id(rel).unwrap_or_else(|| panic!("{rel}"));
@@ -3224,14 +3218,13 @@ mod tests {
                 crate::query::record_play(&lib.conn, id(rel)).unwrap();
             }
             crate::query::toggle_favourite_track(&lib.conn, id("HL/Low Tide/2.wav")).unwrap();
-            crate::query::set_rating(&lib.conn, id("Band 2/Album 20/03.wav"), 5).unwrap();
             for rel in ["Band 1/Album 10/01.wav", "HL/Low Tide/2.wav", "Band 3/Album 31/02.wav"] {
                 crate::query::toggle_favourite_album(&lib.conn, lib.album_id(rel)).unwrap();
             }
             let pl = crate::query::create_playlist(&lib.conn, "mix").unwrap();
             let ids: Vec<i64> = ["Band 1/Album 10/01.wav", "Band 3/Album 31/01.wav", "Comp/Summer/1.wav", "Band 4/Album 40/02.wav"].iter().map(|r| id(r)).collect();
             crate::query::add_to_playlist(&lib.conn, pl, &ids).unwrap();
-            crate::query::create_smart_playlist(&lib.conn, "rated", r#"{"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":3}]}"#).unwrap();
+            crate::query::create_smart_playlist(&lib.conn, "played", r#"{"v":1,"match":"all","rules":[{"field":"plays","op":"at_least","value":1}]}"#).unwrap();
             lib.conn.execute_batch(&format!("INSERT INTO queue_items (position, track_id) VALUES (0, {}), (1, {});", ids[1], ids[3])).unwrap();
             // Dates the library had, so a date kept is told from one stamped anew.
             lib.conn.execute("UPDATE albums SET added_at = 1000 + id, first_seen = 1000 + id, added_source = NULL", []).unwrap();
@@ -3350,7 +3343,7 @@ mod tests {
         /// albums (an album artist dropped, a MusicBrainz id added), files and a whole album
         /// removed, an album moved and re-encoded (no file matches: it takes over the date by its
         /// name), two copies of one file (which match nothing), a new album. Every play, favourite,
-        /// rating, playlist entry and the queue end on the same tracks as in one go; the tracks
+        /// playlist entry and the queue end on the same tracks as in one go; the tracks
         /// that moved keep their ids.
         #[test]
         fn a_rescan_with_moves_retags_and_removals_stopped_after_every_batch_ends_as_one() {

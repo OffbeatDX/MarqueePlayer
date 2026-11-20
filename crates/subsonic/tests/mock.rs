@@ -475,7 +475,8 @@ fn every_read_parses_navidromes_answers_and_is_signed() {
     assert_eq!(s.path, "Ann/Album 0/01 - Song 0.flac");
     assert_eq!(s.replay_gain.unwrap().track_gain, Some(-6.5));
     assert_eq!(s.replay_gain.unwrap().album_peak, Some(1.0));
-    assert_eq!((s.bpm, s.user_rating, s.play_count), (Some(120), Some(4), Some(0)));
+    // Its `userRating` is not read (ratings are not kept).
+    assert_eq!((s.bpm, s.play_count), (Some(120), Some(0)));
     assert_eq!(s.music_brainz_id, "8f3471b5-7e6a-48da-86a9-c1c07a0f47ae");
     assert_eq!((s.starred.as_deref(), al.song[1].starred.as_deref()), (Some("2024-06-02T00:00:00Z"), None));
     assert_eq!(s.cover_art.as_deref(), Some("mf-s0_6650f2a7"));
@@ -721,7 +722,6 @@ fn a_read_only_client_sends_no_write() {
     let calls: Vec<(&str, Call)> = vec![
         ("star", Box::new(|c| c.star(&["s1"], &[], &[]))),
         ("unstar", Box::new(|c| c.unstar(&[], &["al1"], &[]))),
-        ("setRating", Box::new(|c| c.set_rating("s1", 4))),
         ("scrobble", Box::new(|c| c.scrobble("s1", Some(1_717_236_000_000), true))),
         ("scrobble", Box::new(|c| c.scrobble("s1", None, false))),
         ("scrobble", Box::new(|c| c.scrobble_plays(&[("s1", 1), ("s2", 2)]))),
@@ -753,17 +753,15 @@ fn a_client_sends_only_the_kinds_of_write_it_is_allowed() {
     assert!(!marks.is_read_only());
     marks.star(&["s1"], &[], &[]).unwrap();
     marks.unstar(&["s1"], &[], &[]).unwrap();
-    marks.set_rating("s1", 3).unwrap();
-    assert_eq!(m.connections.load(Ordering::SeqCst), 3);
+    assert_eq!(m.connections.load(Ordering::SeqCst), 2);
     assert_eq!(marks.scrobble("s1", None, true), Err(Error::ReadOnly("scrobble")));
     assert_eq!(marks.create_playlist("x", &[]).map(drop), Err(Error::ReadOnly("createPlaylist")));
-    assert_eq!(m.connections.load(Ordering::SeqCst), 3, "refused before a connection");
+    assert_eq!(m.connections.load(Ordering::SeqCst), 2, "refused before a connection");
     let plays = m.client(true).with_writes(subsonic::Writes { plays: true, ..subsonic::Writes::NONE });
     plays.scrobble("s1", Some(5), true).unwrap();
     assert_eq!(plays.star(&["s1"], &[], &[]), Err(Error::ReadOnly("star")));
-    assert_eq!(plays.set_rating("s1", 1), Err(Error::ReadOnly("setRating")));
     assert_eq!(plays.delete_playlist("p"), Err(Error::ReadOnly("deletePlaylist")));
-    assert_eq!(m.connections.load(Ordering::SeqCst), 4);
+    assert_eq!(m.connections.load(Ordering::SeqCst), 3);
     assert!(m.client(true).is_read_only() && !m.client(false).is_read_only());
 }
 
@@ -777,8 +775,6 @@ fn writes_send_what_they_say() {
     c.star(&["s1", "s2"], &["al1"], &["ar1"]).unwrap();
     let r = m.last();
     assert_eq!((r.params("id"), r.params("albumId"), r.params("artistId")), (vec!["s1", "s2"], vec!["al1"], vec!["ar1"]));
-    c.set_rating("s1", 9).unwrap();
-    assert_eq!(m.last().param("rating"), Some("5"));
     c.scrobble("s1", Some(1_717_236_000_000), true).unwrap();
     let r = m.last();
     assert_eq!((r.param("time"), r.param("submission")), (Some("1717236000000"), Some("true")));

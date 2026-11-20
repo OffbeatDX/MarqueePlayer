@@ -1,17 +1,17 @@
 //! `MP_BENCH=smart`: smart playlists (`bench-smart.txt`, `s-*.png`). On the messy fixture
-//! library (`cargo run -p library --example messy_library`), with ratings, favourites and a
-//! few plays seeded in the bench's own database:
+//! library (`cargo run -p library --example messy_library`), with favourites and a few plays
+//! seeded in the bench's own database:
 //!
 //! - the editor for a new smart playlist, built by the keyboard: the name typed, Tab to the
-//!   first rule, its field chosen from the list by typing "rat" and Enter, its stars stepped
-//!   with Up; Tab to "Add rule" and Enter; the new rule's field picked by the pointer in its
+//!   first rule, its field chosen from the list by typing "play" and Enter, its value as it
+//!   starts; Tab to "Add rule" and Enter; the new rule's field picked by the pointer in its
 //!   list, its value (a genre) picked by typing; a value typed wrong and explained, a save
 //!   refused for it, then fixed; an "any of" group; the limit switched on and typed;
 //! - the live count and preview as the rules change, and Save (the page with its rules in
 //!   words, at 1920 x 1080 and at 960 x 620, the editor too);
 //! - live updating: a "never played" list loses the track once its play counts (the queue
-//!   keeps it), a "rated 4+" list gains the playing track when it is rated 5 with the key
-//!   `5`, a favourites list follows `L`;
+//!   keeps it), a "most played this year" list holds what its rules do, a favourites list
+//!   follows `L`;
 //! - a rule from a newer build (kept, shown, matching nothing), a playlist that cannot name
 //!   itself, Reshuffle, Delete's hint, "Add to playlist" listing only ordinary playlists,
 //!   a home shelf of a smart playlist, Save as ordinary playlist, Export, the sidebar and
@@ -32,7 +32,7 @@ use slint::{ComponentHandle, Model};
 use crate::bench::{Step, press, run_steps, snapshot, tabs, type_text, write_report};
 use crate::nav::Route;
 use crate::state::State;
-use crate::{AppWindow, Dialog, Home, MenuStore, Nav, Page, Picker, Player, Playlists, SmartEdit, SmartList, playback, views};
+use crate::{AppWindow, Dialog, Home, MenuStore, Nav, Page, Picker, Playlists, SmartEdit, SmartList, playback, views};
 
 type Report = Rc<RefCell<String>>;
 
@@ -134,9 +134,6 @@ pub fn run() {
         // systems, and the rules below must find the same tracks on Windows and Linux.
         let ids: Vec<i64> = st.db.prepare("SELECT id FROM tracks ORDER BY replace(path, '\\', '/')").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         for (i, id) in ids.iter().enumerate() {
-            if i % 3 == 0 {
-                let _ = query::set_rating(&st.db, *id, (1 + (i / 3) % 5) as u8);
-            }
             if i % 11 == 0 {
                 let _ = st.db.execute("INSERT OR IGNORE INTO favourite_tracks VALUES (?1, 1)", [id]);
             }
@@ -144,9 +141,8 @@ pub fn run() {
                 let _ = query::record_play(&st.db, *id);
             }
         }
-        crate::rows::load_ratings(&st.db);
         crate::playlists::smart::changed(st);
-        line(r, format!("library: {:?} (albums, tracks); rated {}, favourites {}, played {}", query::counts(&st.db).unwrap_or_default(), ids.len().div_ceil(3), ids.len().div_ceil(11), ids.len().div_ceil(7)));
+        line(r, format!("library: {:?} (albums, tracks); favourites {}, played {}", query::counts(&st.db).unwrap_or_default(), ids.len().div_ceil(11), ids.len().div_ceil(7)));
         views::go(st, Page::Playlists);
     });
     step!(1200, |_st, app, _r| {
@@ -162,35 +158,34 @@ pub fn run() {
         let e = app.global::<SmartEdit>();
         check(r, "the editor is open, new, on the name", app.global::<Nav>().get_page() == Page::SmartEdit && e.get_is_new(), format!("page {:?}, rows: {}", app.global::<Nav>().get_page(), lines()));
         snapshot(app, "s-01-editor-new");
-        type_text(app, "Bench five stars");
+        type_text(app, "Bench played");
     });
     step!(400, |_st, app, r| {
         let e = app.global::<SmartEdit>();
-        check(r, "typed into the name", e.get_name() == "Bench five stars", format!("{:?}", e.get_name().to_string()));
-        // Name, Cancel, Save, six starting points, "all": the first rule's field.
-        tabs(app, 10);
+        check(r, "typed into the name", e.get_name() == "Bench played", format!("{:?}", e.get_name().to_string()));
+        // Name, Cancel, Save, five starting points, "all": the first rule's field.
+        tabs(app, 9);
         press(app, Key::Return, &[]);
     });
     step!(500, |_st, app, r| {
         check(r, "Tab to the first rule's field, Enter opens its list", app.global::<Picker>().get_title() == "Field", picker(app));
         snapshot(app, "s-02-field-list");
-        type_text(app, "rat");
+        type_text(app, "play");
     });
     step!(400, |_st, app, r| {
-        check(r, "typing filters the list (folded)", app.global::<Picker>().get_items().row_data(0).is_some_and(|s| s == "Rating"), picker(app));
+        check(r, "typing filters the list (folded)", app.global::<Picker>().get_items().row_data(0).is_some_and(|s| s == "Play count"), picker(app));
         snapshot(app, "s-03-field-filtered");
         press(app, Key::Return, &[]);
     });
     step!(500, |_st, app, r| {
-        check(r, "Enter takes it: a rating rule, stars to step", lines().contains("Rating is at least ★★★★☆"), lines());
+        check(r, "Enter takes it: a play count rule, its value to type", lines().contains("Play count is at least 1"), lines());
         check(r, "the list closed", !app.global::<Picker>().get_open(), picker(app));
-        // The field has the keyboard again: Tab, Tab to the stars; Up.
+        // The field has the keyboard again: Tab, Tab to the value.
         tabs(app, 2);
-        press(app, Key::UpArrow, &[]);
     });
     step!(400, |_st, app, r| {
-        check(r, "Up steps the stars", lines().contains("Rating is at least ★★★★★"), lines());
-        // The stars, then the line's remove button (up and down are off for the only line),
+        check(r, "the value as it starts", lines().contains("Play count is at least 1"), lines());
+        // The value, then the line's remove button (up and down are off for the only line),
         // then "Add rule".
         tabs(app, 2);
         press(app, Key::Return, &[]);
@@ -315,17 +310,17 @@ pub fn run() {
     });
     step!(1200, |st, app, r| {
         app.global::<SmartEdit>().invoke_save();
-        let id = id_named(st, "Bench five stars");
-        MADE.with(|m| m.borrow_mut().push(("Bench five stars".into(), id)));
+        let id = id_named(st, "Bench played");
+        MADE.with(|m| m.borrow_mut().push(("Bench played".into(), id)));
         check(r, "saved: its page", id > 0 && st.history.borrow().current == Route::Playlist(id), format!("id {id}, route {:?}", st.history.borrow().current));
     });
     step!(1200, |st, app, r| {
-        let id = id_named(st, "Bench five stars");
+        let id = id_named(st, "Bench played");
         line(r, format!("[page] {}", page(app)));
         let shown = shown_ids(st);
         let want = smart_ids(st, id);
         check(r, "the page holds what the rules do now (the 20 of the random limit)", shown == want && shown.len() <= 20 && !shown.is_empty(), format!("{} shown, {} by the rules", shown.len(), want.len()));
-        check(r, "its rules in words", app.global::<SmartList>().get_summary().contains("ated 5") && app.global::<SmartList>().get_summary().contains("20 tracks, random"), app.global::<SmartList>().get_summary().to_string());
+        check(r, "its rules in words", app.global::<SmartList>().get_summary().contains("1+ plays") && app.global::<SmartList>().get_summary().contains("20 tracks, random"), app.global::<SmartList>().get_summary().to_string());
         check(r, "Reshuffle is offered (a random limit)", app.global::<SmartList>().get_random(), String::new());
         snapshot(app, "s-11-page-1080p");
         size_window(st, 960, 620);
@@ -358,7 +353,7 @@ pub fn run() {
         app.global::<SmartList>().invoke_hint();
         check(r, "Delete on a smart playlist's row says why", app.global::<Nav>().get_flash().contains("fills itself"), app.global::<Nav>().get_flash().to_string());
         // The track menu: no "Remove from playlist"; "Add to playlist" lists ordinary ones only.
-        let id = id_named(st, "Bench five stars");
+        let id = id_named(st, "Bench played");
         let _ = query::create_playlist(&st.db, "Ordinary bench list");
         views::playlists_changed(st);
         crate::menus::request(st, "track", "smart", 0, id as i32, 600.0, 400.0);
@@ -366,11 +361,11 @@ pub fn run() {
         let m = app.global::<MenuStore>();
         let sub: Vec<String> = (0..m.get_sub().row_count()).filter_map(|i| m.get_sub().row_data(i)).map(|i| i.label.to_string()).collect();
         check(r, "a smart list's track menu has no Remove from playlist", !labels.iter().any(|l| l == "Remove from playlist"), format!("{labels:?}"));
-        check(r, "Add to playlist lists only ordinary playlists", sub.contains(&"Ordinary bench list".to_owned()) && !sub.contains(&"Bench five stars".to_owned()), format!("{sub:?}"));
+        check(r, "Add to playlist lists only ordinary playlists", sub.contains(&"Ordinary bench list".to_owned()) && !sub.contains(&"Bench played".to_owned()), format!("{sub:?}"));
         m.set_open(false);
     });
 
-    // ---- live: a play, a rating, a favourite ----------------------------------------------------
+    // ---- live: a play, a favourite ----------------------------------------------------
     step!(500, |st, app, _r| {
         from_template(st, app, 0); // Recently added and unplayed
     });
@@ -402,25 +397,14 @@ pub fn run() {
         playback::toggle_play(st);
     });
     step!(500, |st, app, _r| {
-        from_template(st, app, 2); // Top rated: rated 4+
+        from_template(st, app, 2); // Most played this year
     });
     step!(1500, |st, app, r| {
         let shown = shown_ids(st);
-        let playing = views::playing_track_id(st);
-        line(r, format!("[live: rating] {}; playing {playing}, rated {}", page(app), crate::rows::rating_of(playing)));
-        SAVED.with(|s| *s.borrow_mut() = shown);
-        // The playing track rated 5 by its key.
-        let _ = crate::rows::rating_of(playing);
-        // Something on the page has the keyboard; the key goes on to the shortcuts.
-        press(app, Key::Tab, &[]);
-        crate::bench::type_text(app, "5");
-    });
-    step!(1200, |st, app, r| {
-        let playing = views::playing_track_id(st);
-        let now = shown_ids(st);
-        check(r, "the key 5 rated the playing track", crate::rows::rating_of(playing) == 5 && app.global::<Player>().get_rating() == 5, format!("rated {}", crate::rows::rating_of(playing)));
-        check(r, "a rated-4+ list on screen gained it", now.contains(&playing), format!("{} → {} tracks", SAVED.with(|s| s.borrow().len()), now.len()));
-        snapshot(app, "s-15-live-rated");
+        let id = id_named(st, "Most played this year");
+        line(r, format!("[live: most played] {}", page(app)));
+        check(r, "most played this year: what the rules hold", shown == smart_ids(st, id) && !shown.is_empty(), format!("{} tracks", shown.len()));
+        snapshot(app, "s-15-live-most-played");
         // A list of favourites, through the editor's callbacks: favourite is yes.
         crate::playlists::smart::open_new(st);
         let e = app.global::<SmartEdit>();
@@ -429,11 +413,11 @@ pub fn run() {
     });
     step!(500, |_st, app, _r| {
         let e = app.global::<SmartEdit>();
-        // The first rule's field: Favourite (the ninth).
+        // The first rule's field: Favourite (the eighth).
         e.invoke_open_choice(1, crate::playlists::smartedit::Role::Field.index(), 300.0, 300.0);
     });
     step!(400, |_st, app, _r| {
-        app.global::<Picker>().invoke_pick(8);
+        app.global::<Picker>().invoke_pick(7);
     });
     step!(500, |st, app, r| {
         check(r, "Favourite yes", lines().contains("Favourite yes"), lines());
@@ -480,9 +464,9 @@ pub fn run() {
         check(r, "saved again unchanged, the unknown rule and order kept", stored.contains("\"mood\"") && stored.contains("\"energy\"") && stored.contains("\"v\":3"), stored);
     });
     step!(800, |st, app, r| {
-        // Top rated may not name itself, nor a list that names it.
-        let top = id_named(st, "Top rated");
-        let _ = query::create_smart_playlist(&st.db, "Names top rated", &format!(r#"{{"rules":[{{"field":"playlist","op":"in","value":{top}}}]}}"#));
+        // Most played this year may not name itself, nor a list that names it.
+        let top = id_named(st, "Most played this year");
+        let _ = query::create_smart_playlist(&st.db, "Names most played", &format!(r#"{{"rules":[{{"field":"playlist","op":"in","value":{top}}}]}}"#));
         views::playlists_changed(st);
         crate::playlists::smart::open_edit(st, top);
         let _ = app;
@@ -509,7 +493,7 @@ pub fn run() {
     step!(400, |_st, app, r| {
         let p = app.global::<Picker>();
         let items: Vec<String> = (0..p.get_items().row_count()).filter_map(|i| p.get_items().row_data(i)).map(|s| s.to_string()).collect();
-        check(r, "a playlist cannot name itself or one that names it", !items.iter().any(|i| i.starts_with("Top rated") || i.starts_with("Names top rated")) && items.iter().any(|i| i.starts_with("Ordinary bench list")), format!("{items:?}"));
+        check(r, "a playlist cannot name itself or one that names it", !items.iter().any(|i| i.starts_with("Most played this year") || i.starts_with("Names most played")) && items.iter().any(|i| i.starts_with("Ordinary bench list")), format!("{items:?}"));
         snapshot(app, "s-18-playlist-choice");
         p.invoke_close();
         app.global::<SmartEdit>().invoke_cancel();
@@ -517,14 +501,14 @@ pub fn run() {
 
     // ---- elsewhere: home shelf, save as ordinary playlist, export, sidebar, Playlists page ----------
     step!(600, |st, app, _r| {
-        let id = id_named(st, "Top rated");
+        let id = id_named(st, "Most played this year");
         app.global::<crate::Actions>().invoke_shelf_add("playlist".into(), id.to_string().into());
         views::go(st, Page::Home);
     });
     step!(1500, |_st, app, r| {
         let shelves = app.global::<Home>().get_shelves();
         let titles: Vec<String> = (0..shelves.row_count()).filter_map(|i| shelves.row_data(i)).map(|s| s.title.to_string()).collect();
-        check(r, "a smart playlist as a home shelf, titled with its name", titles.iter().any(|t| t == "Top rated"), format!("{titles:?}"));
+        check(r, "a smart playlist as a home shelf, titled with its name", titles.iter().any(|t| t == "Most played this year"), format!("{titles:?}"));
         app.global::<Nav>().set_page_scroll(-3000.0);
     });
     step!(800, |_st, app, _r| {
@@ -532,11 +516,11 @@ pub fn run() {
         app.global::<Nav>().set_page_scroll(0.0);
     });
     step!(300, |st, _app, _r| {
-        let id = id_named(st, "Top rated");
+        let id = id_named(st, "Most played this year");
         views::open_playlist(st, id);
     });
     step!(1200, |st, app, _r| {
-        let id = id_named(st, "Top rated");
+        let id = id_named(st, "Most played this year");
         SAVED.with(|s| *s.borrow_mut() = shown_ids(st));
         app.global::<SmartList>().invoke_more(700.0, 300.0);
         let labels = crate::bench::menu_labels(app);
@@ -546,24 +530,24 @@ pub fn run() {
     });
     step!(500, |_st, app, r| {
         let d = app.global::<Dialog>();
-        check(r, "Save as ordinary playlist asks for a name", d.get_prompt_open() && d.get_prompt_text() == "Top rated (saved)", format!("{:?}", d.get_prompt_text().to_string()));
+        check(r, "Save as ordinary playlist asks for a name", d.get_prompt_open() && d.get_prompt_text() == "Most played this year (saved)", format!("{:?}", d.get_prompt_text().to_string()));
         snapshot(app, "s-20-save-as-playlist");
         press(app, Key::Return, &[]);
     });
     step!(600, |st, _app, r| {
-        let id = id_named(st, "Top rated (saved)");
+        let id = id_named(st, "Most played this year (saved)");
         let tracks: Vec<i64> = query::playlist_tracks(&st.db, id).unwrap_or_default().iter().map(|t| t.id).collect();
         let shown = SAVED.with(|s| s.borrow().clone());
         check(r, "an ordinary playlist with what it held, in its order", id > 0 && tracks == shown, format!("{} tracks", tracks.len()));
         let path = crate::bench::out_dir().join("smart-export.m3u8");
         let _ = std::fs::remove_file(&path);
-        crate::playlists::file::export_file(st, id_named(st, "Top rated"), &path, false);
+        crate::playlists::file::export_file(st, id_named(st, "Most played this year"), &path, false);
     });
     step!(1200, |st, app, r| {
         let path = crate::bench::out_dir().join("smart-export.m3u8");
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let entries = text.lines().filter(|l| l.starts_with("#EXTINF")).count();
-        let want = smart_ids(st, id_named(st, "Top rated")).len();
+        let want = smart_ids(st, id_named(st, "Most played this year")).len();
         check(r, "M3U8 export writes what it holds now", entries == want && want > 0, format!("{entries} entries, {want} tracks"));
         app.global::<Nav>().set_sidebar_pinned(true);
         views::go(st, Page::Playlists);
@@ -592,7 +576,7 @@ pub fn run() {
 }
 
 /// Search operators (`library::smart::search`): typed into the search field, the results by the
-/// rules (tracks only for a rating), the hint for what was not understood, the syntax help,
+/// rules (tracks only for a play count), the hint for what was not understood, the syntax help,
 /// a plain query still plain, timings of both paths, and "Save as smart playlist" making a
 /// smart playlist that holds what the search found.
 fn search_operators(steps: &mut Vec<Step>, r: &Report) {
@@ -603,7 +587,7 @@ fn search_operators(steps: &mut Vec<Step>, r: &Report) {
             steps.push(($ms, Box::new(move |st: &Rc<State>, app: &AppWindow| f(st, app, &r))));
         }};
     }
-    const OPS: &str = "rating:>=4 -is:remote";
+    const OPS: &str = "plays:>=1 -is:remote";
     step!(300, |st, app, r| {
         line(r, "[search] operators typed into the field".into());
         views::go(st, Page::Search);
@@ -616,10 +600,10 @@ fn search_operators(steps: &mut Vec<Step>, r: &Report) {
         let s = app.global::<crate::Search>();
         let tracks = s.get_tracks();
         let ids: Vec<i64> = (0..tracks.row_count()).filter_map(|i| tracks.row_data(i)).map(|t| i64::from(t.id)).collect();
-        let rated = ids.iter().all(|id| query::rating(&st.db, *id).unwrap_or(0) >= 4);
+        let played = ids.iter().all(|id| query::play_count(&st.db, *id).unwrap_or(0) >= 1);
         check(r, "the query reads as operators", s.get_operators() && s.get_hint().is_empty(), format!("query {:?}, operators {}, hint {:?}", s.get_query().to_string(), s.get_operators(), s.get_hint().to_string()));
-        check(r, "tracks by the rules: every one rated 4 or more", !ids.is_empty() && rated, format!("{} tracks, more {}", ids.len(), s.get_more_tracks()));
-        check(r, "a rating says nothing of albums or artists: those sections are left out", s.get_albums().row_count() == 0 && s.get_artists().row_count() == 0, format!("{} albums, {} artists", s.get_albums().row_count(), s.get_artists().row_count()));
+        check(r, "tracks by the rules: every one played", !ids.is_empty() && played, format!("{} tracks, more {}", ids.len(), s.get_more_tracks()));
+        check(r, "a play count says nothing of albums or artists: those sections are left out", s.get_albums().row_count() == 0 && s.get_artists().row_count() == 0, format!("{} albums, {} artists", s.get_albums().row_count(), s.get_artists().row_count()));
         snapshot(app, "s-23-search-operators");
         app.global::<crate::Search>().set_query("re:stacks year:1900..2100".into());
         views::search(st, "re:stacks year:1900..2100");
@@ -649,7 +633,7 @@ fn search_operators(steps: &mut Vec<Step>, r: &Report) {
             v.sort_by(f64::total_cmp);
             v[4]
         };
-        for q in ["love", "the", "kana", "rating:>=4 -is:remote", "year:1990..2030", "genre:rock OR genre:jazz -plays:0", "added:<30d is:lossless", "artist:the"] {
+        for q in ["love", "the", "kana", "plays:>=1 -is:remote", "year:1990..2030", "genre:rock OR genre:jazz -plays:0", "added:<30d is:lossless", "artist:the"] {
             line(r, format!("  search {q:?}: {:.2} ms (median of 9)", time(q)));
         }
     });
@@ -674,7 +658,7 @@ fn search_operators(steps: &mut Vec<Step>, r: &Report) {
     });
     step!(900, |_st, app, r| {
         let e = app.global::<SmartEdit>();
-        check(r, "the editor opens with the search's rules and the query as the name", app.global::<Nav>().get_page() == Page::SmartEdit && e.get_name() == OPS && lines().contains("Rating is at least") && lines().contains("From the server"), format!("name {:?}, rows: {}", e.get_name().to_string(), lines()));
+        check(r, "the editor opens with the search's rules and the query as the name", app.global::<Nav>().get_page() == Page::SmartEdit && e.get_name() == OPS && lines().contains("Play count is at least") && lines().contains("From the server"), format!("name {:?}, rows: {}", e.get_name().to_string(), lines()));
         snapshot(app, "s-27-search-to-editor");
         e.invoke_save();
     });

@@ -16,15 +16,14 @@
 //!   line (without the address or the user);
 //! - Sync now listing again; a start's sync asking two questions when the server has not
 //!   scanned (its scan status, its stars);
-//! - what goes back to the server: the three switches on, found by "Find a setting"; a heart and
-//!   stars given here on the server at once, a play reported with its time; a heart and stars
-//!   given there here after Sync now (and in the lists); both switches off: no write at all,
+//! - what goes back to the server: the three switches on, found by "Find a setting"; a heart
+//!   given here on the server at once (and never a rating), a play reported with its time; a
+//!   heart given there here after Sync now (and in the lists); both switches off: no write at all,
 //!   whatever changes here, no play queued; on again: what changed meanwhile sent; the Last.fm
 //!   switch skipping a server track and not a local one (`sv-12-server-switches`); five tracks
 //!   chosen in a playlist (four of the server's, their cloud kept on the chosen rows,
-//!   `sv-30-selection-cloud`) favourited and rated from their menu: one `star` and one
-//!   `setRating` per server track, none for the folder's; the switch off: nothing sent; on
-//!   again: sent;
+//!   `sv-30-selection-cloud`) favourited from their menu: one `star` per server track, none
+//!   for the folder's; the switch off: nothing sent; on again: sent;
 //! - Stop mid-sync; the server gone (a quiet line, the library as it was); the shrink
 //!   guard (held, then confirmed); the sign-in refused (signed out, the music kept, the section
 //!   marked); signing in again; signing out (the server's music gone, the folders' as it was);
@@ -569,8 +568,8 @@ pub fn run() {
         let s = app.global::<Server>();
         check(r, "the three switches are on for a server signed in to", s.get_sync_marks() && s.get_report_plays() && s.get_lastfm_scrobbles(), String::new());
         for (q, label) in [
-            ("favourites server", "Sync favourites and ratings with the server"),
-            ("ratings navidrome", "Sync favourites and ratings with the server"),
+            ("favourites server", "Sync favourites with the server"),
+            ("hearts navidrome", "Sync favourites with the server"),
             ("plays server", "Report plays to the server"),
             ("double scrobble", "Scrobble server tracks from this app"),
         ] {
@@ -580,22 +579,21 @@ pub fn run() {
         views::settings_section(st, settings::nav::LIBRARY);
         app.global::<Nav>().set_page_scroll(-560.0);
         with_mock(Mock::clear_requests);
-        // A heart and stars given here, as the track lists and the Rate menu give them.
+        // A heart given here, as the track lists give it.
         let fav = one(st, "SELECT id FROM tracks WHERE remote_id = 'only03-1'");
         let _ = library::query::toggle_favourite_track(&st.db, fav);
-        crate::server::write::changed(st, fav, library::marks::Mark::Favourite);
-        crate::menus::rate(st, one(st, "SELECT id FROM tracks WHERE remote_id = 'only03-2'"), 4);
+        crate::server::write::changed(st, fav);
     });
     stage!(100, |_st, app, _r| {
         snapshot(app, "sv-12-server-switches");
     });
-    stage!(100, until "the heart and the stars on the server", |_st, _app| with_mock(|m| {
+    stage!(100, until "the heart on the server", |_st, _app| with_mock(|m| {
         let mut ok = false;
-        m.edit(|l| ok = l.song("only03-1").is_some_and(|s| s.starred.is_some()) && l.song("only03-2").is_some_and(|s| s.user_rating == Some(4)));
+        m.edit(|l| ok = l.song("only03-1").is_some_and(|s| s.starred.is_some()));
         ok
     }), 10_000, |st, _app, r| {
         let asked = with_mock(Mock::requests);
-        check(r, "sent at once: one star, one rating", asked.iter().filter(|q| q.starts_with("star ")).count() == 1 && asked.iter().filter(|q| q.starts_with("setRating ")).count() == 1, format!("{asked:?}"));
+        check(r, "sent at once: one star, no rating", asked.iter().filter(|q| q.starts_with("star ")).count() == 1 && !asked.iter().any(|q| q.starts_with("setRating")), format!("{asked:?}"));
         // A play counted of a server track: reported, with its time.
         crate::session::record_play(st, one(st, "SELECT id FROM tracks WHERE remote_id = 'only03-1'"));
     });
@@ -613,17 +611,14 @@ pub fn run() {
         with_mock(|m| {
             m.edit(|l| {
                 l.song_mut("only04-1").expect("song").starred = Some(mock::iso(now));
-                l.song_mut("only04-2").expect("song").user_rating = Some(2);
             })
         });
         app.global::<Actions>().invoke_server_sync();
     });
-    stage!(300, until "the server's heart and stars here", |st, app| idle(st, app) && {
+    stage!(300, until "the server's heart here", |st, app| idle(st, app) && {
         let t = one(st, "SELECT id FROM tracks WHERE remote_id = 'only04-1'");
         library::query::is_favourite_track(&st.db, t).unwrap_or(false)
     }, 30_000, |st, app, r| {
-        let t2 = one(st, "SELECT id FROM tracks WHERE remote_id = 'only04-2'");
-        check(r, "a rating made on the server is here, in the lists too", library::query::rating(&st.db, t2).unwrap_or(0) == 2 && crate::rows::rating_of(t2) == 2, String::new());
         check(r, "what was sent is not sent back", one(st, "SELECT COUNT(*) FROM tracks t JOIN favourite_tracks f ON f.track_id = t.id WHERE t.remote_id = 'only03-1'") == 1, String::new());
         // Both switches off: nothing goes, whatever changes here.
         app.global::<Actions>().invoke_server_toggle(0);
@@ -633,8 +628,7 @@ pub fn run() {
         with_mock(Mock::clear_requests);
         let t = one(st, "SELECT id FROM tracks WHERE remote_id = 'only05-1'");
         let _ = library::query::toggle_favourite_track(&st.db, t);
-        crate::server::write::changed(st, t, library::marks::Mark::Favourite);
-        crate::menus::rate(st, one(st, "SELECT id FROM tracks WHERE remote_id = 'only05-2'"), 5);
+        crate::server::write::changed(st, t);
         crate::session::record_play(st, t);
         server::sync(st, Reason::Manual);
     });
@@ -650,10 +644,10 @@ pub fn run() {
     });
     stage!(300, until "what changed while off sent", |_st, _app| with_mock(|m| {
         let mut ok = false;
-        m.edit(|l| ok = l.song("only05-1").is_some_and(|s| s.starred.is_some()) && l.song("only05-2").is_some_and(|s| s.user_rating == Some(5)));
+        m.edit(|l| ok = l.song("only05-1").is_some_and(|s| s.starred.is_some()));
         ok
     }), 30_000, |st, app, r| {
-        check(r, "favourites and ratings on again: in step", app.global::<Server>().get_sync_marks(), String::new());
+        check(r, "favourites on again: in step", app.global::<Server>().get_sync_marks(), String::new());
         // The scrobbling switch (Last.fm and ListenBrainz): a server track is not the app's to
         // scrobble when off; a file only here is.
         app.global::<Actions>().invoke_server_toggle(2);
@@ -694,55 +688,45 @@ pub fn run() {
         check(r, "their menu is for five", labels.first().map(String::as_str) == Some("5 tracks"), format!("{labels:?}"));
         let at = labels.iter().position(|l| l == "Add to favourites").unwrap_or(0) as i32;
         crate::menus::activate(st, at, -1);
-        // Rate…, then four stars.
-        crate::menus::request(st, "track", "playlist", 1, 0, 600.0, 300.0);
-        let at = crate::bench::menu_labels(app).iter().position(|l| l == "Rate\u{2026}").unwrap_or(0) as i32;
-        crate::menus::activate(st, at, -1);
-        crate::menus::activate(st, 4, -1);
     });
     stage!(100, |_st, app, _r| {
         snapshot(app, "sv-30-selection-cloud");
     });
-    stage!(100, until "the four hearts and stars on the server", |_st, _app| with_mock(|m| {
+    stage!(100, until "the four hearts on the server", |_st, _app| with_mock(|m| {
         let mut ok = false;
         m.edit(|l| {
-            ok = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| l.song(id).is_some_and(|s| s.starred.is_some() && s.user_rating == Some(4)));
+            ok = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| l.song(id).is_some_and(|s| s.starred.is_some()));
         });
         ok
     }), 10_000, |_st, app, r| {
         let asked = with_mock(Mock::requests);
         let stars: Vec<&String> = asked.iter().filter(|q| q.starts_with("star ")).collect();
-        let ratings: Vec<&String> = asked.iter().filter(|q| q.starts_with("setRating ")).collect();
         let named = |v: &[&String], id: &str| v.iter().filter(|q| q.contains(id)).count();
-        let each = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| named(&stars, id) == 1 && named(&ratings, id) == 1);
-        check(r, "a favourite and a rating of five chosen: one star and one setRating per server track", stars.len() == 4 && ratings.len() == 4 && each, format!("{asked:?}"));
+        let each = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| named(&stars, id) == 1);
+        check(r, "a favourite of five chosen: one star per server track, no rating", stars.len() == 4 && each && !asked.iter().any(|q| q.starts_with("setRating")), format!("{asked:?}"));
         // The switch off: the same for all five, and nothing goes.
         app.global::<Actions>().invoke_server_toggle(0);
         with_mock(Mock::clear_requests);
     });
     stage!(300, |st, app, r| {
-        check(r, "favourites and ratings off", !st.settings.borrow().server_marks, String::new());
+        check(r, "favourites off", !st.settings.borrow().server_marks, String::new());
         crate::menus::request(st, "track", "playlist", 1, 0, 600.0, 300.0);
         let labels = crate::bench::menu_labels(app);
         check(r, "all five favourites now: the menu offers to remove them", labels.iter().any(|l| l == "Remove from favourites"), format!("{labels:?}"));
         let at = labels.iter().position(|l| l == "Remove from favourites").unwrap_or(0) as i32;
         crate::menus::activate(st, at, -1);
-        crate::menus::request(st, "track", "playlist", 1, 0, 600.0, 300.0);
-        let at = crate::bench::menu_labels(app).iter().position(|l| l == "Rate\u{2026}").unwrap_or(0) as i32;
-        crate::menus::activate(st, at, -1);
-        crate::menus::activate(st, 2, -1);
     });
     stage!(2000, |st, app, r| {
         let asked = with_mock(Mock::requests);
         let writes: Vec<&String> = asked.iter().filter(|q| ["star", "unstar", "setRating"].contains(&q.split(' ').next().unwrap_or(""))).collect();
         let t = one(st, "SELECT id FROM tracks WHERE remote_id = 'only10-1'");
-        check(r, "the switch off: the five changed here, nothing sent", writes.is_empty() && !library::query::is_favourite_track(&st.db, t).unwrap_or(true) && library::query::rating(&st.db, t).unwrap_or(0) == 2, format!("writes {writes:?}"));
+        check(r, "the switch off: the five changed here, nothing sent", writes.is_empty() && !library::query::is_favourite_track(&st.db, t).unwrap_or(true), format!("writes {writes:?}"));
         app.global::<Actions>().invoke_server_toggle(0);
     });
     stage!(300, until "what the selection changed while off sent", |_st, _app| with_mock(|m| {
         let mut ok = false;
         m.edit(|l| {
-            ok = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| l.song(id).is_some_and(|s| s.starred.is_none() && s.user_rating == Some(2)));
+            ok = ["only10-1", "only10-2", "only11-1", "only11-2"].iter().all(|id| l.song(id).is_some_and(|s| s.starred.is_none()));
         });
         ok
     }), 30_000, |st, _app, r| {

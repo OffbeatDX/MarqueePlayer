@@ -5,7 +5,7 @@
 //! for row in everything a user can see and in all of their data (`support/scan_dump.rs`), and
 //! read no file twice. For a first scan, and for a rescan after a reorganisation (folders moved,
 //! a file renamed, an album retagged, files and an album removed) of a library with plays,
-//! favourites, ratings, a playlist and a queue on it.
+//! favourites, a playlist and a queue on it.
 //!
 //! Needs ffmpeg on PATH (the audio templates); skips without it.
 
@@ -133,9 +133,6 @@ fn the_messy_library_stopped_after_every_batch_is_the_same_library() {
             }
             if i % 11 == 0 {
                 library::query::toggle_favourite_track(&c, *id).unwrap();
-            }
-            if i % 13 == 0 {
-                library::query::set_rating(&c, *id, 1 + (i % 5) as u8).unwrap();
             }
         }
         let albums: Vec<i64> = c.prepare("SELECT id FROM albums ORDER BY key").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();

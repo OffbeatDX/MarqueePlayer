@@ -67,7 +67,7 @@ const DATES: [Option<&str>; 8] = [None, Some("1999"), Some("2004-03-15"), Some("
 
 /// A library of 40 albums and 360 tracks with a believable spread of everything rules look
 /// at, made with `Rng`, plus playlists: "Ordinary" (id 1, a track twice), smart "Jazz"
-/// (2: genre is jazz), smart "Jazz rated" (3: in Jazz, rated 3+), smart "Loop A" (4) and
+/// (2: genre is jazz), smart "Jazz faves" (3: in Jazz, a favourite), smart "Loop A" (4) and
 /// "Loop B" (5) naming each other, and an empty ordinary "Empty" (6).
 pub fn fixture() -> Connection {
     let conn = crate::db::open_in_memory().unwrap();
@@ -147,6 +147,7 @@ pub fn fixture() -> Connection {
             if rng.chance(20) {
                 conn.execute("INSERT INTO favourite_tracks VALUES (?1, 1)", [track_id]).unwrap();
             }
+            // Ratings left by a build that kept them: read by nothing now.
             if rng.chance(50) {
                 conn.execute("INSERT INTO track_ratings VALUES (?1, ?2, 1)", params![track_id, 1 + rng.below(5) as i64]).unwrap();
             }
@@ -156,7 +157,7 @@ pub fn fixture() -> Connection {
         r#"INSERT INTO playlists (id, name, created_at) VALUES (1, 'Ordinary', 0), (6, 'Empty', 0);
            INSERT INTO playlists (id, name, created_at, rules) VALUES
              (2, 'Jazz', 0, '{"v":1,"match":"all","rules":[{"field":"genre","op":"is","value":"JAZZ"}]}'),
-             (3, 'Jazz rated', 0, '{"v":1,"match":"all","rules":[{"field":"playlist","op":"in","value":2},{"field":"rating","op":"at_least","value":3}]}'),
+             (3, 'Jazz faves', 0, '{"v":1,"match":"all","rules":[{"field":"playlist","op":"in","value":2},{"field":"favourite","op":"yes"}]}'),
              (4, 'Loop A', 0, '{"v":1,"rules":[{"field":"playlist","op":"in","value":5}]}'),
              (5, 'Loop B', 0, '{"v":1,"rules":[{"field":"playlist","op":"not_in","value":4}]}');"#,
     )
@@ -213,7 +214,6 @@ fn values(field: Field, op: Op) -> Vec<(Value, Option<(u32, Unit)>)> {
             Field::Year => vec![(Value::Range(1990.0, 2010.0), None), (Value::Range(2025.0, 2025.0), None)],
             Field::Duration => vec![(Value::Range(60.0, 180.0), None), (Value::Range(0.0, 10.0), None)],
             Field::SampleRate => vec![(Value::Range(44_100.0, 48_000.0), None)],
-            Field::Rating => vec![(Value::Range(2.0, 4.0), None), (Value::Range(0.0, 0.0), None)],
             Field::PlaysIn => vec![(Value::Range(1.0, 3.0), Some((6, Unit::Months))), (Value::Range(0.0, 0.0), Some((1, Unit::Weeks)))],
             _ => vec![(Value::Range(1.0, 3.0), None), (Value::Range(0.0, 100_000.0), None)],
         },
@@ -223,7 +223,6 @@ fn values(field: Field, op: Op) -> Vec<(Value, Option<(u32, Unit)>)> {
             Field::SampleRate => vec![(Value::Num(44_100.0), None), (Value::Num(96_000.0), None)],
             Field::BitDepth => vec![(Value::Num(16.0), None), (Value::Num(24.0), None)],
             Field::Bitrate => vec![(Value::Num(320.0), None), (Value::Num(900.0), None)],
-            Field::Rating => vec![(Value::Num(0.0), None), (Value::Num(3.0), None), (Value::Num(5.0), None)],
             Field::Plays => vec![(Value::Num(0.0), None), (Value::Num(1.0), None), (Value::Num(3.0), None)],
             Field::PlaysIn => vec![(Value::Num(1.0), Some((30, Unit::Days))), (Value::Num(2.0), Some((1, Unit::Years))), (Value::Num(0.0), Some((3, Unit::Months)))],
             _ => vec![(Value::Num(1.0), None), (Value::Num(2.0), None), (Value::Num(9.0), None)],
@@ -521,8 +520,8 @@ fn playlists_name_playlists_and_cycles_are_refused() {
     // In a smart one, and in one that names another.
     let jazz = sql_ids(&conn, &one(Cond::new(Field::Genre, Op::Is, Value::Text("jazz".into()))));
     assert_eq!(check_both(&conn, &lib, &one(Cond::new(Field::Playlist, Op::In, Value::Id(2))), "in Jazz"), jazz);
-    let rated = check_both(&conn, &lib, &one(Cond::new(Field::Playlist, Op::In, Value::Id(3))), "in Jazz rated");
-    assert!(!rated.is_empty() && rated.len() < jazz.len() && rated.iter().all(|id| jazz.contains(id)));
+    let faves = check_both(&conn, &lib, &one(Cond::new(Field::Playlist, Op::In, Value::Id(3))), "in Jazz faves");
+    assert!(!faves.is_empty() && faves.len() < jazz.len() && faves.iter().all(|id| jazz.contains(id)));
     // A cycle: Loop A names Loop B which names Loop A. Evaluated as A, the rule that comes
     // back matches nothing, and it says so; nothing hangs or overflows.
     let a = Smart::from_json(&playlist_rules(&conn, 4).unwrap().unwrap().unwrap());
@@ -533,7 +532,7 @@ fn playlists_name_playlists_and_cycles_are_refused() {
     // Saving: naming itself, or one that comes back to it, is refused; naming others is fine.
     let names = |id: i64| one(Cond::new(Field::Playlist, Op::In, Value::Id(id)));
     assert_eq!(would_cycle(&conn, Some(2), &names(2)), Some("Jazz".into()));
-    assert_eq!(would_cycle(&conn, Some(2), &names(3)), Some("Jazz rated".into()), "Jazz rated names Jazz");
+    assert_eq!(would_cycle(&conn, Some(2), &names(3)), Some("Jazz faves".into()), "Jazz faves names Jazz");
     assert_eq!(would_cycle(&conn, Some(3), &names(2)), None);
     assert_eq!(would_cycle(&conn, None, &names(3)), None, "a new playlist");
     assert_eq!(would_cycle(&conn, Some(6), &names(1)), None);
@@ -618,7 +617,7 @@ fn groups_nest_and_empty_rules_mean_every_track() {
     let mut any = Smart::default();
     any.root.all = false;
     assert_eq!(sql_ids(&conn, &any).len(), 360, "no rules at the top, any or all: everything");
-    // Jazz and (favourite or rated 4+).
+    // Jazz and (favourite or lossless).
     let s = Smart {
         root: Group {
             all: true,
@@ -626,7 +625,7 @@ fn groups_nest_and_empty_rules_mean_every_track() {
                 Node::Cond(Cond::new(Field::Genre, Op::Contains, Value::Text("jazz".into()))),
                 Node::Group(Group {
                     all: false,
-                    nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None)), Node::Cond(Cond::new(Field::Rating, Op::AtLeast, Value::Num(4.0)))],
+                    nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None)), Node::Cond(Cond::new(Field::Lossless, Op::Yes, Value::None))],
                 }),
             ],
         },
@@ -635,7 +634,7 @@ fn groups_nest_and_empty_rules_mean_every_track() {
     let ids = check_both(&conn, &lib, &s, "nested");
     for id in &ids {
         let t = lib.tracks.iter().find(|t| t.id == *id).unwrap();
-        assert!(t.genres.iter().any(|g| g.to_lowercase().contains("jazz")) && (t.favourite || t.rating >= 4));
+        assert!(t.genres.iter().any(|g| g.to_lowercase().contains("jazz")) && (t.favourite || t.codec.as_deref().is_some_and(|c| ["FLAC", "ALAC", "WAV", "AIFF"].contains(&c))));
     }
     // An empty nested group: "all of nothing" holds, "any of nothing" does not; the editor
     // refuses to save either.
@@ -650,7 +649,6 @@ fn values_are_checked_and_explained() {
     let bad = |c: Cond| c.check().unwrap_err();
     assert_eq!(bad(Cond::new(Field::Genre, Op::Is, Value::Text("  ".into()))), "Choose a genre");
     assert_eq!(bad(Cond::new(Field::Title, Op::Contains, Value::Text("".into()))), "Type some text");
-    assert_eq!(bad(Cond::new(Field::Rating, Op::AtLeast, Value::Num(6.0))), "A rating is 0 to 5");
     assert_eq!(bad(Cond::new(Field::Year, Op::Between, Value::Range(2010.0, 1990.0))), "The first number should be the smaller one");
     assert_eq!(bad(Cond::new(Field::Duration, Op::AtLeast, Value::None)), "Type a length, like 3:30");
     assert_eq!(bad(Cond::new(Field::Added, Op::InLast, Value::Ago(0, Unit::Days))), "Type how many");
@@ -662,7 +660,7 @@ fn values_are_checked_and_explained() {
     assert!(Cond::new(Field::Favourite, Op::Yes, Value::None).check().is_ok());
     // An incomplete rule from a damaged file matches nothing, never everything.
     let conn = fixture();
-    let s = Smart::from_json(r#"{"rules":[{"field":"rating","op":"at_least","value":9}]}"#);
+    let s = Smart::from_json(r#"{"rules":[{"field":"plays","op":"at_least"}]}"#);
     let out = evaluate(&conn, &s, None, ctx()).unwrap();
     assert!(out.tracks.is_empty() && !out.problems.is_empty());
     // A zero limit is refused before saving.
@@ -699,7 +697,7 @@ fn what_a_newer_build_wrote_is_kept_and_never_widens_the_result() {
     let json = r#"{"v":3,"match":"all","rules":[
         {"field":"genre","op":"is","value":"jazz"},
         {"field":"mood","op":"is","value":"happy"},
-        {"field":"rating","op":"is_roughly","value":4},
+        {"field":"plays","op":"is_roughly","value":4},
         {"group":"none_of","rules":[{"field":"title","op":"contains","value":"a"}]},
         {"group":"any","rules":[{"field":"bpm","op":"at_least","value":120},{"field":"favourite","op":"yes"}]}
       ],"sort":{"by":"energy","desc":true},"seed":4,"future":{"x":1}}"#;
@@ -708,7 +706,7 @@ fn what_a_newer_build_wrote_is_kept_and_never_widens_the_result() {
     let problems = s.problems();
     assert_eq!(problems.len(), 5, "{problems:?}");
     assert!(problems[0].contains("the field “mood”"), "{problems:?}");
-    assert!(problems[1].contains("rating “is_roughly”"), "{problems:?}");
+    assert!(problems[1].contains("play count “is_roughly”"), "{problems:?}");
     assert!(problems.last().unwrap().contains("order"));
     // Unknown rules match nothing: "all of" with one is empty...
     let out = evaluate(&conn, &s, None, ctx()).unwrap();
@@ -799,13 +797,13 @@ fn rule_sets_read_as_plain_words() {
             all: true,
             nodes: vec![
                 Node::Cond(Cond::new(Field::Genre, Op::Is, Value::Text("Jazz".into()))),
-                Node::Cond(Cond::new(Field::Rating, Op::AtLeast, Value::Num(4.0))),
+                Node::Cond(Cond::new(Field::Lossless, Op::Yes, Value::None)),
             ],
         },
         limit: Some(Limiting::Known(Limit { n: 50, unit: LimitUnit::Tracks, by: Sort::new(SortKey::Plays) })),
         ..Smart::default()
     };
-    assert_eq!(summary(&s, &names), "Genre is Jazz \u{b7} rated 4+ \u{b7} 50 tracks, most played");
+    assert_eq!(summary(&s, &names), "Genre is Jazz \u{b7} lossless \u{b7} 50 tracks, most played");
     let words = |c: Cond| cond_words(&c, &names);
     assert_eq!(words(Cond::new(Field::Title, Op::Contains, Value::Text("love".into()))), "Title contains “love”");
     assert_eq!(words(Cond::new(Field::Favourite, Op::Yes, Value::None)), "favourite");
@@ -818,13 +816,13 @@ fn rule_sets_read_as_plain_words() {
     assert_eq!(words(Cond::new(Field::Playlist, Op::In, Value::Id(1))), "in “Road trip”");
     assert_eq!(words(Cond { within: Some((12, Unit::Months)), ..Cond::new(Field::PlaysIn, Op::AtLeast, Value::Num(3.0)) }), "3+ plays in the last 12 months");
     assert_eq!(words(Cond::new(Field::Lossless, Op::No, Value::None)), "lossy");
-    let any = Smart { root: Group { all: false, nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None)), Node::Cond(Cond::new(Field::Rating, Op::Is, Value::Num(5.0)))] }, ..Smart::default() };
-    assert_eq!(summary(&any, &names), "Any of: favourite, rated 5");
+    let any = Smart { root: Group { all: false, nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None)), Node::Cond(Cond::new(Field::Played, Op::No, Value::None))] }, ..Smart::default() };
+    assert_eq!(summary(&any, &names), "Any of: favourite, never played");
     let mut every = Smart::default();
     every.limit = Some(Limiting::Known(Limit { n: 2, unit: LimitUnit::Hours, by: Sort::new(SortKey::Random) }));
     assert_eq!(summary(&every, &names), "Every track \u{b7} 2 hours, random");
     let names_of: Vec<&str> = templates().iter().map(|t| t.0).collect();
-    assert_eq!(names_of, ["Recently added and unplayed", "Favourites not heard in 6 months", "Top rated", "Most played this year", "Lossless only", "Two hours at random"]);
+    assert_eq!(names_of, ["Recently added and unplayed", "Favourites not heard in 6 months", "Most played this year", "Lossless only", "Two hours at random"]);
     assert_eq!(summary(&templates()[0].1, &names), "Date added in the last 2 months \u{b7} never played");
 }
 
@@ -867,7 +865,6 @@ fn random_cond(rng: &mut Rng, p: &Pools) -> Cond {
     let n = |rng: &mut Rng, field: Field| -> f64 {
         match field {
             Field::Year => *rng.pick(&[1987.0, 1999.0, 2004.0, 2010.0, 2024.0, 2025.0]),
-            Field::Rating => rng.below(6) as f64,
             Field::Plays | Field::PlaysIn => rng.below(6) as f64,
             Field::Duration => (30 + rng.below(570)) as f64,
             Field::SampleRate => *rng.pick(&[44_100.0, 48_000.0, 96_000.0]),
@@ -979,4 +976,39 @@ fn random_rule_sets_agree_with_the_reference() {
     }
     // The generator exercises more than the trivial answers.
     assert!(some > 1500 && empty > 100 && full > 20, "some {some}, empty {empty}, full {full}");
+}
+
+#[test]
+fn rules_about_ratings_from_an_older_build_are_dropped_and_the_others_kept() {
+    // Rated 3+ among other rules, a group left empty by the drop, an order and a limit by rating.
+    let json = r#"{"v":1,"match":"all","rules":[
+        {"field":"genre","op":"is","value":"jazz"},
+        {"field":"rating","op":"at_least","value":3},
+        {"group":"any","rules":[{"field":"rating","op":"is","value":5},{"field":"favourite","op":"yes"}]},
+        {"group":"any","rules":[{"field":"rating","op":"is","value":0}]}
+      ],"sort":{"by":"rating","desc":true},"limit":{"n":20,"unit":"tracks","by":{"by":"rating","desc":true}},"seed":7}"#;
+    let s = Smart::from_json(json);
+    assert!(s.problems().is_empty(), "nothing unknown is left: {:?}", s.problems());
+    let want = Smart {
+        root: Group {
+            all: true,
+            nodes: vec![
+                Node::Cond(Cond::new(Field::Genre, Op::Is, Value::Text("jazz".into()))),
+                Node::Group(Group { all: false, nodes: vec![Node::Cond(Cond::new(Field::Favourite, Op::Yes, Value::None))] }),
+            ],
+        },
+        sort: Sorting::Known(Sort::default()),
+        limit: Some(Limiting::Known(Limit { n: 20, unit: LimitUnit::Tracks, by: Sort::default() })),
+        seed: 7,
+        ..Smart::default()
+    };
+    assert_eq!(s, want);
+    // Only a rating: every track, as a playlist with no rules is.
+    let only = Smart::from_json(r#"{"v":1,"match":"all","rules":[{"field":"rating","op":"at_least","value":4}],"sort":{"by":"rating","desc":true}}"#);
+    assert_eq!(only, Smart::default());
+    let conn = fixture();
+    assert_eq!(evaluate(&conn, &only, None, ctx()).unwrap().tracks.len(), 360);
+    // Nothing about ratings: nothing changes.
+    let mut m = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(r#"{"rules":[{"field":"plays","op":"at_least","value":1}]}"#).unwrap();
+    assert!(!strip_ratings(&mut m));
 }

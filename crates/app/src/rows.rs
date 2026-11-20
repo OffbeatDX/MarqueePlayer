@@ -47,35 +47,6 @@ impl Waiting {
     }
 }
 
-thread_local! {
-    /// Every rated track's stars (UI thread): loaded at start, kept in step by `rate`.
-    static RATINGS: RefCell<std::collections::HashMap<i64, u8>> = RefCell::default();
-}
-
-pub fn load_ratings(conn: &rusqlite::Connection) {
-    let r = library::query::ratings(conn).unwrap_or_default();
-    RATINGS.with(|m| *m.borrow_mut() = r);
-}
-
-pub fn rating_of(id: i64) -> u8 {
-    RATINGS.with(|m| m.borrow().get(&id).copied().unwrap_or(0))
-}
-
-pub fn remember_rating(id: i64, stars: u8) {
-    RATINGS.with(|m| {
-        if stars == 0 {
-            m.borrow_mut().remove(&id);
-        } else {
-            m.borrow_mut().insert(id, stars);
-        }
-    });
-}
-
-/// "★★★☆☆"; "" for none.
-pub fn stars(n: u8) -> String {
-    if n == 0 { String::new() } else { "★".repeat(n.min(5) as usize) + &"☆".repeat(5 - n.min(5) as usize) }
-}
-
 /// A list of tracks on screen (album, artist top tracks, search, playlist).
 pub struct TrackModel {
     tracks: RefCell<Vec<Track>>,
@@ -205,16 +176,6 @@ impl TrackModel {
         }
     }
 
-    /// A track's rating changed: redraw its rows.
-    pub fn rating_changed(&self, track_id: i64) {
-        self.redraw(|id| id == track_id);
-    }
-
-    /// Several tracks' ratings changed (a selection rated): one pass over the list.
-    pub fn ratings_changed(&self, ids: &HashSet<i64>) {
-        self.redraw(|id| ids.contains(&id));
-    }
-
     fn redraw(&self, of: impl Fn(i64) -> bool) {
         let tracks = self.tracks.borrow();
         for (i, t) in tracks.iter().enumerate() {
@@ -277,7 +238,6 @@ impl Model for TrackModel {
             duration: format_time(t.duration).into(),
             playing: t.id == self.playing.get(),
             favourite: self.favourites.borrow().contains(&t.id),
-            stars: stars(rating_of(t.id)).into(),
             cover: if self.with_covers { self.waiting.cover(t.art.as_deref(), row) } else { Image::default() },
             disc_header: disc_header.into(),
             details: self.details_of(t).into(),

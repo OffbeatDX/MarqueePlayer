@@ -8,7 +8,7 @@
 //! that answers an older request than what is now shown is dropped.
 //!
 //! **Live.** `changed` is called when what rules look at changes: a scan that changed the
-//! library, a rating, a favourite, a play counted, a playlist's tracks or name. It moves the
+//! library, a favourite, a play counted, a playlist's tracks or name. It moves the
 //! generation on and works out again only what is on screen: the open smart playlist, the
 //! Playlists page's counts, the editor's preview. Anything else (a home shelf) is worked out
 //! when it is next shown. The queue already made from a smart playlist is never changed by
@@ -1089,14 +1089,6 @@ pub fn wire(app: &AppWindow) {
     e.on_text_edited(|key, role, t| {
         let (Some(at), Some(role)) = (at_of(key), Role::from_index(role)) else { return };
         with_draft(|d| d.type_text(&at, role, &t));
-        state::with(|st| {
-            refresh(st);
-            edited(st);
-        });
-    });
-    e.on_stars(|key, role, delta| {
-        let (Some(at), Some(role)) = (at_of(key), Role::from_index(role)) else { return };
-        with_draft(|d| d.step_stars(&at, role, delta));
         state::with(|st| {
             refresh(st);
             edited(st);

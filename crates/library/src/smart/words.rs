@@ -1,5 +1,5 @@
 //! A rule set in plain words, for the Playlists page and the playlist's own page:
-//! "Genre is Jazz · rated 4+ · 50 tracks, most played".
+//! "Genre is Jazz · 50 tracks, most played".
 
 use super::{Cond, Field, Group, Kind, Limiting, Node, Op, Smart, Sort, SortKey, Value};
 
@@ -46,14 +46,6 @@ pub fn cond_words(c: &Cond, playlist: &dyn Fn(i64) -> Option<String>) -> String 
         (Field::Lossless, Op::No, _) => "lossy".into(),
         (Field::Remote, Op::Yes, _) => "from the server".into(),
         (Field::Remote, Op::No, _) => "with a file here".into(),
-        (Field::Rating, Op::Is, Value::Num(n)) if *n == 0.0 => "not rated".into(),
-        (Field::Rating, Op::IsNot, Value::Num(n)) if *n == 0.0 => "rated".into(),
-        (Field::Rating, Op::AtLeast, Value::Num(n)) if *n >= 5.0 => "rated 5".into(),
-        (Field::Rating, Op::AtLeast, Value::Num(n)) => format!("rated {}+", num(*n)),
-        (Field::Rating, Op::AtMost, Value::Num(n)) => format!("rated {} or less", num(*n)),
-        (Field::Rating, Op::Is, Value::Num(n)) => format!("rated {}", num(*n)),
-        (Field::Rating, Op::IsNot, Value::Num(n)) => format!("not rated {}", num(*n)),
-        (Field::Rating, Op::Between, Value::Range(a, b)) => format!("rated {}\u{2013}{}", num(*a), num(*b)),
         (Field::Plays, Op::Is, Value::Num(n)) if *n == 0.0 => "never played".into(),
         (Field::Plays, Op::AtLeast, Value::Num(n)) => format!("{}+ plays", num(*n)),
         (Field::Plays, Op::AtMost, Value::Num(n)) => format!("{} plays or fewer", num(*n)),
@@ -111,8 +103,6 @@ pub fn sort_words(s: &Sort) -> String {
         (SortKey::Added, false) => "first added".into(),
         (SortKey::LastPlayed, true) => "most recently played".into(),
         (SortKey::LastPlayed, false) => "least recently played".into(),
-        (SortKey::Rating, true) => "highest rated".into(),
-        (SortKey::Rating, false) => "lowest rated".into(),
         (SortKey::Year, true) => "newest".into(),
         (SortKey::Year, false) => "oldest".into(),
         (SortKey::Duration, true) => "longest".into(),

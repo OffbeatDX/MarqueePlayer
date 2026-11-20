@@ -17,11 +17,11 @@ const EXTRA: &[(&str, &str)] = &[
     ("every track, by artist and album", r#"{"rules":[]}"#),
     ("every track, by play count", r#"{"rules":[],"sort":{"by":"plays","desc":true}}"#),
     ("100 most played, by title", r#"{"rules":[],"sort":{"by":"title","desc":false},"limit":{"n":100,"unit":"tracks","by":{"by":"plays","desc":true}}}"#),
-    ("10 hours by rating", r#"{"rules":[],"limit":{"n":10,"unit":"hours","by":{"by":"rating","desc":true}}}"#),
-    ("in the 3,000-track playlist, rated", r#"{"rules":[{"field":"playlist","op":"in","value":3},{"field":"rating","op":"at_least","value":1}]}"#),
+    ("10 hours by length", r#"{"rules":[],"limit":{"n":10,"unit":"hours","by":{"by":"duration","desc":true}}}"#),
+    ("in the 3,000-track playlist, played", r#"{"rules":[{"field":"playlist","op":"in","value":3},{"field":"plays","op":"at_least","value":1}]}"#),
     (
         "any of ten",
-        r#"{"match":"any","rules":[{"field":"title","op":"contains","value":"night"},{"field":"artist","op":"contains","value":"davis"},{"field":"genre","op":"is","value":"ambient"},{"field":"label","op":"is","value":"warp"},{"field":"year","op":"between","value":[1990,1995]},{"field":"rating","op":"is","value":5},{"field":"favourite","op":"yes"},{"field":"plays","op":"at_least","value":20},{"field":"added","op":"in_last","value":{"n":2,"unit":"weeks"}},{"field":"bit_depth","op":"at_least","value":24}],"sort":{"by":"random"}}"#,
+        r#"{"match":"any","rules":[{"field":"title","op":"contains","value":"night"},{"field":"artist","op":"contains","value":"davis"},{"field":"genre","op":"is","value":"ambient"},{"field":"label","op":"is","value":"warp"},{"field":"year","op":"between","value":[1990,1995]},{"field":"lossless","op":"yes"},{"field":"favourite","op":"yes"},{"field":"plays","op":"at_least","value":20},{"field":"added","op":"in_last","value":{"n":2,"unit":"weeks"}},{"field":"bit_depth","op":"at_least","value":24}],"sort":{"by":"random"}}"#,
     ),
 ];
 

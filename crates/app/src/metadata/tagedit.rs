@@ -13,7 +13,7 @@
 //!
 //! The library takes the new tags through the same path as any other retag: the folders
 //! that changed are scanned (`scanning::rescan_changed`, as the folder watcher does), so
-//! ids, plays, favourites, ratings and playlists stay, and an album whose identity changed
+//! ids, plays, favourites and playlists stay, and an album whose identity changed
 //! is regrouped by the scanner's rules.
 
 use std::cell::RefCell;

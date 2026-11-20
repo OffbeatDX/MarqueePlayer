@@ -210,11 +210,6 @@ pub struct Song {
     /// When the user starred it; None when not starred.
     #[serde(deserialize_with = "de::opt_string")]
     pub starred: Option<String>,
-    /// 1-5; None when not rated.
-    #[serde(deserialize_with = "de::opt_num")]
-    pub user_rating: Option<u8>,
-    #[serde(deserialize_with = "de::opt_num")]
-    pub average_rating: Option<f64>,
     #[serde(deserialize_with = "de::opt_num")]
     pub play_count: Option<u64>,
     /// When it was last played (OpenSubsonic).
@@ -296,8 +291,6 @@ pub struct Album {
     pub genre: String,
     #[serde(deserialize_with = "de::opt_string")]
     pub played: Option<String>,
-    #[serde(deserialize_with = "de::opt_num")]
-    pub user_rating: Option<u8>,
     #[serde(deserialize_with = "de::list")]
     pub record_labels: Vec<Named>,
     /// The MusicBrainz release id; empty when untagged.
@@ -349,8 +342,6 @@ pub struct Artist {
     pub album_count: u32,
     #[serde(deserialize_with = "de::opt_string")]
     pub starred: Option<String>,
-    #[serde(deserialize_with = "de::opt_num")]
-    pub user_rating: Option<u8>,
     #[serde(deserialize_with = "de::string")]
     pub music_brainz_id: String,
     #[serde(deserialize_with = "de::string")]

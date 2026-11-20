@@ -447,7 +447,7 @@ fn main() {
     words(&dir("words"), &tones);
     sibling("viz_fixtures", &[root.join("viz").as_os_str()]);
     sibling("messy_library", &[root.join("messy").as_os_str()]);
-    // The smart playlist bench's seeded ratings and favourites are made for 120 albums.
+    // The smart playlist bench's seeded favourites and plays are made for 120 albums.
     sibling("messy_library", &[root.join("messy120").as_os_str(), "120".as_ref()]);
     sibling("meta_fixtures", &[root.join("meta").as_os_str()]);
     sibling("edit_fixtures", &[root.join("edit").as_os_str()]);

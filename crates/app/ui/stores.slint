@@ -155,8 +155,6 @@ export global Keys {
     in-out property <string> repeat;
     in-out property <string> mute;
     in-out property <string> favourite;
-    // The rating keys in a few words ("0 to 5").
-    in-out property <string> rate;
     in-out property <string> now-playing;
     in-out property <string> visualizer;
     in-out property <string> visualizer-look;
@@ -377,8 +375,6 @@ export global Player {
     in-out property <int> repeat; // 0 off, 1 all, 2 one
     in-out property <bool> shuffle;
     in-out property <bool> favourite;
-    // The playing track's stars, 0 to 5.
-    in-out property <int> rating;
     in-out property <bool> bar-autohide;
     // Settings > Window: the tray icon's bars move while music plays.
     in-out property <bool> tray-animation: true;
@@ -1082,8 +1078,6 @@ export global Actions {
     callback cycle-repeat();
     callback toggle-shuffle();
     callback toggle-favourite-current();
-    // The rating menu for the playing track, at a window point.
-    callback rating-menu(length, length);
 
     // Queue.
     callback queue-play(int);
@@ -1148,7 +1142,7 @@ export global Actions {
     callback server-sync();
     callback server-stop();
     callback server-sign-out();
-    // Settings > Library > Server's switches: 0 favourites and ratings, 1 plays, 2 Last.fm.
+    // Settings > Library > Server's switches: 0 favourites, 1 plays, 2 Last.fm.
     callback server-toggle(int);
     // Remove what the server no longer lists, which the shrink guard kept.
     callback server-confirm-removal();
@@ -1269,7 +1263,7 @@ export global Actions {
 
 // A smart playlist's page (playlists/smart.rs): its rules in words, and what they hold now. It is
 // worked out off the UI thread and again when what it depends on changes (a scan, a
-// rating, a favourite, a play); the queue already made from it stays as it was.
+// favourite, a play); the queue already made from it stays as it was.
 export global SmartList {
     in-out property <int> id: -1;
     in-out property <string> name;
@@ -1324,7 +1318,6 @@ export global SmartEdit {
     // A choice's list, under it (window coordinates).
     callback open-choice(int /* key */, int /* role */, length, length);
     callback text-edited(int /* key */, int /* role */, string);
-    callback stars(int /* key */, int /* role */, int /* +1 / -1 */);
     callback toggle(int /* key */, int /* role */);
     // A rule at the end of a group (its heading's key), or of the top (-1).
     callback add-rule(int);

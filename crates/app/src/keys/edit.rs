@@ -80,7 +80,6 @@ pub fn refresh(st: &Rc<State>) {
     g.set_repeat(km.label(Action::Repeat).into());
     g.set_mute(km.label(Action::Mute).into());
     g.set_favourite(km.label(Action::Favourite).into());
-    g.set_rate(km.rating_label().into());
     g.set_now_playing(km.label(Action::NowPlaying).into());
     g.set_visualizer(km.label(Action::Visualizer).into());
     g.set_visualizer_look(km.label(Action::VisualizerLook).into());

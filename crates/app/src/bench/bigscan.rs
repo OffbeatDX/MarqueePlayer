@@ -75,7 +75,7 @@ pub fn run_bigscan() {
     let peak = Rc::new(Cell::new(0.0f64));
     let seen_scan = Rc::new(Cell::new(false));
     let first_albums: Rc<Cell<Option<f64>>> = Rc::default();
-    // What a play counted or a rating would wait for: an empty write on the UI thread's own
+    // What a play counted or a favourite would wait for: an empty write on the UI thread's own
     // connection every 200 ms, timed, while the scan writes from its thread.
     let writes: Rc<RefCell<Vec<f64>>> = Rc::default();
     let second_writes: Rc<Cell<f64>> = Rc::default();

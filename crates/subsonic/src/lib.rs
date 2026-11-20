@@ -10,7 +10,7 @@
 //!   playlists, genres, starred, lyrics, scan status), [`Client::cover_art`] as bytes, and
 //!   [`Client::stream`] handing a song to a sink as it downloads, from a byte offset when
 //!   the server allows.
-//! - Writes (star, rating, scrobble, playlists) exist, each kind allowed or not by the client's
+//! - Writes (star, scrobble, playlists) exist, each kind allowed or not by the client's
 //!   [`Writes`] ([`Client::with_writes`]); a write not allowed is refused before a request is
 //!   made ([`Error::ReadOnly`]). `Client::new(.., true)` allows none. None of them touches a
 //!   music file: they change the server's own database only.

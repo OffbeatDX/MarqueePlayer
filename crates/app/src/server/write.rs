@@ -1,13 +1,13 @@
-//! What the app writes to the server: favourites and ratings both ways, plays reported
+//! What the app writes to the server: favourites both ways, plays reported
 //! (docs/features/navidrome.md). Settings > Library > Server's switches decide which kinds may be sent;
 //! the client this holds is allowed those kinds only (`subsonic::Writes`), so with both off no
-//! write can leave the app, whatever asks. Only `star`, `unstar`, `setRating` and `scrobble`:
-//! they change the server's own database (its user's stars, ratings and plays), never a music
-//! file. No playlist write, no delete, no tag edit, no scan is ever sent.
+//! write can leave the app, whatever asks. Only `star`, `unstar` and `scrobble`: they change the
+//! server's own database (its user's stars and plays), never a music file. No rating, no
+//! playlist write, no delete, no tag edit, no scan is ever sent.
 //!
 //! **One thread** (`start`, for the app's lifetime, idle on a condition variable) does every
 //! write in turn, so a change made in the app and a sync's pass never cross:
-//! - a favourite or rating changed in the app (`changed`): noted with its time in the database
+//! - a favourite changed in the app (`changed`): noted with its time in the database
 //!   (`library::marks::touched`) on the UI thread, then sent from here at once. If the server
 //!   cannot be reached it is not lost: the local value differs from the agreed one, and the
 //!   next sync sends it.
@@ -19,14 +19,16 @@
 //! - "now playing" when such a track starts (`now_playing`): sent once, never queued.
 //!
 //! The server's play counts are not taken into the library: the app reports its own plays to the
-//! server, so taking the server's back would count each of them twice.
+//! server, so taking the server's back would count each of them twice. Ratings are neither read
+//! nor sent: one changed in an older build and still waiting there is dropped, never sent
+//! (`library::marks`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Condvar, Mutex, OnceLock};
 
-use library::marks::{self, Mark, Plan, Row, Seen};
+use library::marks::{self, Plan, Row, Seen};
 use rusqlite::Connection;
 use subsonic::{Client, Error, Writes};
 
@@ -40,12 +42,11 @@ const STAR_CHUNK: usize = 50;
 /// Plays read off the queue at a time.
 const PLAY_CHUNK: usize = 50;
 
-/// A local favourite or rating the server's value replaced.
+/// A local favourite the server's value replaced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changed {
     pub track_id: i64,
     pub favourite: Option<bool>,
-    pub rating: Option<u8>,
 }
 
 /// What a pass did.
@@ -61,16 +62,16 @@ pub struct Done {
 
 /// The server's own values as a sync read them, from its catalog's songs.
 pub fn view_of(albums: &[library::remote::RemoteAlbum]) -> View {
-    albums.iter().flat_map(|a| &a.songs).map(|s| (s.id.clone(), Seen { starred: Some(s.starred.map(|t| t.max(0))), rating: Some(s.rating.unwrap_or(0).min(5)) })).collect()
+    albums.iter().flat_map(|a| &a.songs).map(|s| (s.id.clone(), Seen { starred: Some(s.starred.map(|t| t.max(0))) })).collect()
 }
 
 /// The server's stars (`getStarred2`) when its catalog was not listed: every song kept is known
-/// starred or not; the ratings of the starred ones only.
+/// starred or not.
 pub fn view_of_starred(kept: impl IntoIterator<Item = String>, starred: &[subsonic::Song]) -> View {
-    let mut v: View = kept.into_iter().map(|id| (id, Seen { starred: Some(None), rating: None })).collect();
+    let mut v: View = kept.into_iter().map(|id| (id, Seen { starred: Some(None) })).collect();
     for s in starred {
         let at = s.starred.as_deref().and_then(crate::server::sync::iso_ms).unwrap_or(0);
-        v.insert(s.id.clone(), Seen { starred: Some(Some(at)), rating: Some(s.user_rating.unwrap_or(0).min(5)) });
+        v.insert(s.id.clone(), Seen { starred: Some(Some(at)) });
     }
     v
 }
@@ -82,7 +83,6 @@ pub fn view_of_starred(kept: impl IntoIterator<Item = String>, starred: &[subson
 pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i64>) -> rusqlite::Result<Done> {
     let mut done = Done::default();
     let mut star: Vec<(String, bool)> = Vec::new();
-    let mut rate: Vec<(String, u8)> = Vec::new();
     {
         let _w = (only.is_none()).then(crate::server::sync::writer);
         library::db::let_waiting_in();
@@ -96,37 +96,21 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
         for r in &rows {
             let seen = view.get(&r.song_id).copied().unwrap_or_default();
             let s: Plan<bool> = marks::decide_star(r.starred, &r.agreed, seen.starred);
-            let g: Plan<u8> = marks::decide_rating(r.rating, &r.agreed, seen.rating);
-            let mut c = Changed { track_id: r.track_id, ..Changed::default() };
             if let Some(v) = s.set_local {
                 marks::set_local_star(&tx, r.track_id, v, s.at)?;
-                c.favourite = Some(v);
-            }
-            if let Some(v) = g.set_local {
-                marks::set_local_rating(&tx, r.track_id, v)?;
-                c.rating = Some(v);
+                done.changed.push(Changed { track_id: r.track_id, favourite: Some(v) });
             }
             if let Some(v) = s.agree {
                 marks::agree_star(&tx, &r.song_id, v, s.at)?;
             }
-            if let Some(v) = g.agree {
-                marks::agree_rating(&tx, &r.song_id, v)?;
-            }
             if let Some(v) = s.push {
                 star.push((r.song_id.clone(), v));
-            }
-            if let Some(v) = g.push {
-                rate.push((r.song_id.clone(), v));
-            }
-            if c.favourite.is_some() || c.rating.is_some() {
-                done.changed.push(c);
             }
         }
         tx.commit()?;
     }
     // Sent, and agreed as each is taken.
     let mut agreed_stars: Vec<(String, bool)> = Vec::new();
-    let mut agreed_ratings: Vec<(String, u8)> = Vec::new();
     'send: for value in [true, false] {
         let ids: Vec<&str> = star.iter().filter(|(_, v)| *v == value).map(|(id, _)| id.as_str()).collect();
         for chunk in ids.chunks(STAR_CHUNK) {
@@ -153,33 +137,18 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
             }
         }
     }
-    if done.error.is_none() {
-        for (id, v) in &rate {
-            match client.set_rating(id, *v) {
-                Ok(()) => agreed_ratings.push((id.clone(), *v)),
-                Err(Error::NotFound(_)) => log::info!("server: a rating not sent, the song is no longer on the server"),
-                Err(e) => {
-                    done.error = Some(e);
-                    break;
-                }
-            }
-        }
-    }
-    done.sent = agreed_stars.len() + agreed_ratings.len();
+    done.sent = agreed_stars.len();
     if done.sent > 0 {
         let tx = library::db::write(conn)?;
         for (id, v) in &agreed_stars {
             marks::agree_star(&tx, id, *v, None)?;
         }
-        for (id, v) in &agreed_ratings {
-            marks::agree_rating(&tx, id, *v)?;
-        }
         tx.commit()?;
     }
     if let Some(e) = &done.error {
-        log::info!("server: {} favourites and ratings sent, the rest waits for the next sync ({})", done.sent, crate::server::class(e));
+        log::info!("server: {} favourites sent, the rest waits for the next sync ({})", done.sent, crate::server::class(e));
     } else if done.sent > 0 || !done.changed.is_empty() {
-        log::info!("server: {} favourites and ratings sent, {} taken from the server", done.sent, done.changed.len());
+        log::info!("server: {} favourites sent, {} taken from the server", done.sent, done.changed.len());
     }
     Ok(done)
 }
@@ -216,7 +185,7 @@ struct Work {
     writes: Writes,
     /// A pass after a sync, with what it read.
     pass: Option<View>,
-    /// Tracks whose favourite or rating the app changed.
+    /// Tracks whose favourite the app changed.
     tracks: Vec<i64>,
     plays: bool,
     now_playing: Option<String>,
@@ -342,13 +311,13 @@ pub fn after_sync(view: View) {
     });
 }
 
-/// The app changed track `id`'s favourite or rating (the user did): noted, and sent at once when
-/// the server has the track and favourites and ratings are synced.
-pub fn changed(st: &Rc<State>, id: i64, what: Mark) {
+/// The app changed track `id`'s favourite (the user did): noted, and sent at once when the
+/// server has the track and favourites are synced.
+pub fn changed(st: &Rc<State>, id: i64) {
     if id < 0 || !st.settings.borrow().server_marks {
         return;
     }
-    match marks::touched(&st.db, id, what) {
+    match marks::touched(&st.db, id) {
         Ok(Some(_)) => kick(|w| {
             if !w.tracks.contains(&id) {
                 w.tracks.push(id);
@@ -389,17 +358,6 @@ pub fn apply(st: &Rc<State>, changes: &[Changed]) {
                 && let Some(app) = &app
             {
                 slint::ComponentHandle::global::<crate::Player>(app).set_favourite(fav);
-            }
-        }
-        if let Some(r) = c.rating {
-            crate::rows::remember_rating(c.track_id, r);
-            for l in st.lists.all() {
-                l.rating_changed(c.track_id);
-            }
-            if c.track_id == playing
-                && let Some(app) = &app
-            {
-                slint::ComponentHandle::global::<crate::Player>(app).set_rating(i32::from(r));
             }
         }
     }
@@ -452,17 +410,12 @@ mod tests {
         fn track(&self, song: &str) -> i64 {
             self.conn().query_row("SELECT id FROM tracks WHERE remote_id = ?1", [song], |r| r.get(0)).unwrap()
         }
-        fn local(&self, song: &str) -> (bool, u8) {
-            let c = self.conn();
-            let t = self.track(song);
-            (library::query::is_favourite_track(&c, t).unwrap(), library::query::rating(&c, t).unwrap())
+        fn local(&self, song: &str) -> bool {
+            library::query::is_favourite_track(&self.conn(), self.track(song)).unwrap()
         }
-        fn server(&self, song: &str) -> (bool, u8) {
-            let mut out = (false, 0);
-            self.mock.edit(|l| {
-                let s = l.song(song).unwrap();
-                out = (s.starred.is_some(), s.user_rating.unwrap_or(0));
-            });
+        fn server(&self, song: &str) -> bool {
+            let mut out = false;
+            self.mock.edit(|l| out = l.song(song).unwrap().starred.is_some());
             out
         }
         /// The app changes a favourite, as `changed` notes it.
@@ -470,13 +423,7 @@ mod tests {
             let c = self.conn();
             let t = self.track(song);
             library::query::toggle_favourite_track(&c, t).unwrap();
-            library::marks::touched(&c, t, Mark::Favourite).unwrap();
-        }
-        fn rate_here(&self, song: &str, stars: u8) {
-            let c = self.conn();
-            let t = self.track(song);
-            library::query::set_rating(&c, t, stars).unwrap();
-            library::marks::touched(&c, t, Mark::Rating).unwrap();
+            library::marks::touched(&c, t).unwrap();
         }
         fn writes_sent(&self) -> usize {
             self.mock.requests().iter().filter(|r| WRITES.contains(&r.split(' ').next().unwrap_or(""))).count()
@@ -493,34 +440,22 @@ mod tests {
         Writes { marks: true, ..Writes::NONE }
     }
 
-    /// The first sync takes the union of the stars and keeps a local rating (sending it), else
-    /// takes the server's; later each side's change reaches the other, and round trips leave
-    /// every value as it was.
+    /// The first sync takes the union of the stars; later each side's change reaches the
+    /// other, and round trips leave every value as it was.
     #[test]
-    fn favourites_and_ratings_go_both_ways() {
+    fn favourites_go_both_ways() {
         let f = Fixture::new("both-ways");
-        f.mock.edit(|l| {
-            l.song_mut("al0-1").unwrap().starred = Some("2026-05-01T10:00:00Z".into());
-            l.song_mut("al0-2").unwrap().user_rating = Some(3);
-            l.song_mut("al1-2").unwrap().user_rating = Some(2);
-        });
-        // The catalog in; then, as a library of before this schema, values of its own.
+        f.mock.edit(|l| l.song_mut("al0-1").unwrap().starred = Some("2026-05-01T10:00:00Z".into()));
+        // The catalog in; then, as a library of before this schema, a favourite of its own.
         f.sync(true, true);
-        {
-            let c = f.conn();
-            library::query::toggle_favourite_track(&c, f.track("al1-1")).unwrap();
-            library::query::set_rating(&c, f.track("al1-2"), 4).unwrap();
-        }
+        library::query::toggle_favourite_track(&f.conn(), f.track("al1-1")).unwrap();
         let view = f.sync(true, true);
         let client = f.client(marks_only());
         let d = pass(&mut f.conn(), &client, &view, None).unwrap();
         assert!(d.error.is_none(), "{:?}", d.error);
-        assert_eq!(f.local("al0-1"), (true, 0), "starred there: starred here");
-        assert_eq!(f.local("al0-2"), (false, 3), "rated there, not here: the server's");
-        assert_eq!((f.local("al1-1"), f.server("al1-1")), ((true, 0), (true, 0)), "starred here: starred there");
-        assert_eq!((f.local("al1-2"), f.server("al1-2")), ((false, 4), (false, 4)), "rated on both: the local rating kept and sent");
-        assert_eq!(d.changed.len(), 2);
-        assert_eq!(d.sent, 2);
+        assert!(f.local("al0-1"), "starred there: starred here");
+        assert!(f.local("al1-1") && f.server("al1-1"), "starred here: starred there");
+        assert_eq!((d.changed.len(), d.sent), (1, 1));
         // Nothing changed: a second pass sends nothing and changes nothing.
         let view = f.sync(true, true);
         f.mock.clear_requests();
@@ -529,26 +464,20 @@ mod tests {
         // Changed on the server: taken at the next sync (a listing, or the stars alone).
         f.mock.edit(|l| {
             l.song_mut("al0-1").unwrap().starred = None;
-            l.song_mut("al0-2").unwrap().user_rating = Some(5);
             l.song_mut("al2-1").unwrap().starred = Some("2026-06-01T00:00:00Z".into());
         });
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        assert_eq!((f.local("al0-1"), f.local("al0-2"), f.local("al2-1")), ((false, 0), (false, 5), (true, 0)));
+        assert_eq!((f.local("al0-1"), f.local("al2-1")), (false, true));
         f.mock.edit(|l| l.song_mut("al2-1").unwrap().starred = None);
         let stars = f.sync(false, true);
-        assert!(stars.get("al2-1").is_some_and(|s| s.starred == Some(None) && s.rating.is_none()), "not listed again: the stars read alone");
+        assert!(stars.get("al2-1").is_some_and(|s| s.starred == Some(None)), "not listed again: the stars read alone");
         pass(&mut f.conn(), &client, &stars, None).unwrap();
-        assert_eq!(f.local("al2-1"), (false, 0), "unstarred there with no scan");
-        assert_eq!(f.local("al0-2"), (false, 5), "a rating not read is left as it is");
+        assert!(!f.local("al2-1"), "unstarred there with no scan");
         // Changed here: sent at once (the one track).
         f.star_here("al2-2");
-        f.rate_here("al2-2", 1);
         let d = pass(&mut f.conn(), &client, &View::new(), Some(f.track("al2-2"))).unwrap();
-        assert_eq!(d.sent, 2);
-        assert_eq!(f.server("al2-2"), (true, 1));
-        f.rate_here("al2-2", 0);
-        pass(&mut f.conn(), &client, &View::new(), Some(f.track("al2-2"))).unwrap();
-        assert_eq!(f.server("al2-2"), (true, 0), "cleared here, cleared there");
+        assert_eq!(d.sent, 1);
+        assert!(f.server("al2-2"));
         // Every value as both sides have it after the round trips, and a sync after them
         // changes nothing on either side.
         let view = f.sync(true, true);
@@ -560,52 +489,80 @@ mod tests {
         }
     }
 
-    /// Both sides changed the same track: a local rating wins; for a favourite, the later change.
+    /// A rating changed in an older build and not yet sent when it was replaced (the local
+    /// rating differs from the one agreed, changed since): never sent, no error, nothing left
+    /// waiting; the favourites beside it go as ever.
     #[test]
-    fn both_changed_local_rating_wins_and_the_later_favourite() {
+    fn a_rating_left_waiting_by_an_older_build_is_dropped_not_sent() {
+        let f = Fixture::new("old-rating");
+        let client = f.client(marks_only());
+        pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        let t = f.track("al0-1");
+        {
+            let c = f.conn();
+            c.execute("INSERT INTO track_ratings VALUES (?1, 4, 1)", [t]).unwrap();
+            c.execute(
+                "INSERT INTO remote_marks (song_id, rating, rating_agreed, rating_local) VALUES ('al0-1', 2, 1000, 5000)
+                 ON CONFLICT(song_id) DO UPDATE SET rating = 2, rating_agreed = 1000, rating_local = 5000",
+                [],
+            )
+            .unwrap();
+        }
+        f.star_here("al1-1");
+        f.mock.clear_requests();
+        let d = pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        assert!(d.error.is_none(), "{:?}", d.error);
+        assert_eq!(d.sent, 1, "the favourite only");
+        assert!(!f.mock.requests().iter().any(|r| r.starts_with("setRating")), "{:?}", f.mock.requests());
+        let d = pass(&mut f.conn(), &client, &View::new(), Some(t)).unwrap();
+        assert!(d.error.is_none() && d.sent == 0 && d.changed.is_empty(), "nothing to send for it, now or later: {d:?}");
+        assert_eq!(f.writes_sent(), 1);
+    }
+
+    /// Both sides changed the same favourite: the later change.
+    #[test]
+    fn both_changed_the_later_favourite_wins() {
         let f = Fixture::new("both-changed");
         let client = f.client(marks_only());
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        f.mock.edit(|l| l.song_mut("al0-1").unwrap().user_rating = Some(5));
-        f.rate_here("al0-1", 2);
-        pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        assert_eq!((f.local("al0-1").1, f.server("al0-1").1), (2, 2), "the local rating wins");
         // Starred there, taken here: agreed.
         f.mock.edit(|l| l.song_mut("al0-2").unwrap().starred = Some(mock::iso(library::db::now_ms() - 60_000)));
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        assert!(f.local("al0-2").0);
+        assert!(f.local("al0-2"));
         // Unstarred here, then starred again there (later): the server's.
         f.star_here("al0-2");
         std::thread::sleep(std::time::Duration::from_millis(20));
         f.mock.edit(|l| l.song_mut("al0-2").unwrap().starred = Some(mock::iso(library::db::now_ms())));
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        assert_eq!((f.local("al0-2").0, f.server("al0-2").0), (true, true), "starred again there after it was unstarred here: starred");
+        assert_eq!((f.local("al0-2"), f.server("al0-2")), (true, true), "starred again there after it was unstarred here: starred");
         // Starred again there, then unstarred here (later): the app's.
         f.mock.edit(|l| l.song_mut("al0-2").unwrap().starred = Some(mock::iso(library::db::now_ms() - 1_000)));
         f.star_here("al0-2");
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        assert_eq!((f.local("al0-2").0, f.server("al0-2").0), (false, false), "unstarred here after: unstarred");
+        assert_eq!((f.local("al0-2"), f.server("al0-2")), (false, false), "unstarred here after: unstarred");
     }
 
-    /// A rating changed here while the pass waits for a scan's writes, and changed there too:
-    /// decided on the value as it is once the pass writes, not as it was before it waited.
+    /// A favourite changed here while the pass waits for a scan's writes, and changed there
+    /// too: decided on the value as it is once the pass writes, not as it was before it waited.
     #[test]
     fn a_change_made_while_the_pass_waits_is_not_written_over() {
         let f = Fixture::new("waits");
         let client = f.client(marks_only());
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
-        f.mock.edit(|l| l.song_mut("al2-1").unwrap().user_rating = Some(2));
+        f.mock.edit(|l| l.song_mut("al2-1").unwrap().starred = Some(mock::iso(library::db::now_ms() - 60_000)));
         let view = f.sync(true, true);
         let scan = crate::server::sync::writer();
         std::thread::scope(|s| {
             let h = s.spawn(|| pass(&mut f.conn(), &client, &view, None).unwrap());
-            // The pass is waiting for the writer by now; the user rates the track meanwhile.
+            // The pass is waiting for the writer by now; the user stars and unstars the track
+            // meanwhile (later than the server's star).
             std::thread::sleep(std::time::Duration::from_millis(300));
-            f.rate_here("al2-1", 5);
+            f.star_here("al2-1");
+            f.star_here("al2-1");
             drop(scan);
             h.join().unwrap();
         });
-        assert_eq!((f.local("al2-1").1, f.server("al2-1").1), (5, 5), "the rating made here wins, as when both changed");
+        assert_eq!((f.local("al2-1"), f.server("al2-1")), (false, false), "the later change, made here, wins");
     }
 
     /// The server gone: a change made here and the plays wait in the library, and go once it
@@ -617,7 +574,7 @@ mod tests {
         pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
         f.mock.set_trouble(Trouble::Down);
         f.star_here("al1-1");
-        f.rate_here("al1-2", 4);
+        f.star_here("al1-2");
         let d = pass(&mut f.conn(), &client, &View::new(), Some(f.track("al1-1"))).unwrap();
         assert!(matches!(d.error, Some(Error::Network(_))) && d.sent == 0, "{d:?}");
         {
@@ -632,7 +589,7 @@ mod tests {
         f.mock.set_trouble(Trouble::None);
         let d = pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
         assert_eq!(d.sent, 2);
-        assert_eq!((f.server("al1-1"), f.server("al1-2")), ((true, 0), (false, 4)));
+        assert_eq!((f.server("al1-1"), f.server("al1-2")), (true, true));
         let (sent, e) = flush_plays(&f.conn(), &client).unwrap();
         assert!(e.is_none() && sent == 2);
         assert_eq!(library::marks::queued_count(&f.conn()).unwrap(), 0);
@@ -664,7 +621,7 @@ mod tests {
         f.mock.edit(|l| l.song_mut("al0-1").unwrap().starred = Some("2026-05-01T10:00:00Z".into()));
         f.sync(true, false);
         f.star_here("al1-1");
-        f.rate_here("al1-2", 3);
+        f.star_here("al1-2");
         library::query::record_plays_for(&f.conn(), &mut vec![(f.track("al1-1"), 5)], true).unwrap();
         f.mock.clear_requests();
         let d = pass(&mut f.conn(), &off, &View::new(), None).unwrap();
@@ -677,6 +634,6 @@ mod tests {
         f.sync(false, false);
         assert_eq!(f.mock.requests(), ["getScanStatus"]);
         assert_eq!(f.writes_sent(), 0);
-        assert_eq!((f.server("al1-1"), f.server("al1-2")), ((false, 0), (false, 0)), "nothing changed there");
+        assert_eq!((f.server("al1-1"), f.server("al1-2")), (false, false), "nothing changed there");
     }
 }

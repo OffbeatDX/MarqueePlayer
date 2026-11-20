@@ -37,10 +37,6 @@ pub enum Act {
     SetOutput(Option<String>),
     /// Save a playlist as M3U8; true: paths relative to the file.
     ExportPlaylist(i64, bool),
-    /// The rating menu of a track (by id).
-    RateMenu(i64),
-    /// Rate a track (by id), 0 clearing it.
-    Rate(i64, u8),
     /// A playlist (by id), ordinary or smart: play it shuffled. A smart one: edit its rules,
     /// and its page's menu
     /// (rename in place, duplicate into the editor, save what it holds as an ordinary one).
@@ -143,7 +139,6 @@ pub enum Entry {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrackInfo {
     pub id: i64,
-    pub rating: u8,
     pub album: i32,
     /// Its credited artists (key, name), or the credit's names for a file from outside.
     pub artists: Vec<(String, String)>,
@@ -337,7 +332,6 @@ pub fn build(kind: &str, ctx: &str, index: i32, id: i32, track: Option<TrackInfo
             v.extend([
                 Entry::Separator,
                 item(if t.favourite { "Remove from favourites" } else { "Add to favourites" }, Act::FavouriteIn(ctx.into(), index)),
-                item(&format!("Rate\u{2026}{}", if t.rating > 0 { format!("  {}", crate::rows::stars(t.rating)) } else { String::new() }), Act::RateMenu(t.id)),
                 item("Go to album", Act::OpenAlbum(t.album)),
             ]);
             v.extend(go_to_artists(&t.artists));
@@ -408,66 +402,9 @@ pub fn build_many(ctx: &str, n: usize, all_favourite: bool) -> Vec<Entry> {
     v.extend([
         Entry::Separator,
         item(if all_favourite { "Remove from favourites" } else { "Add to favourites" }, Act::Many(Many::Favourite(!all_favourite))),
-        item("Rate\u{2026}", Act::Many(Many::RateMenu)),
         Entry::Disabled { label: "View metadata".into() },
     ]);
     v
-}
-
-/// The rating menu of several tracks: their rating checked when they all have it.
-pub fn rating_entries_many(current: Option<u8>) -> Vec<Entry> {
-    (0..=5u8)
-        .map(|n| {
-            let label = if n == 0 { "No rating".to_owned() } else { crate::rows::stars(n) };
-            let act = Act::Many(crate::selected::Many::Rate(n));
-            if current == Some(n) { Entry::Checked { label, act } } else { Entry::Item { label, act } }
-        })
-        .collect()
-}
-
-/// "Rate…" of the menu of several tracks: the rating menu where that menu was.
-pub fn show_rating_many(st: &Rc<State>, current: Option<u8>) {
-    let Some(app) = st.app.upgrade() else { return };
-    let (x, y) = (app.global::<MenuStore>().get_x(), app.global::<MenuStore>().get_y());
-    show(st, rating_entries_many(current), x, y, false);
-}
-
-/// A track's rating, as a menu of choices with the current one checked.
-pub fn rating_entries(id: i64, current: u8) -> Vec<Entry> {
-    (0..=5u8)
-        .map(|n| {
-            let label = if n == 0 { "No rating".to_owned() } else { crate::rows::stars(n) };
-            let act = Act::Rate(id, n);
-            if n == current { Entry::Checked { label, act } } else { Entry::Item { label, act } }
-        })
-        .collect()
-}
-
-/// The rating menu of the playing track (the player bar's star), opening upward from `y`.
-pub fn request_rating(st: &Rc<State>, x: f32, y: f32) {
-    let Some(id) = st.queue.borrow().current().map(|i| i.track.id) else { return };
-    if id < 0 {
-        views::flash(st, "Not in the library");
-        return;
-    }
-    let e = rating_entries(id, crate::rows::rating_of(id));
-    let h = row_y(&e, e.len()) + 6.0;
-    show(st, e, x, (y - h).max(8.0), false);
-}
-
-/// Rate a track: saved, and every list and the player bar in step.
-pub fn rate(st: &Rc<State>, id: i64, stars: u8) {
-    if id < 0 {
-        views::flash(st, "Not in the library");
-        return;
-    }
-    if let Err(e) = query::set_rating(&st.db, id, stars) {
-        log::warn!("rating: {e}");
-        return;
-    }
-    // The lists, the player bar and the server (server/write.rs) in step.
-    crate::selected::ratings_written(st, &[id], stars);
-    views::flash(st, &if stars == 0 { "Rating cleared".to_owned() } else { format!("Rated {}", crate::rows::stars(stars)) });
 }
 
 /// Saving a playlist as a file: absolute paths, or relative to where it is saved.
@@ -556,7 +493,7 @@ fn open_menu(st: &Rc<State>, kind: &str, ctx: &str, index: i32, id: i32, x: f32,
         let list = if kind == "queue" { crate::selected::QUEUE } else { ctx };
         let n = crate::selected::context(st, list, index.max(0) as usize);
         if n > 1 {
-            let (all_favourite, _) = crate::selected::marks_of(st, list);
+            let all_favourite = crate::selected::all_favourites(st, list);
             show(st, build_many(list, n, all_favourite), x, y, from_keys);
             crate::selected::menu_opened(st, list);
             return;
@@ -567,7 +504,6 @@ fn open_menu(st: &Rc<State>, kind: &str, ctx: &str, index: i32, id: i32, x: f32,
         .flatten()
         .map(|t| TrackInfo {
             id: t.id,
-            rating: crate::rows::rating_of(t.id),
             album: t.album_id as i32,
             artists: credited(st, t.id, &t.artist),
             favourite: query::is_favourite_track(&st.db, t.id).unwrap_or(false),
@@ -767,11 +703,6 @@ pub fn activate(st: &Rc<State>, i: i32, sub: i32) {
         Act::SortAlbums(sort) => views::sort_grid(st, sort),
         Act::SetOutput(id) => crate::output::choose(st, id),
         Act::ExportPlaylist(id, relative) => crate::playlists::file::export_dialog(st, id, relative),
-        Act::RateMenu(id) => {
-            let (x, y) = (app.global::<MenuStore>().get_x(), app.global::<MenuStore>().get_y());
-            show(st, rating_entries(id, crate::rows::rating_of(id)), x, y, false);
-        }
-        Act::Rate(id, n) => rate(st, id, n),
         Act::Metadata(ctx, i) => {
             if let Some(t) = st.lists.by_ctx(&ctx).and_then(|l| l.get(i.max(0) as usize)) {
                 crate::metadata::view::open_track(st, t);
@@ -921,7 +852,7 @@ mod tests {
     }
 
     fn track() -> Option<TrackInfo> {
-        Some(TrackInfo { id: 1, rating: 0, album: 7, artists: vec![("n:a".into(), "A".into())], favourite: true, path: "M:/a/01.flac".into() })
+        Some(TrackInfo { id: 1, album: 7, artists: vec![("n:a".into(), "A".into())], favourite: true, path: "M:/a/01.flac".into() })
     }
 
     #[test]
@@ -932,9 +863,8 @@ mod tests {
         );
         assert_eq!(
             labels(build("track", "album", 2, 0, track(), None, None)),
-            ["Play", "Play next", "Add to queue", "Add to playlist", "-", "Remove from favourites", "Rate\u{2026}", "Go to album", "Go to artist", SHOW, "View metadata"]
+            ["Play", "Play next", "Add to queue", "Add to playlist", "-", "Remove from favourites", "Go to album", "Go to artist", SHOW, "View metadata"]
         );
-        assert_eq!(labels(rating_entries(3, 2)), ["No rating", "★☆☆☆☆", "✓★★☆☆☆", "★★★☆☆", "★★★★☆", "★★★★★"]);
         assert_eq!(labels(build("queue", "", 3, 0, None, None, Some((7, vec![("n:a".into(), "A".into())])))), ["Play", "Remove from queue", "-", "Go to album", "Go to artist", "View metadata"]);
         assert_eq!(
             labels(build("playlist", "", 0, 5, None, None, None)),
@@ -956,7 +886,7 @@ mod tests {
         let e = build("track", "playlist", 4, 0, track(), None, None);
         assert_eq!(
             labels(e.clone()),
-            ["Play", "Play next", "Add to queue", "Add to playlist", "Remove from playlist", "-", "Remove from favourites", "Rate\u{2026}", "Go to album", "Go to artist", SHOW, "View metadata"]
+            ["Play", "Play next", "Add to queue", "Add to playlist", "Remove from playlist", "-", "Remove from favourites", "Go to album", "Go to artist", SHOW, "View metadata"]
         );
         assert!(e.contains(&Entry::Item { label: "Remove from playlist".into(), act: Act::RemoveFromPlaylist(4) }));
         // Only there: a playlist row elsewhere (search results) has no such entry.
@@ -1029,22 +959,20 @@ mod tests {
     fn several_tracks_have_a_menu_of_their_own() {
         assert_eq!(
             labels(build_many("album", 12, false)),
-            ["[12 tracks]", "Play", "Play next", "Add to queue", "Add to playlist", "-", "Add to favourites", "Rate\u{2026}", "(View metadata)"]
+            ["[12 tracks]", "Play", "Play next", "Add to queue", "Add to playlist", "-", "Add to favourites", "(View metadata)"]
         );
         assert_eq!(
             labels(build_many("playlist", 3, true)),
-            ["[3 tracks]", "Play", "Play next", "Add to queue", "Add to playlist", "Remove from playlist", "-", "Remove from favourites", "Rate\u{2026}", "(View metadata)"]
+            ["[3 tracks]", "Play", "Play next", "Add to queue", "Add to playlist", "Remove from playlist", "-", "Remove from favourites", "(View metadata)"]
         );
         assert_eq!(
             labels(build_many(crate::selected::QUEUE, 2, false)),
-            ["[2 tracks]", "Play", "Add to playlist", "Remove from queue", "-", "Add to favourites", "Rate\u{2026}", "(View metadata)"]
+            ["[2 tracks]", "Play", "Add to playlist", "Remove from queue", "-", "Add to favourites", "(View metadata)"]
         );
         let e = build_many("playlist", 3, false);
         let sel: Vec<bool> = e.iter().map(selectable).collect();
         assert_eq!(step(&sel, -1, 1), 1, "the keys start on Play, past the heading");
         assert!(!sel[e.len() - 1], "View metadata cannot be chosen for several");
         assert!(menu_row(&e[5]).danger);
-        assert_eq!(labels(rating_entries_many(Some(3))), ["No rating", "★☆☆☆☆", "★★☆☆☆", "✓★★★☆☆", "★★★★☆", "★★★★★"]);
-        assert!(!labels(rating_entries_many(None)).iter().any(|l| l.starts_with('✓')));
     }
 }

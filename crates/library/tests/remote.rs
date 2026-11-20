@@ -416,7 +416,7 @@ fn a_server_alone_is_a_library() {
     let m3u = library::m3u::export(&all, &lib.dir.join("x.m3u8"), false);
     assert_eq!((m3u.lines().count(), library::m3u::skipped(&all)), (1, 3), "a server track has no file to list");
     assert!(query::track_paths(&lib.conn).unwrap().is_empty());
-    // A play, a favourite and a rating are the user's own, as for any track.
+    // A play and a favourite are the user's own, as for any track.
     query::record_play(&lib.conn, t.id).unwrap();
     query::toggle_favourite_track(&lib.conn, t.id).unwrap();
     assert_eq!(titles(query::shelf(&lib.conn, &ShelfQuery::RecentlyPlayed, 10).unwrap()), ["Blue Tuesday"]);
@@ -835,7 +835,7 @@ fn scan_then_sync_and_sync_then_scan_agree() {
 }
 
 /// A file the server also has goes away and comes back: one row all along, with its id, plays,
-/// favourite, rating, playlist place and queue place.
+/// favourite, playlist place and queue place.
 #[test]
 fn a_file_removed_and_restored_keeps_its_row() {
     let mut lib = Lib::new("restore");
@@ -848,7 +848,6 @@ fn a_file_removed_and_restored_keeps_its_row() {
     query::record_play(&lib.conn, t.id).unwrap();
     query::record_play(&lib.conn, t.id).unwrap();
     query::toggle_favourite_track(&lib.conn, t.id).unwrap();
-    query::set_rating(&lib.conn, t.id, 4).unwrap();
     let other = query::track_by_remote(&lib.conn, "al-1-1").unwrap().unwrap().id;
     let pl = query::create_playlist_with(&lib.conn, "Mix", &[other, t.id, other]).unwrap();
     library::session::save_queue(&lib.conn, &[(t.id, None)], Some(0), 12.0).unwrap();
@@ -857,7 +856,6 @@ fn a_file_removed_and_restored_keeps_its_row() {
         (
             query::play_count(&lib.conn, id).unwrap(),
             query::is_favourite_track(&lib.conn, id).unwrap(),
-            query::rating(&lib.conn, id).unwrap(),
             query::playlist_tracks(&lib.conn, pl).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(),
             library::session::load_queue(&lib.conn).unwrap().items.iter().map(|i| i.track.id).collect::<Vec<_>>(),
         )

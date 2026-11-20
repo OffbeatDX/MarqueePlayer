@@ -5,7 +5,7 @@
 //! Each condition is a line that reads as a sentence: its field, its operator and its value,
 //! each a control of its own (`Slot`): a choice that opens a list (fields, operators, units,
 //! values the library holds: artists, genres, labels, formats, playlists), a typed field
-//! (text, numbers, lengths, dates), stars, words between them ("and", "kbps"). What is typed
+//! (text, numbers, lengths, dates), words between them ("and", "kbps"). What is typed
 //! is kept as typed and read the forgiving way (`3:30`, `44.1`, `2024-03`), and a value that
 //! cannot be read is explained under its line, not taken. Groups ("any of these") are one
 //! level deep here; what a newer build wrote stays as it was, shown as a line of its own.
@@ -25,7 +25,7 @@ pub const JOIN: i32 = 5;
 pub const CHOICE: i32 = 0;
 pub const TEXT: i32 = 1;
 pub const WORDS: i32 = 2;
-pub const STARS: i32 = 3;
+// (3 was a rating's stars.)
 pub const SWITCH: i32 = 4;
 
 /// What a control sets (`SmartSlot.role`).
@@ -166,7 +166,6 @@ impl Line {
 
 fn default_value(field: Field, op: Op) -> String {
     match (field, op) {
-        (Field::Rating, _) => "4".into(),
         (Field::Plays | Field::PlaysIn, _) => "1".into(),
         (Field::Duration, _) => "5:00".into(),
         (Field::Bitrate, _) => "320".into(),
@@ -605,17 +604,6 @@ impl Draft {
         }
     }
 
-    /// Stars stepped up or down (a rating's value).
-    pub fn step_stars(&mut self, at: &At, role: Role, delta: i32) {
-        if let Some(l) = self.line_mut(at) {
-            let s = if role == Role::B { &mut l.b } else { &mut l.a };
-            let v = s.trim().parse::<i32>().unwrap_or(0);
-            *s = (v + delta).clamp(0, 5).to_string();
-            l.touched = true;
-            self.dirty = true;
-        }
-    }
-
     /// The limit switched on or off.
     pub fn toggle_limit(&mut self) {
         self.dirty = true;
@@ -937,17 +925,6 @@ fn line_row(l: &Line, names: &Names, number: usize) -> Row {
             let t = names.playlist(l.id).unwrap_or_else(|| if l.id > 0 { "a missing playlist".into() } else { "Choose\u{2026}".into() });
             slots.push(choice(Role::A, &t, &format!("{what}: playlist"), bad));
         }
-        (Kind::Number, op) if l.field == Field::Rating => {
-            let stars = |s: &str| {
-                let n = s.trim().parse::<u8>().unwrap_or(0);
-                if n == 0 { "not rated".to_owned() } else { crate::rows::stars(n) }
-            };
-            slots.push(Slot { kind: STARS, role: Role::A.index(), text: stars(&l.a), label: format!("{what}: stars"), invalid: bad, ..Slot::default() });
-            if op == Op::Between {
-                slots.push(words("and"));
-                slots.push(Slot { kind: STARS, role: Role::B.index(), text: stars(&l.b), label: format!("{what}: stars, up to"), invalid: bad, ..Slot::default() });
-            }
-        }
         (Kind::Number, op) => {
             let chars = match l.field {
                 Field::Year | Field::Duration => 7,
@@ -1059,8 +1036,8 @@ mod tests {
         let n = names();
         let row = |l: Line| texts(&line_row(&l, &n, 1));
         let kinds = |l: Line| line_row(&l, &n, 1).slots.iter().map(|s| s.kind).collect::<Vec<_>>();
-        assert_eq!(row(Line::new(Field::Rating)), ["Rating", "is at least", "★★★★☆"]);
-        assert_eq!(kinds(Line::new(Field::Rating)), [CHOICE, CHOICE, STARS]);
+        assert_eq!(row(Line::new(Field::Plays)), ["Play count", "is at least", "1", "play"]);
+        assert_eq!(kinds(Line::new(Field::Plays)), [CHOICE, CHOICE, TEXT, WORDS]);
         assert_eq!(row(Line::new(Field::Favourite)), ["Favourite", "yes"]);
         assert_eq!(row(Line::new(Field::Played)), ["Played", "never"]);
         assert_eq!(row(Line::new(Field::Duration)), ["Length", "is at least", "5:00"]);
@@ -1114,14 +1091,9 @@ mod tests {
         d.type_text(&at, Role::A, "love");
         d.choose(&at, Role::Field, field(&d, Field::Album), &n);
         assert_eq!(texts(&d.rule_rows(&n)[1].1), ["Album", "contains", "love"]);
-        // → Rating: its own operator and value.
-        d.choose(&at, Role::Field, field(&d, Field::Rating), &n);
-        assert_eq!(texts(&d.rule_rows(&n)[1].1), ["Rating", "is at least", "★★★★☆"]);
-        d.step_stars(&at, Role::A, 1);
-        d.step_stars(&at, Role::A, 1);
-        assert_eq!(texts(&d.rule_rows(&n)[1].1)[2], "★★★★★", "no more than 5");
-        d.step_stars(&at, Role::A, -9);
-        assert_eq!(texts(&d.rule_rows(&n)[1].1)[2], "not rated");
+        // → Play count: its own operator and value.
+        d.choose(&at, Role::Field, field(&d, Field::Plays), &n);
+        assert_eq!(texts(&d.rule_rows(&n)[1].1), ["Play count", "is at least", "1", "play"]);
         // → Last played; "in the last" to "before" starts the value again.
         d.choose(&at, Role::Field, field(&d, Field::LastPlayed), &n);
         d.type_text(&at, Role::A, "6");
@@ -1242,14 +1214,14 @@ mod tests {
     fn templates_fill_the_draft_and_name_it() {
         let mut d = Draft::new();
         d.apply_template(2, 77);
-        assert_eq!(d.name, "Top rated");
+        assert_eq!(d.name, "Most played this year");
         assert_eq!(d.seed, 77);
         assert!(d.smart().is_ok());
         d.name = "Mine".into();
-        d.apply_template(4, 1);
+        d.apply_template(3, 1);
         assert_eq!(d.name, "Mine", "a typed name stays");
-        d.name = "Top rated".into();
-        d.apply_template(4, 1);
+        d.name = "Most played this year".into();
+        d.apply_template(3, 1);
         assert_eq!(d.name, "Lossless only", "another starting point's name follows");
     }
 

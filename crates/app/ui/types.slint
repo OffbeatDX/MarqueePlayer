@@ -23,8 +23,6 @@ export struct TrackRow {
     duration: string,
     playing: bool,
     favourite: bool,
-    // "★★★☆☆", or "" when not rated.
-    stars: string,
     cover: image,
     // First row of a new disc on a multi-disc album: shows a "Disc N" header.
     disc-header: string,
@@ -126,7 +124,8 @@ export struct PlaylistRow {
 }
 
 // One control of a smart playlist rule (playlists/smartedit.rs builds them): what it is (`kind`: 0 a
-// choice that opens a list, 1 a typed field, 2 words between controls, 3 stars, 4 a switch),
+// choice that opens a list, 1 a typed field, 2 words between controls, 4 a switch; 3, once
+// stars, is no longer made),
 // what it sets (`role`, playlists::smartedit::Role), what it shows, its width (typed fields).
 export struct SmartSlot {
     kind: int,

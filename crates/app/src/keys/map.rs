@@ -15,6 +15,10 @@ use std::collections::{BTreeMap, HashSet};
 
 use slint::platform::Key;
 
+/// Actions an earlier version had and this one does not (rating the playing track, 0 to 5): a
+/// key saved for one in settings.json is dropped without a word, not reported as unknown.
+pub const RETIRED: [&str; 6] = ["rate_0", "rate_1", "rate_2", "rate_3", "rate_4", "rate_5"];
+
 /// Everything a key can be given to, in the order Settings > Keys lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -29,8 +33,6 @@ pub enum Action {
     Shuffle,
     Repeat,
     Favourite,
-    /// Rate the playing track; 0 clears its rating.
-    Rate(u8),
     NowPlaying,
     Lyrics,
     Visualizer,
@@ -64,7 +66,7 @@ pub enum Action {
 impl Action {
     // New actions go at the end: Settings > Keys lists them in this order and the bench
     // finds rows by their place.
-    pub const ALL: [Action; 36] = [
+    pub const ALL: [Action; 30] = [
         Action::PlayPause,
         Action::SeekBack,
         Action::SeekForward,
@@ -76,12 +78,6 @@ impl Action {
         Action::Shuffle,
         Action::Repeat,
         Action::Favourite,
-        Action::Rate(1),
-        Action::Rate(2),
-        Action::Rate(3),
-        Action::Rate(4),
-        Action::Rate(5),
-        Action::Rate(0),
         Action::NowPlaying,
         Action::Lyrics,
         Action::Visualizer,
@@ -117,12 +113,6 @@ impl Action {
             Action::Shuffle => "shuffle",
             Action::Repeat => "repeat",
             Action::Favourite => "favourite",
-            Action::Rate(0) => "rate_0",
-            Action::Rate(1) => "rate_1",
-            Action::Rate(2) => "rate_2",
-            Action::Rate(3) => "rate_3",
-            Action::Rate(4) => "rate_4",
-            Action::Rate(_) => "rate_5",
             Action::NowPlaying => "now_playing",
             Action::Lyrics => "lyrics",
             Action::Visualizer => "visualizer",
@@ -162,7 +152,7 @@ impl Action {
             | Action::Mute
             | Action::Shuffle
             | Action::Repeat => "Playback",
-            Action::Favourite | Action::Rate(_) => "Favourites and ratings",
+            Action::Favourite => "Favourites",
             Action::NowPlaying
             | Action::Lyrics
             | Action::Visualizer
@@ -196,12 +186,6 @@ impl Action {
             Action::Shuffle => "Shuffle on / off",
             Action::Repeat => "Repeat: off, all, one",
             Action::Favourite => "Add the playing track to favourites, or remove it",
-            Action::Rate(0) => "Clear the playing track's rating",
-            Action::Rate(1) => "Rate the playing track 1 star",
-            Action::Rate(2) => "Rate the playing track 2 stars",
-            Action::Rate(3) => "Rate the playing track 3 stars",
-            Action::Rate(4) => "Rate the playing track 4 stars",
-            Action::Rate(_) => "Rate the playing track 5 stars",
             Action::NowPlaying => "Now playing (again: back to where you were)",
             Action::Lyrics => "Lyrics on now playing (again: Up next)",
             Action::Visualizer => "Visualizer on now playing on / off",
@@ -239,12 +223,6 @@ impl Action {
             Action::Shuffle => &["S"],
             Action::Repeat => &["R"],
             Action::Favourite => &["L"],
-            Action::Rate(0) => &["0"],
-            Action::Rate(1) => &["1"],
-            Action::Rate(2) => &["2"],
-            Action::Rate(3) => &["3"],
-            Action::Rate(4) => &["4"],
-            Action::Rate(_) => &["5"],
             Action::NowPlaying => &["N"],
             Action::Lyrics => &["Y"],
             Action::Visualizer => &["V"],
@@ -610,6 +588,9 @@ impl Keymap {
         let mut problems = Vec::new();
         let mut changed: Vec<Action> = Vec::new();
         for (id, keys) in map {
+            if RETIRED.contains(&id.as_str()) {
+                continue;
+            }
             let Some(a) = Action::from_id(id) else {
                 problems.push(format!("unknown action {id:?}"));
                 continue;
@@ -780,22 +761,6 @@ impl Keymap {
         self.slots[a.index()].iter().flatten().map(Binding::spoken).collect::<Vec<_>>().join(" or ")
     }
 
-    /// The rating keys in a few words, for the player bar's star: "0 to 5" while they are
-    /// the defaults, else each one ("1: A, 2: S, …, clear: Q").
-    pub fn rating_label(&self) -> String {
-        if (0..=5).all(|n| self.is_default(Action::Rate(n))) {
-            return "0 to 5".into();
-        }
-        let mut parts: Vec<String> = (1..=5u8).filter_map(|n| self.first(Action::Rate(n)).map(|b| format!("{n}: {}", b.spoken()))).collect();
-        if let Some(b) = self.first(Action::Rate(0)) {
-            parts.push(format!("clear: {}", b.spoken()));
-        }
-        parts.join(", ")
-    }
-
-    fn first(&self, a: Action) -> Option<&Binding> {
-        self.slots[a.index()].iter().flatten().next()
-    }
 }
 
 #[cfg(test)]
@@ -884,8 +849,8 @@ mod tests {
         assert_eq!(act("v", false, false, false), Some(Action::Visualizer));
         assert_eq!(act("V", false, false, false), Some(Action::Visualizer), "Caps Lock");
         assert_eq!(act("v", true, false, false), Some(Action::EqPaste), "Ctrl+V pastes");
-        assert_eq!(act("4", false, false, false), Some(Action::Rate(4)));
-        assert_eq!(act("0", false, false, false), Some(Action::Rate(0)));
+        assert_eq!(act("4", false, false, false), None, "the digits rated once: free now");
+        assert_eq!(act("0", false, false, false), None);
         assert_eq!(act("6", false, false, false), None);
         assert_eq!(act("4", true, false, false), None);
         assert_eq!(act("b", true, false, false), Some(Action::PinSidebar));
@@ -958,6 +923,12 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(km.action_for("j", false, false, false), Some(Action::Mute));
         assert_eq!(km.bindings(Action::Repeat), &[None]);
+        // A key saved for a rating action (ratings are gone) is dropped without a word, and
+        // the key it had is free.
+        let (km, problems) = Keymap::from_overrides(&map(&[("rate_4", &["Q"]), ("rate_0", &[""]), ("mute", &["K"])]));
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!((km.action_for("q", false, false, false), km.action_for("k", false, false, false)), (None, Some(Action::Mute)));
+        assert_eq!(km.overrides(), map(&[("mute", &["K"])]), "not saved again");
     }
 
     #[test]
@@ -997,12 +968,8 @@ mod tests {
 
     #[test]
     fn labels() {
-        let mut km = Keymap::default();
+        let km = Keymap::default();
         assert_eq!(km.label(Action::Previous), on_mac("Ctrl+Left", "Cmd+Left"));
-        assert_eq!(km.rating_label(), "0 to 5");
-        km.assign(Action::Rate(1), 0, b("A"));
-        km.clear(Action::Rate(0), 0);
-        assert_eq!(km.rating_label(), "1: A, 2: 2, 3: 3, 4: 4, 5: 5");
     }
 
     #[test]
@@ -1055,8 +1022,8 @@ mod tests {
         assert_eq!(km.action_for("+", true, true, false), Some(Action::ZoomIn));
         assert_eq!(km.action_for("-", true, false, false), Some(Action::ZoomOut));
         assert_eq!(km.action_for("0", true, false, false), Some(Action::ZoomReset));
-        // Without Ctrl they are what they were: 0 clears the rating, + and - nothing.
-        assert_eq!(km.action_for("0", false, false, false), Some(Action::Rate(0)));
+        // Without Ctrl they are nothing.
+        assert_eq!(km.action_for("0", false, false, false), None);
         assert_eq!(km.action_for("+", false, false, false), None);
         assert_eq!(km.action_for("-", true, false, true), None);
         // Shown and saved as written.

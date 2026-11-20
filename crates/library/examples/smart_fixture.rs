@@ -1,9 +1,9 @@
 //! A library database for timing smart playlists without a music folder: `-- <out.db>
 //! [tracks]` (default 20,000 tracks, 10 to an album). A believable spread of what rules look
 //! at: several artists and genres per track, years and labels (some missing), mixed formats,
-//! ratings on a third of the tracks, favourites, and a play history over three years in which
+//! favourites, and a play history over three years in which
 //! a few tracks are played a lot, most a little and many never, more of it recent. Its
-//! playlists: three ordinary ones, the six smart starting points (`smart::templates`), and
+//! playlists: three ordinary ones, the five smart starting points (`smart::templates`), and
 //! one smart playlist that names another. The same database every run. Never point it at a
 //! music folder or the app's own data: it replaces the file it is given.
 //!
@@ -104,9 +104,6 @@ fn main() {
                 tx.execute("INSERT INTO plays VALUES (?1, ?2)", params![tid, now - back as i64]).unwrap();
                 plays += 1;
             }
-            if rnd(3) == 0 {
-                tx.execute("INSERT INTO track_ratings VALUES (?1, ?2, ?3)", params![tid, 1 + rnd(5) as i64, now]).unwrap();
-            }
             if rnd(12) == 0 {
                 tx.execute("INSERT INTO favourite_tracks VALUES (?1, ?2)", params![tid, now]).unwrap();
             }
@@ -124,12 +121,12 @@ fn main() {
     let mut top = 0;
     for (name, smart) in library::smart::templates() {
         let id = library::query::create_smart_playlist(&tx, name, &smart.to_json()).unwrap();
-        if name == "Top rated" {
+        if name == "Favourites not heard in 6 months" {
             top = id;
         }
     }
     let nested = format!(r#"{{"v":1,"match":"all","rules":[{{"field":"playlist","op":"in","value":{top}}},{{"field":"lossless","op":"yes"}},{{"group":"any","rules":[{{"field":"genre","op":"is","value":"jazz"}},{{"field":"genre","op":"is","value":"soul"}}]}}],"sort":{{"by":"artist_album","desc":false}},"seed":1}}"#);
-    library::query::create_smart_playlist(&tx, "Top rated lossless jazz or soul", &nested).unwrap();
+    library::query::create_smart_playlist(&tx, "Unheard favourites lossless jazz or soul", &nested).unwrap();
     tx.commit().unwrap();
     let (a, t) = library::query::counts(&conn).unwrap();
     println!("{a} albums, {t} tracks, {plays} plays in {}", path.display());

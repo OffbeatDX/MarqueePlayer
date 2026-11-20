@@ -49,17 +49,17 @@ pub const READ_ENDPOINTS: &[&str] = &[
 ];
 
 /// The write endpoints of each kind a client may be allowed ([`Writes`]).
-pub const MARK_ENDPOINTS: &[&str] = &["star", "unstar", "setRating"];
+pub const MARK_ENDPOINTS: &[&str] = &["star", "unstar"];
 pub const PLAY_ENDPOINTS: &[&str] = &["scrobble"];
 pub const PLAYLIST_ENDPOINTS: &[&str] = &["createPlaylist", "updatePlaylist", "deletePlaylist"];
 
 /// Which kinds of write a client may send; every other is refused before a request is built
 /// ([`Error::ReadOnly`]). Reads ([`READ_ENDPOINTS`]) are always allowed. None of these writes
-/// touch a music file: they change only the server's own database (its users' stars, ratings,
-/// plays and playlists).
+/// touch a music file: they change only the server's own database (its users' stars, plays and
+/// playlists).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Writes {
-    /// `star`, `unstar`, `setRating`.
+    /// `star`, `unstar`.
     pub marks: bool,
     /// `scrobble` (a play, or "now playing").
     pub plays: bool,
@@ -509,11 +509,6 @@ impl Client {
         self.call("unstar", star_params(song_ids, album_ids, artist_ids)).map(drop)
     }
 
-    /// Rate a song, album or artist 1-5; 0 removes the rating (more than 5 is taken as 5).
-    pub fn set_rating(&self, id: &str, rating: u8) -> Result<(), Error> {
-        self.call("setRating", vec![("id", id.to_owned()), ("rating", rating.min(5).to_string())]).map(drop)
-    }
-
     /// A play: `submission` true for a play to count (at `time_ms`, Unix milliseconds, when
     /// it started; the server's now when None), false for "now playing".
     pub fn scrobble(&self, id: &str, time_ms: Option<i64>, submission: bool) -> Result<(), Error> {
@@ -809,7 +804,7 @@ mod tests {
 
     #[test]
     fn every_read_endpoint_is_a_read() {
-        for w in ["star", "unstar", "setRating", "scrobble", "createPlaylist", "updatePlaylist", "deletePlaylist"] {
+        for w in ["star", "unstar", "scrobble", "createPlaylist", "updatePlaylist", "deletePlaylist"] {
             assert!(!READ_ENDPOINTS.contains(&w), "{w}");
             assert!(!Writes::NONE.allows(w) && Writes::ALL.allows(w), "{w}");
         }
@@ -819,7 +814,8 @@ mod tests {
     fn each_kind_of_write_is_allowed_alone() {
         let marks = Writes { marks: true, ..Writes::NONE };
         let plays = Writes { plays: true, ..Writes::NONE };
-        assert!(marks.allows("star") && marks.allows("unstar") && marks.allows("setRating") && marks.allows("getAlbum"));
+        assert!(marks.allows("star") && marks.allows("unstar") && marks.allows("getAlbum"));
+        assert!(!Writes::ALL.allows("setRating"), "ratings are never sent");
         assert!(!marks.allows("scrobble") && !marks.allows("createPlaylist"));
         assert!(plays.allows("scrobble") && !plays.allows("star") && !plays.allows("deletePlaylist"));
         assert!(!Writes::ALL.allows("startScan"), "an endpoint known to none is refused");

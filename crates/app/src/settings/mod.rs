@@ -365,7 +365,7 @@ pub struct Settings {
     /// Settings > Playback > Music from the server: the most the stream cache keeps, in MB
     /// (`server/streaming.rs`; least recently played files go first).
     pub stream_cache_mb: u64,
-    /// Settings > Library > Server: favourites and ratings of the server's tracks kept in step
+    /// Settings > Library > Server: favourites of the server's tracks kept in step
     /// with the server, both ways (`server/write.rs`). On unless turned off.
     pub server_marks: bool,
     /// Plays of the server's tracks reported to it (`scrobble`). On unless turned off.
@@ -401,6 +401,10 @@ fn lenient_shortcuts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<
         return Ok(out);
     };
     for (id, keys) in map {
+        // A key of an action this version no longer has: gone, and not written back.
+        if crate::keys::map::RETIRED.contains(&id.as_str()) {
+            continue;
+        }
         let keys = match keys {
             serde_json::Value::String(s) => Some(vec![s]),
             serde_json::Value::Array(a) => a.into_iter().map(|k| k.as_str().map(str::to_owned)).collect(),
@@ -690,7 +694,7 @@ mod tests {
         assert!(s.output_device.is_none() && !s.exclusive, "the system default, shared, as before");
         assert!(s.shortcuts.is_empty(), "the default keys");
         assert!(!s.lyrics_online, "nothing is looked up online unless turned on");
-        assert!(s.server_marks && s.server_plays && s.server_lastfm, "a server signed in to syncs favourites and ratings, reports plays, and Last.fm hears of them as before");
+        assert!(s.server_marks && s.server_plays && s.server_lastfm, "a server signed in to syncs favourites, reports plays, and Last.fm hears of them as before");
         assert!(!s.listenbrainz_love, "nothing is loved on ListenBrainz unless turned on");
         assert!(s.visualizer, "the visualizer is on");
         assert!(s.visualizer_look.is_none(), "its look not chosen yet");
@@ -722,6 +726,15 @@ mod tests {
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert_eq!(km.action_for("k", false, false, false), Some(crate::keys::map::Action::Mute));
         assert_eq!(km.action_for("s", false, false, false), Some(crate::keys::map::Action::Shuffle));
+        // A shortcut saved for rating (an earlier version's): loaded without a problem and
+        // gone, so the file is written back without it; the rest stands.
+        let s: Settings = serde_json::from_str(r#"{ "volume": 0.3, "shortcuts": { "rate_5": ["Q"], "rate_0": [""], "mute": ["K"] } }"#).unwrap();
+        assert_eq!(s.volume, 0.3);
+        assert_eq!(s.shortcuts.keys().collect::<Vec<_>>(), ["mute"]);
+        let (km, problems) = crate::keys::map::Keymap::from_overrides(&s.shortcuts);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(km.action_for("q", false, false, false), None);
+        assert!(!serde_json::to_string(&s).unwrap().contains("rate_"));
     }
 
     #[test]

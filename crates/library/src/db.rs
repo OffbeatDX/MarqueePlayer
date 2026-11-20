@@ -115,7 +115,8 @@ ALTER TABLE albums ADD COLUMN art_checked TEXT;
 
 /// Schema 6: track ratings, 1 to 5 stars (no row: not rated). A table of their own, as
 /// favourites are, so the scanner's writes to `tracks` can never touch them; a track that
-/// leaves the library takes its rating with it. Only adds a table.
+/// leaves the library takes its rating with it. Only adds a table. Ratings are no longer kept:
+/// the table stays as it is, read and written by nothing.
 const SCHEMA_V6: &str = r#"
 CREATE TABLE track_ratings (
     track_id    INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
@@ -388,7 +389,8 @@ CREATE INDEX playlist_items_track ON playlist_items(track_id);
 ///   agreement (Unix ms) when it said one, and when the app last changed each itself (Unix ms;
 ///   a change made in the app since the agreement is the user's, even when it came back to the
 ///   agreed value). Keyed by the server's song id, so it follows the song through a merge with
-///   a file and back.
+///   a file and back. Ratings are no longer kept: the three rating columns stay, read and
+///   written by nothing.
 /// - `remote_plays`: plays counted of tracks the server has, not yet reported to it (oldest
 ///   first): the song and when it was played (Unix ms).
 ///
@@ -487,7 +489,7 @@ static WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// the first hundred tries), for about `MS` milliseconds, and say a writer is waiting. SQLite's
 /// own handler waits longer and longer between tries (up to 100 ms), and a scan writing one
 /// batch after another could keep taking the database in those gaps: the app's own write (a
-/// play counted, a rating, on the UI thread) would wait on and on.
+/// play counted, a favourite, on the UI thread) would wait on and on.
 fn busy<const MS: i32>(n: i32) -> bool {
     WAITING.store(true, std::sync::atomic::Ordering::Relaxed);
     #[cfg(test)]
@@ -1000,10 +1002,10 @@ mod tests {
         assert_eq!(n, 2);
     }
 
-    /// A schema-5 database (the last release's) gains ratings with everything else intact,
-    /// and its copy is kept as library.v5.bak.db.
+    /// A schema-5 database migrates with everything in it intact, and its copy is kept as
+    /// library.v5.bak.db.
     #[test]
-    fn schema_5_migrates_to_ratings_with_its_data() {
+    fn schema_5_migrates_with_its_data() {
         let tmp = crate::testdir::TestDir::new("migrate5");
         let path = tmp.join("library.db");
         let _ = std::fs::remove_file(&path);
@@ -1031,15 +1033,8 @@ mod tests {
         assert_eq!(one("SELECT COUNT(*) FROM plays"), 1);
         assert_eq!(one("SELECT COUNT(*) FROM favourite_tracks"), 1);
         assert_eq!(one("SELECT COUNT(*) FROM queue_items"), 1);
+        // Schema 6's table of ratings is there (no longer read or written).
         assert_eq!(one("SELECT COUNT(*) FROM track_ratings"), 0);
-        crate::query::set_rating(&conn, 10, 4).unwrap();
-        assert_eq!(crate::query::rating(&conn, 10).unwrap(), 4);
-        assert!(crate::query::set_rating(&conn, 10, 9).is_err() || crate::query::rating(&conn, 10).unwrap() == 5, "clamped or refused");
-        crate::query::set_rating(&conn, 10, 0).unwrap();
-        assert_eq!(crate::query::rating(&conn, 10).unwrap(), 0, "0 clears");
-        crate::query::set_rating(&conn, 10, 3).unwrap();
-        conn.execute("DELETE FROM tracks WHERE id = 10", []).unwrap();
-        assert_eq!(one("SELECT COUNT(*) FROM track_ratings"), 0, "goes with its track");
         drop(conn);
         let _ = std::fs::remove_file(&backup);
         for ext in ["", "-wal", "-shm"] {
@@ -1334,8 +1329,8 @@ mod tests {
         assert_eq!(lists.iter().map(|p| (p.name.as_str(), p.tracks, p.rules.is_none())).collect::<Vec<_>>(), vec![("Empty", 0, true), ("Mix", 3, true)]);
         assert_eq!(crate::query::playlist_tracks(&conn, 1).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), [12, 10, 12]);
         assert_eq!(crate::query::play_count(&conn, 10).unwrap(), 3);
-        // A smart playlist beside them: "in Mix, rated 3+".
-        let rules = r#"{"v":1,"match":"all","rules":[{"field":"playlist","op":"in","value":1},{"field":"rating","op":"at_least","value":3}]}"#;
+        // A smart playlist beside them: "in Mix, played 3 times or more".
+        let rules = r#"{"v":1,"match":"all","rules":[{"field":"playlist","op":"in","value":1},{"field":"plays","op":"at_least","value":3}]}"#;
         let id = crate::query::create_smart_playlist(&conn, "Best of Mix", rules).unwrap();
         let smart = crate::smart::Smart::from_json(&crate::smart::playlist_rules(&conn, id).unwrap().unwrap().unwrap());
         let ids = crate::smart::evaluate_ids(&conn, &smart, Some(id), crate::smart::Ctx::new(10_000, 0)).unwrap().0;

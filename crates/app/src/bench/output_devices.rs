@@ -1,5 +1,5 @@
 //! `MP_BENCH=phase5`: output devices, and with them Last.fm, formats in the running app,
-//! playlist files, lyrics and ratings (and, with `MP_BENCH_PART=open`, files from outside),
+//! playlist files and lyrics, that no rating is left (and, with `MP_BENCH_PART=open`, files from outside),
 //! each snapshotted, and a report of what the app did (`bench-phase5.txt`; the mode's name
 //! is kept for the bench runner and its reports). Output devices are exercised without touching
 //! any device but the default: the "chosen" device is the default named by its id, and
@@ -357,7 +357,8 @@ pub fn run() {
         snapshot(app, "p5-13-lyrics-none");
     }));
 
-    // ---- 9. Ratings ------------------------------------------------------------------------
+    // ---- 9. No ratings ---------------------------------------------------------------------
+    // Ratings are gone: 4 does nothing, no track menu offers them, the rows have no stars.
     step(200, Box::new(|st, app, r| {
         let tracks = album_tracks(st, "Night Harbour");
         crate::playback::play_tracks(st, tracks, 0);
@@ -367,35 +368,19 @@ pub fn run() {
         let w = app.window();
         w.dispatch_event(WindowEvent::KeyPressed { text: "4".into() });
         w.dispatch_event(WindowEvent::KeyReleased { text: "4".into() });
-        let id = views::playing_track_id(st);
-        line(r, format!("[ratings] 4 on the playing track: stored {}, player bar {}, pill {:?}", library::query::rating(&st.db, id).unwrap_or(9), app.global::<crate::Player>().get_rating(), app.global::<Nav>().get_flash().to_string()));
+        line(r, format!("[ratings] 4 on the playing track: pill {:?} (none wanted)", app.global::<Nav>().get_flash().to_string()));
         if let Some(a) = album_id_of(st, "Night Harbour") {
             views::open_album(st, a);
         }
     }));
     step(1500, Box::new(|st, app, r| {
-        let rows: Vec<String> = (0..3).filter_map(|i| app.global::<crate::AlbumPage>().get_tracks().row_data(i)).map(|t| format!("{} {:?}", t.title, t.stars.to_string())).collect();
-        line(r, format!("[ratings] album page rows: {rows:?}"));
+        snapshot(app, "p5-17-album-rows");
         crate::menus::request(st, "track", "album", 1, 0, 700.0, 420.0);
-        line(r, format!("[ratings] track menu: {:?}", menu_labels(app)));
-        let i = menu_labels(app).iter().position(|l| l.starts_with("Rate")).unwrap_or(0);
-        crate::menus::activate(st, i as i32, -1);
-        line(r, format!("[ratings] Rate\u{2026} opens: {:?}", menu_labels(app)));
-    }));
-    step(800, Box::new(|st, app, r| {
-        snapshot(app, "p5-16-rating-menu");
-        crate::menus::activate(st, 2, -1);
-        let rows: Vec<String> = (0..3).filter_map(|i| app.global::<crate::AlbumPage>().get_tracks().row_data(i)).map(|t| format!("{} {:?}", t.title, t.stars.to_string())).collect();
-        line(r, format!("[ratings] after choosing two stars for the second track: {rows:?}"));
-    }));
-    step(800, Box::new(|st, app, r| {
-        snapshot(app, "p5-17-ratings-album");
-        let size = app.window().size().to_logical(app.window().scale_factor());
-        crate::menus::request_rating(st, 560.0, size.height - 60.0);
-        line(r, format!("[ratings] player bar star menu: {:?}", menu_labels(app)));
+        let labels = menu_labels(app);
+        line(r, format!("[ratings] track menu: {labels:?}; offers a rating: {}", labels.iter().any(|l| l.starts_with("Rate"))));
     }));
     step(800, Box::new(|st, app, _r| {
-        snapshot(app, "p5-18-rating-bar-menu");
+        snapshot(app, "p5-16-track-menu");
         app.global::<crate::MenuStore>().set_open(false);
         crate::playback::toggle_play(st);
     }));

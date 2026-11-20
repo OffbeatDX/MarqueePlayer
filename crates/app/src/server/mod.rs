@@ -6,7 +6,7 @@
 //!
 //! **The client is read-only** (`Client::new(.., true)`) for the sync, the covers and streaming.
 //! Only `server/write.rs` writes, with a client allowed the kinds the switches below allow
-//! (favourites and ratings, plays), and never anything else: no playlist, no delete, no tag, no
+//! (favourites, plays), and never anything else: no playlist, no delete, no tag, no
 //! scan. With both switches off nothing is written to the server at all.
 //!
 //! **When a sync runs**: at start (a few seconds after the window is up, never in its way),
@@ -609,7 +609,7 @@ fn tracks(n: usize) -> String {
 /// Settings > Library > Server's switches. Each takes effect at once on the writes' thread.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Switch {
-    /// Sync favourites and ratings with the server.
+    /// Sync favourites with the server.
     Marks,
     /// Report plays to the server.
     Plays,

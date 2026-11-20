@@ -853,7 +853,7 @@ fn finish(r: &mut SearchResults, limit: usize) {
 /// Search by operators: the query's rules (`smart::search`), evaluated as a smart playlist's are
 /// (`smart::evaluate`), at most `limit` of each section. Tracks are the tracks the rules hold;
 /// albums are those with a track the rules hold read album by album (shown only when every term
-/// can apply to an album: not for a rating or a play count); artists only when every term is
+/// can apply to an album: not for a play count); artists only when every term is
 /// about names (words, `artist:`, `albumartist:`).
 fn search_rules(conn: &Connection, p: &crate::smart::search::Parsed, limit: usize, want: Want) -> rusqlite::Result<SearchResults> {
     use crate::smart::search::Level;
@@ -1116,41 +1116,27 @@ pub fn set_favourite_tracks(conn: &Connection, ids: &[i64], fav: bool) -> rusqli
     Ok(n)
 }
 
-// ---- ratings -----------------------------------------------------------------
+// ---- ratings, no longer kept ------------------------------------------------
 
-/// A track's rating, 0 (not rated) to 5.
-pub fn rating(conn: &Connection, id: i64) -> rusqlite::Result<u8> {
-    let r: Option<i64> = conn.query_row("SELECT rating FROM track_ratings WHERE track_id = ?1", [id], |r| r.get(0)).optional()?;
-    Ok(r.unwrap_or(0).clamp(0, 5) as u8)
-}
-
-/// Rate a track 1 to 5 stars (above 5: 5); 0 clears its rating.
-pub fn set_rating(conn: &Connection, id: i64, stars: u8) -> rusqlite::Result<()> {
-    if stars == 0 {
-        conn.execute("DELETE FROM track_ratings WHERE track_id = ?1", [id])?;
-    } else {
-        conn.execute(
-            "INSERT INTO track_ratings (track_id, rating, rated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(track_id) DO UPDATE SET rating = excluded.rating, rated_at = excluded.rated_at",
-            params![id, i64::from(stars.min(5)), now()],
-        )?;
+/// Smart playlists stored with a rule about ratings (from a build that kept them) written
+/// again without it (`smart::strip_ratings`): the rating conditions dropped, an order by
+/// rating back to the default one, every other rule as it was. Logged, one line each. How
+/// many were.
+pub fn forget_rating_rules(conn: &Connection) -> rusqlite::Result<usize> {
+    let found: Vec<(i64, String, String)> = conn
+        .prepare("SELECT id, name, rules FROM playlists WHERE rules IS NOT NULL AND rules LIKE '%rating%'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut n = 0;
+    for (id, name, rules) in found {
+        let Ok(serde_json::Value::Object(mut m)) = serde_json::from_str(&rules) else { continue };
+        if crate::smart::strip_ratings(&mut m) {
+            conn.execute("UPDATE playlists SET rules = ?2 WHERE id = ?1", params![id, serde_json::Value::Object(m).to_string()])?;
+            log::info!("smart playlist \u{201c}{name}\u{201d}: its rules about ratings dropped (ratings are no longer kept), the others kept");
+            n += 1;
+        }
     }
-    Ok(())
-}
-
-/// Several tracks rated alike, all or none (one transaction); 0 clears their ratings.
-pub fn set_ratings(conn: &Connection, ids: &[i64], stars: u8) -> rusqlite::Result<()> {
-    let tx = crate::db::write(conn)?;
-    for &id in ids {
-        set_rating(&tx, id, stars)?;
-    }
-    tx.commit()
-}
-
-/// Every rated track's rating.
-pub fn ratings(conn: &Connection) -> rusqlite::Result<std::collections::HashMap<i64, u8>> {
-    let mut st = conn.prepare_cached("SELECT track_id, rating FROM track_ratings")?;
-    st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.clamp(0, 5) as u8)))?.collect()
+    Ok(n)
 }
 
 // ---- playlists ---------------------------------------------------------------
@@ -1728,8 +1714,31 @@ mod tests {
         assert_eq!(ids, vec![11, 10]);
     }
 
+    /// A smart playlist saved by a build that kept ratings: its rating rules are written away
+    /// once, the others kept as they were; one without any is left untouched.
     #[test]
-    fn several_tracks_are_favourited_or_rated_at_once() {
+    fn smart_playlists_lose_their_rating_rules_and_keep_the_others() {
+        let c = db::open_in_memory().unwrap();
+        seed(&c);
+        let best = create_smart_playlist(
+            &c,
+            "Best",
+            r#"{"v":1,"match":"all","rules":[{"field":"genre","op":"is","value":"Jazz"},{"field":"rating","op":"at_least","value":4}],"sort":{"by":"rating","desc":true},"seed":3}"#,
+        )
+        .unwrap();
+        let plain = r#"{"v":1,"match":"all","rules":[{"field":"title","op":"contains","value":"rating"}],"seed":1}"#;
+        let other = create_smart_playlist(&c, "Titles", plain).unwrap();
+        assert_eq!(forget_rating_rules(&c).unwrap(), 1);
+        let rules = |id| crate::smart::playlist_rules(&c, id).unwrap().unwrap().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&rules(best)).unwrap();
+        assert_eq!(v, serde_json::json!({"v":1,"match":"all","rules":[{"field":"genre","op":"is","value":"Jazz"}],"seed":3}));
+        assert_eq!(rules(other), plain, "nothing about ratings: not written");
+        assert_eq!(forget_rating_rules(&c).unwrap(), 0, "once only");
+        assert_eq!(playlists(&c).unwrap().len(), 2, "no playlist lost");
+    }
+
+    #[test]
+    fn several_tracks_are_favourited_at_once() {
         let c = db::open_in_memory().unwrap();
         seed(&c);
         toggle_favourite_track(&c, 20).unwrap();
@@ -1737,10 +1746,6 @@ mod tests {
         assert!([10, 20, 30].iter().all(|&t| is_favourite_track(&c, t).unwrap()));
         assert_eq!(set_favourite_tracks(&c, &[10, 30], false).unwrap(), 2);
         assert!(!is_favourite_track(&c, 10).unwrap() && is_favourite_track(&c, 20).unwrap());
-        set_ratings(&c, &[10, 11, 30], 4).unwrap();
-        assert_eq!([rating(&c, 10).unwrap(), rating(&c, 11).unwrap(), rating(&c, 20).unwrap()], [4, 4, 0]);
-        set_ratings(&c, &[10, 11], 0).unwrap();
-        assert_eq!([rating(&c, 10).unwrap(), rating(&c, 30).unwrap()], [0, 4]);
     }
 
     #[test]

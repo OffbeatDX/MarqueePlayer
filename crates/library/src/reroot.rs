@@ -2,7 +2,7 @@
 //! a USB stick that is E: on one computer and F: on the next (Linux: mounted under another
 //! user's `/media/<user>/`). The files are the same files, only the start of every path
 //! changed, so the database's paths are rewritten in place (one transaction) instead of
-//! letting a scan see every track gone and every file new: plays, ratings, favourites,
+//! letting a scan see every track gone and every file new: plays, favourites,
 //! playlists and the queue belong to rows whose ids never change, and nothing is re-read.
 //!
 //! What holds a path: `tracks.path`, `albums.folder`, `track_tags.group_folder` (lower

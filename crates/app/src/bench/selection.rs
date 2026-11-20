@@ -8,7 +8,8 @@
 //! - a click, Shift+click, Ctrl+click, Shift+click from a moved anchor; each row's `selected`;
 //! - the menu of several tracks (its entries, a snapshot of it) and of a row outside them;
 //! - Ctrl+A on 3,000 rows and Shift+click across all of them, timed; Esc; the arrows and Shift;
-//! - Add to queue, favourites, a rating, Add to playlist, each once for all, the pill's words;
+//! - Add to queue, favourites, Add to playlist, each once for all, the pill's words (and no
+//!   rating offered);
 //! - a drag of two rows within the playlist (a real drag in the window): moved as a block, still
 //!   chosen; Delete removes the selection from the playlist and nothing from the library;
 //! - the selection gone when the list changes or the page does, and a menu opened before the
@@ -298,12 +299,8 @@ pub fn run(report: String, pid: i64) {
         check(c, "Add to favourites marks all three (one transaction)", ok && favs.len() == 3, format!("{} of {ids:?}; pill {:?}", favs.len(), flash(app)));
         right_click(app, x, row_y(c, 1));
         check(c, "then the menu offers to remove them", menu_labels(app).iter().any(|l| l == "Remove from favourites"), format!("{:?}", menu_labels(app)));
-        let ok = activate(st, app, "Rate\u{2026}");
-        let labels = menu_labels(app);
-        check(c, "Rate… opens the stars for all of them", ok && labels.len() == 6, format!("{labels:?}"));
-        crate::menus::activate(st, 4, -1);
-        let rated = ids.iter().all(|&id| crate::rows::rating_of(id) == 4 && query::rating(&st.db, id).unwrap_or(0) == 4);
-        check(c, "four stars for each", rated, format!("pill {:?}", flash(app)));
+        check(c, "and no rating", !menu_labels(app).iter().any(|l| l.starts_with("Rate")), format!("{:?}", menu_labels(app)));
+        app.global::<crate::MenuStore>().set_open(false);
         right_click(app, x, row_y(c, 1));
         let i = menu_labels(app).iter().position(|l| l == "Add to playlist").unwrap_or(0) as i32;
         let target = c.borrow().target;

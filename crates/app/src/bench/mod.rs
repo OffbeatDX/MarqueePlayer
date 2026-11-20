@@ -46,7 +46,7 @@
 //!   foreground), and the report says where the focus went and what the keys did.
 //!
 //! - `MP_BENCH=phase5`: output devices, Last.fm, formats, playlist files, lyrics, files
-//!   from outside, ratings (`bench/output_devices.rs`), each snapshotted and reported.
+//!   from outside, no ratings left (`bench/output_devices.rs`), each snapshotted and reported.
 //!
 //! - `MP_BENCH=lyrics`: the Lyrics tab's timing offset, Copy and Save (`bench/lyrics.rs`).
 //! - `MP_BENCH=output-default` (Linux): the system default as the equalizer, Settings >
@@ -95,7 +95,7 @@ mod lyrics; // lyrics: the Lyrics tab's timing offset, Copy and Save
 mod messy_library; // home, library: several artists and genres per track, forgiving tags, the home page
 mod metadata; // metadata: View metadata
 mod output_default; // output-default (Linux): the system default output device changing
-mod output_devices; // phase5: output devices, Last.fm, formats, playlist files, lyrics, ratings
+mod output_devices; // phase5: output devices, Last.fm, formats, playlist files, lyrics, no ratings
 mod player_bar; // cleanup: the auto-hiding player bar, the queue, sorting, the pill, Settings > Keys
 mod playlist; // playlist (second part): Shuffle and playlist name clashes
 mod row_hover; // row-hover: a track row's hover under its play button

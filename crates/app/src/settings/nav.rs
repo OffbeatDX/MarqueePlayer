@@ -32,7 +32,7 @@ const SETTINGS: &[(&str, usize, &str)] = &[
     ("Rescan", LIBRARY, "scan scanning refresh update library status progress unreadable files skipped broken"),
     ("Remove missing tracks", LIBRARY, "held back missing deleted guard prune clean"),
     ("Server", LIBRARY, "navidrome subsonic opensubsonic server remote network nas home sign in sign out log in connect address url user password account sync catalog streaming"),
-    ("Sync favourites and ratings with the server", LIBRARY, "navidrome subsonic server favourite favorite heart hearts star starred rating ratings stars two-way both ways write back"),
+    ("Sync favourites with the server", LIBRARY, "navidrome subsonic server favourite favorite heart hearts star starred two-way both ways write back"),
     ("Report plays to the server", LIBRARY, "navidrome subsonic server plays play count counts history now playing scrobble scrobbling"),
     ("Scrobble server tracks from this app", LIBRARY, "navidrome subsonic server last.fm lastfm last fm listenbrainz listen brainz listens scrobbling twice double duplicate"),
     ("Edit tags", LIBRARY, "tag editing editor write change modify fix metadata title artist album cover art picture retag tagger"),
@@ -202,8 +202,8 @@ mod tests {
         assert_eq!(labels("self-hosted"), vec!["ListenBrainz server address"]);
         assert_eq!(labels("love"), vec!["Love favourites on ListenBrainz"]);
         assert_eq!(find("listen brainz token")[0], Hit { label: "ListenBrainz".into(), section: CONNECTIONS });
-        assert_eq!(labels("favourites server"), vec!["Sync favourites and ratings with the server"]);
-        assert_eq!(labels("ratings navidrome"), vec!["Sync favourites and ratings with the server"]);
+        assert_eq!(labels("favourites server"), vec!["Sync favourites with the server"]);
+        assert_eq!(labels("hearts navidrome"), vec!["Sync favourites with the server"]);
         assert_eq!(find("play counts")[0], Hit { label: "Report plays to the server".into(), section: LIBRARY });
         assert_eq!(labels("discord"), vec!["Show on Discord", "Application ID"]);
         assert_eq!(labels("rich presence"), vec!["Show on Discord", "Application ID"]);

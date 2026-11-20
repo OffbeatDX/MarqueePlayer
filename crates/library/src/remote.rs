@@ -49,9 +49,9 @@
 //! title (`fold::fold`) or the duration (within 2 s) agreeing; else, for tracks without numbers,
 //! by folded title and duration together. Every match is the only candidate both ways.
 //!
-//! **What is never done**: the server's starred, ratings and play counts are kept with the
-//! catalog and never applied to the user's favourites, ratings or plays here (favourites and
-//! ratings are kept in step with the server by `marks`, which the app runs; plays never);
+//! **What is never done**: the server's starred and play counts are kept with the catalog and
+//! never applied to the user's favourites or plays here (favourites are kept in step with the
+//! server by `marks`, which the app runs; plays never); its ratings are not read at all;
 //! a server never changes a local track's tags or path, or a local album's dates.
 //!
 //! **Removals** (`sync`): only when the caller says the listing was the whole catalog
@@ -166,6 +166,9 @@ pub struct RemoteAlbum {
     pub cover_art: Option<String>,
     /// The server's own user data: kept, not applied (see the module doc).
     pub starred: Option<i64>,
+    /// Always None: ratings are no longer read from the server. Kept so the catalog's stored
+    /// entries read and hash as before (a sync after the update rewrites only what the server
+    /// had rated).
     pub rating: Option<u8>,
     pub play_count: Option<i64>,
     #[serde(skip)]
@@ -207,6 +210,9 @@ pub struct RemoteSong {
     pub cover_art: Option<String>,
     /// The server's own user data: kept, not applied.
     pub starred: Option<i64>,
+    /// Always None: ratings are no longer read from the server. Kept so the catalog's stored
+    /// entries read and hash as before (a sync after the update rewrites only what the server
+    /// had rated).
     pub rating: Option<u8>,
     pub play_count: Option<i64>,
     /// The file's path on the server, as it says it (relative to its music folder): with `size`,
@@ -800,20 +806,18 @@ struct Work {
     merged: usize,
 }
 
-/// A track has user data of its own: plays, a favourite, a rating, a playlist place, a place in the
-/// queue.
+/// A track has user data of its own: plays, a favourite, a playlist place, a place in the queue.
 fn has_history(tx: &Connection, id: i64) -> rusqlite::Result<bool> {
     tx.prepare_cached(
         "SELECT EXISTS(SELECT 1 FROM plays WHERE track_id = ?1) OR EXISTS(SELECT 1 FROM favourite_tracks WHERE track_id = ?1)
-             OR EXISTS(SELECT 1 FROM track_ratings WHERE track_id = ?1) OR EXISTS(SELECT 1 FROM playlist_items WHERE track_id = ?1)
+             OR EXISTS(SELECT 1 FROM playlist_items WHERE track_id = ?1)
              OR EXISTS(SELECT 1 FROM queue_items WHERE track_id = ?1)",
     )?
     .query_row([id], |r| r.get(0))
 }
 
 /// Move a track's user data to another (every table that names a track: plays, favourites,
-/// ratings, playlist items, the queue). A favourite keeps its earliest time; of two ratings, the
-/// later one wins.
+/// playlist items, the queue). A favourite keeps its earliest time.
 fn move_history(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
     tx.prepare_cached("UPDATE plays SET track_id = ?2 WHERE track_id = ?1")?.execute(params![from, to])?;
     tx.prepare_cached(
@@ -821,13 +825,7 @@ fn move_history(tx: &Connection, from: i64, to: i64) -> rusqlite::Result<()> {
          ON CONFLICT(track_id) DO UPDATE SET added_at = MIN(added_at, excluded.added_at)",
     )?
     .execute(params![from, to])?;
-    tx.prepare_cached(
-        "INSERT INTO track_ratings (track_id, rating, rated_at) SELECT ?2, rating, rated_at FROM track_ratings WHERE track_id = ?1
-         ON CONFLICT(track_id) DO UPDATE SET rating = excluded.rating, rated_at = excluded.rated_at WHERE excluded.rated_at > track_ratings.rated_at",
-    )?
-    .execute(params![from, to])?;
     tx.prepare_cached("DELETE FROM favourite_tracks WHERE track_id = ?1")?.execute([from])?;
-    tx.prepare_cached("DELETE FROM track_ratings WHERE track_id = ?1")?.execute([from])?;
     tx.prepare_cached("UPDATE playlist_items SET track_id = ?2 WHERE track_id = ?1")?.execute(params![from, to])?;
     tx.prepare_cached("UPDATE queue_items SET track_id = ?2 WHERE track_id = ?1")?.execute(params![from, to])?;
     Ok(())
@@ -1449,7 +1447,7 @@ pub fn reconcile(conn: &mut Connection) -> rusqlite::Result<Reconciled> {
 }
 
 /// A track whose file went away (a scan, a folder removed from the library): if the server has
-/// it, its row stays as the server's track (its id, plays, favourite, rating, playlist places,
+/// it, its row stays as the server's track (its id, plays, favourite, playlist places,
 /// album), written from the catalog as kept. `false`: the server does not have it (remove it as
 /// before).
 pub(crate) fn to_server_only(tx: &Connection, id: i64, touched: &mut Touched) -> rusqlite::Result<bool> {
