@@ -2,7 +2,9 @@ package com.offbeat.marquee.player.offline
 
 import android.content.Context
 import com.offbeat.marquee.player.diag.AppLog
+import androidx.annotation.OptIn
 import androidx.compose.runtime.Immutable
+import androidx.media3.common.util.UnstableApi
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -94,6 +96,7 @@ data class PinProgress(
  * opens, and daily on Wi-Fi while charging, [PlaylistSyncWorker]). Their covers are kept with them
  * ([CoverStore]), outside the evictable cover cache.
  */
+@OptIn(UnstableApi::class)
 object Downloads {
     private const val TAG = "MarqueeDownloads"
     const val WORK = "downloads"
