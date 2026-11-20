@@ -340,7 +340,9 @@ enum Ready {
 
 impl FeedReader {
     /// Wait until the byte at `pos` is on disk, or the end, or a failure; or the reader is
-    /// stopped (an error).
+    /// stopped (an error). `u64::MAX`: wait for the length (a seek from the end), which is
+    /// no offset to fetch: it is not said in `Feed::wanted` (a writer fetching ranges was
+    /// asked for `bytes=18446744073709551615-`).
     fn ready(&self, pos: u64) -> io::Result<Ready> {
         let inner = &self.feed.0;
         let mut s = inner.lock();
@@ -358,7 +360,7 @@ impl FeedReader {
             if let Some(why) = self.cancel.stopped() {
                 break Err(io::Error::other(format!("reading the file {why}")));
             }
-            if !waiting {
+            if !waiting && pos != u64::MAX {
                 waiting = true;
                 s.waiting.push((self.id, pos));
                 inner.changed.notify_all();
@@ -531,6 +533,27 @@ mod tests {
         assert!(at.elapsed() < Duration::from_millis(500));
         assert_eq!(f.wanted(), None);
         assert_eq!(f.readers(), 0);
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// A seek from the end of a file whose length is not known yet waits for the length,
+    /// and says no offset it wants meanwhile.
+    #[test]
+    fn a_seek_from_the_end_waits_for_the_length_and_wants_no_offset() {
+        let p = file("end-seek", &[7u8; 100]);
+        let f = Feed::new();
+        f.advance(100);
+        let c = f.canceller();
+        let mut r = f.reader(&p, &c);
+        let t = std::thread::spawn(move || r.seek(SeekFrom::End(-10)));
+        let until = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < until {
+            assert_eq!(f.wanted(), None, "no impossible offset for the writer to fetch");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!t.is_finished(), "waiting for the length");
+        f.set_length(Some(1000));
+        assert_eq!(t.join().unwrap().unwrap(), 990);
         let _ = std::fs::remove_file(p);
     }
 
