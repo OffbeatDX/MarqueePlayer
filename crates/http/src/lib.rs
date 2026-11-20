@@ -13,12 +13,15 @@
 //! - [`download`]: the body chunk by chunk, never held whole (a song file of several hundred
 //!   MB), with what the head said first (status, length, range, type), and a way to stop.
 //!
-//! Redirects are followed, up to 10. A request that carries an `Authorization` header follows
+//! Redirects are followed, up to 10. A request that carries an `Authorization` header, or
+//! one made through [`request_same_server`] / [`request_bytes_same_server`] /
+//! [`download_same_server`] (for credentials carried in the URL, as Subsonic does), follows
 //! them here instead, alike on both systems: only to the same scheme, host and port, with the
-//! header; a redirect anywhere else is an error, so a sign-in never goes to another server and
-//! never goes missing on the way (the server would say "not signed in"). Otherwise each system
-//! follows them its own way (WinHTTP never from https to http; ureq to anywhere). Nothing here
-//! logs, and no error message carries a URL: the Subsonic client's URLs hold its token.
+//! headers kept; a redirect anywhere else (including a downgrade from https to http) is an
+//! error, so a sign-in never goes to another server and never goes missing on the way (the
+//! server would say "not signed in"). Otherwise each system follows them its own way (WinHTTP
+//! never from https to http; ureq to anywhere). Nothing here logs, and no error message
+//! carries a URL: the Subsonic client's URLs hold its token.
 
 use std::ops::ControlFlow;
 
@@ -204,13 +207,25 @@ pub fn request(req: &Request) -> Result<Response, HttpError> {
     Ok(Response { status: r.status, body: String::from_utf8_lossy(&r.body).into_owned(), retry_after: r.retry_after, rate_limit: r.rate_limit })
 }
 
+/// Like [`request`], but follows redirects only to the same scheme, host and port (for
+/// requests whose sign-in travels in the URL rather than an `Authorization` header).
+pub fn request_same_server(req: &Request) -> Result<Response, HttpError> {
+    let r = request_bytes_same_server(req)?;
+    Ok(Response { status: r.status, body: String::from_utf8_lossy(&r.body).into_owned(), retry_after: r.retry_after, rate_limit: r.rate_limit })
+}
+
 /// Send one request and read the whole response as bytes (any status), up to [`MAX_BODY`], in
 /// [`MAX_TIME`] at most.
 pub fn request_bytes(req: &Request) -> Result<BinaryResponse, HttpError> {
-    request_within(req, MAX_TIME)
+    request_within(req, MAX_TIME, false)
 }
 
-fn request_within(req: &Request, max_time: std::time::Duration) -> Result<BinaryResponse, HttpError> {
+/// Like [`request_bytes`], but follows redirects only to the same scheme, host and port.
+pub fn request_bytes_same_server(req: &Request) -> Result<BinaryResponse, HttpError> {
+    request_within(req, MAX_TIME, true)
+}
+
+fn request_within(req: &Request, max_time: std::time::Duration, same_server_only: bool) -> Result<BinaryResponse, HttpError> {
     struct Collect {
         body: Vec<u8>,
         too_big: bool,
@@ -248,7 +263,7 @@ fn request_within(req: &Request, max_time: std::time::Duration) -> Result<Binary
         }
     }
     let mut c = Collect { body: Vec::new(), too_big: false, deadline: std::time::Instant::now() + max_time, too_long: false };
-    let d = download(req, &mut c)?;
+    let d = download_with_policy(req, &mut c, same_server_only)?;
     if c.too_big {
         return Err(HttpError::Network(format!("the response is larger than {} MB", MAX_BODY >> 20)));
     }
@@ -268,6 +283,16 @@ fn request_within(req: &Request, max_time: std::time::Duration) -> Result<Binary
 /// flag of the caller's is best checked in [`Sink::chunk`]: while the server sends nothing
 /// the call waits in the system's receive, which only the timeout ends.
 pub fn download(req: &Request, sink: &mut dyn Sink) -> Result<Download, HttpError> {
+    download_with_policy(req, sink, false)
+}
+
+/// Like [`download`], but follows redirects only to the same scheme, host and port (for
+/// requests whose sign-in travels in the URL rather than an `Authorization` header).
+pub fn download_same_server(req: &Request, sink: &mut dyn Sink) -> Result<Download, HttpError> {
+    download_with_policy(req, sink, true)
+}
+
+fn download_with_policy(req: &Request, sink: &mut dyn Sink, same_server_only: bool) -> Result<Download, HttpError> {
     /// Counts what passes, so a short body can be told from a whole one.
     struct Counting<'a> {
         inner: &'a mut dyn Sink,
@@ -283,7 +308,8 @@ pub fn download(req: &Request, sink: &mut dyn Sink) -> Result<Download, HttpErro
         }
     }
     let mut counting = Counting { inner: sink, received: 0 };
-    let signed_in = req.headers.iter().any(|h| h.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("authorization")));
+    let signed_in = same_server_only
+        || req.headers.iter().any(|h| h.split_once(':').is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("authorization")));
     let (head, stopped) = if signed_in { follow_same_server(req, &mut counting)? } else { system(req, &mut counting, true)? };
     let received = counting.received;
     let has_body = !req.method.eq_ignore_ascii_case("HEAD") && !matches!(head.status, 100..=199 | 204 | 304);
@@ -305,9 +331,10 @@ fn system(req: &Request, sink: &mut dyn Sink, follow: bool) -> Result<(Head, boo
     return ureq::download(req, sink, follow);
 }
 
-/// A request with an `Authorization` header: redirects followed here, only to the same scheme,
-/// host and port, the header sent again; one elsewhere is an error. A 303, or a 301/302 after a
-/// POST, goes on as a GET without the body, as the systems' clients do.
+/// A signed-in request (carrying an `Authorization` header or made via `*_same_server`):
+/// redirects followed here, only to the same scheme, host and port, headers sent again; one
+/// elsewhere (including https to http) is an error. A 303, or a 301/302 after a POST, goes
+/// on as a GET without the body, as the systems' clients do.
 fn follow_same_server(req: &Request, sink: &mut dyn Sink) -> Result<(Head, bool), HttpError> {
     /// Keeps a redirect's head and body from the caller's sink.
     struct Hold<'a> {
@@ -326,16 +353,12 @@ fn follow_same_server(req: &Request, sink: &mut dyn Sink) -> Result<(Head, bool)
             self.inner.chunk(bytes)
         }
     }
-    let server = |url: &str| split_url(url).map(|(secure, host, port, _)| (secure, host.to_ascii_lowercase(), port));
     let (mut url, mut method, mut body) = (req.url.to_owned(), req.method, req.body);
     for _ in 0..=10 {
         let mut hold = Hold { inner: &mut *sink, redirect: None };
         let (head, stopped) = system(&Request { method, url: &url, body, ..req.clone() }, &mut hold, false)?;
         let Some((status, location)) = hold.redirect else { return Ok((head, stopped)) };
-        let next = resolve(&url, &location);
-        if server(&next)? != server(&url)? {
-            return Err(HttpError::Network("the server redirects to another address (another scheme, host or port), where the sign-in is not sent: use that address instead".into()));
-        }
+        let next = same_server_redirect(&url, &location)?;
         if status == 303 || (matches!(status, 301 | 302) && method.eq_ignore_ascii_case("POST")) {
             method = "GET";
             body = &[];
@@ -345,12 +368,35 @@ fn follow_same_server(req: &Request, sink: &mut dyn Sink) -> Result<(Head, bool)
     Err(HttpError::Network("too many redirects".into()))
 }
 
+/// Resolve `location` against `from` and check that it stays on the same scheme, host and
+/// port; a scheme change (such as https to http), host change or port change is refused.
+fn same_server_redirect(from: &str, location: &str) -> Result<String, HttpError> {
+    let next = resolve(from, location);
+    let server = |url: &str| split_url(url).map(|(secure, host, port, _)| (secure, host.to_ascii_lowercase(), port));
+    if server(&next)? != server(from)? {
+        return Err(HttpError::Network("the server redirects to another address (another scheme, host or port), where the sign-in is not sent: use that address instead".into()));
+    }
+    Ok(next)
+}
+
 /// A `Location` read against the URL it came from: absolute, `//host/...`, `/path` or relative.
 fn resolve(base: &str, location: &str) -> String {
     let location = location.trim();
-    let lower = location.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") {
-        return location.to_owned();
+    if let Some(rest) = location.get(..8).filter(|s| s.eq_ignore_ascii_case("https://")).map(|_| &location[8..]) {
+        return format!("https://{rest}");
+    }
+    if let Some(rest) = location.get(..7).filter(|s| s.eq_ignore_ascii_case("http://")).map(|_| &location[7..]) {
+        return format!("http://{rest}");
+    }
+    // Another URI scheme ("ftp://...", "file:...") stays absolute so `split_url` rejects it.
+    if let Some(colon) = location.find(':') {
+        let prefix = &location.as_bytes()[..colon];
+        if let Some((&first, rest)) = prefix.split_first()
+            && first.is_ascii_alphabetic()
+            && rest.iter().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        {
+            return location.to_owned();
+        }
     }
     let scheme_end = base.find("://").map_or(0, |i| i + 3);
     if let Some(rest) = location.strip_prefix("//") {
@@ -369,10 +415,10 @@ fn resolve(base: &str, location: &str) -> String {
 /// Split an http(s) URL into (secure, host, port, path with query). The error never repeats
 /// the URL (it may carry a token).
 fn split_url(url: &str) -> Result<(bool, &str, u16, String), HttpError> {
-    let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
-        (true, r)
-    } else if let Some(r) = url.strip_prefix("http://") {
-        (false, r)
+    let (secure, rest) = if url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+        (true, &url[8..])
+    } else if url.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("http://")) {
+        (false, &url[7..])
     } else {
         return Err(HttpError::Network("not an http(s) URL".into()));
     };
@@ -439,7 +485,7 @@ mod tests {
         });
         let req = Request { method: "GET", url: &url, headers: &[], body: &[], user_agent: "MarqueePlayer-test/1", timeout_ms: 5000 };
         let t = std::time::Instant::now();
-        let e = request_within(&req, std::time::Duration::from_millis(800)).unwrap_err();
+        let e = request_within(&req, std::time::Duration::from_millis(800), false).unwrap_err();
         assert!(e.to_string().contains("took longer"), "{e}");
         assert!(t.elapsed() < std::time::Duration::from_secs(4), "{:?}", t.elapsed());
     }
@@ -453,6 +499,36 @@ mod tests {
         assert_eq!(resolve(b, "submit/"), "http://nas:8100/apis/lb/1/submit/");
         assert_eq!(resolve("http://h?q", "a"), "http://h/a");
         assert_eq!(resolve("http://h", "/a"), "http://h/a");
+        assert_eq!(resolve(b, "HTTPS://other/y"), "https://other/y");
+        assert_eq!(resolve(b, "ftp://other/y"), "ftp://other/y");
+    }
+
+    #[test]
+    fn same_server_redirect_policy_checks_scheme_host_and_port() {
+        let from = "https://music.example.org/rest/ping.view?u=alice&t=secrettoken&s=secretsalt";
+        // Same server: relative, root-relative, explicit default port, case-insensitive host/scheme.
+        assert_eq!(same_server_redirect(from, "/nd/rest/ping.view?u=alice").unwrap(), "https://music.example.org/nd/rest/ping.view?u=alice");
+        assert_eq!(same_server_redirect(from, "ping2.view").unwrap(), "https://music.example.org/rest/ping2.view");
+        assert_eq!(same_server_redirect(from, "https://MUSIC.EXAMPLE.ORG:443/rest/ping.view").unwrap(), "https://MUSIC.EXAMPLE.ORG:443/rest/ping.view");
+        assert_eq!(same_server_redirect(from, "HTTPS://music.example.org/rest/ping.view").unwrap(), "https://music.example.org/rest/ping.view");
+        assert_eq!(same_server_redirect("http://nas/rest/ping.view", "http://nas:80/v2/rest/ping.view").unwrap(), "http://nas:80/v2/rest/ping.view");
+
+        // Scheme downgrade (https -> http), scheme change (http -> https), host change, port change,
+        // non-http(s) scheme: all refused without leaking the query string.
+        for (src, loc) in [
+            (from, "http://music.example.org/rest/ping.view?u=alice&t=secrettoken"),
+            (from, "http://music.example.org:443/rest/ping.view?t=secrettoken"),
+            (from, "HTTP://music.example.org/rest/ping.view?t=secrettoken"),
+            ("https://music.example.org:8443/rest/ping.view?t=secrettoken", "http://music.example.org:8443/rest/ping.view?t=secrettoken"),
+            ("http://music.example.org/rest/ping.view?t=secrettoken", "https://music.example.org/rest/ping.view?t=secrettoken"),
+            (from, "https://evil.example.org/rest/ping.view?t=secrettoken"),
+            (from, "//evil.example.org/rest/ping.view?t=secrettoken"),
+            (from, "https://music.example.org:4533/rest/ping.view?t=secrettoken"),
+            (from, "ftp://music.example.org/rest/ping.view?t=secrettoken"),
+        ] {
+            let e = same_server_redirect(src, loc).unwrap_err().to_string();
+            assert!(!e.contains("secrettoken") && !e.contains("secretsalt"), "secret leaked for {loc}: {e}");
+        }
     }
 
     #[test]

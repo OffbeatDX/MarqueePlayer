@@ -379,7 +379,7 @@ impl Client {
     pub fn cover_art(&self, id: &str, size: Option<u32>) -> Result<Cover, Error> {
         let endpoint = "getCoverArt";
         let url = self.url(endpoint, &opt(vec![("id", id.to_owned())], "size", size.map(|s| s.to_string()).as_deref()))?;
-        let r = http_client::request_bytes(&Request { method: "GET", url: &url, headers: &[], body: &[], user_agent: &self.user_agent, timeout_ms: self.stream_timeout_ms })
+        let r = http_client::request_bytes_same_server(&Request { method: "GET", url: &url, headers: &[], body: &[], user_agent: &self.user_agent, timeout_ms: self.stream_timeout_ms })
             .map_err(|e| self.failed(endpoint, Error::Network(e.to_string())))?;
         if let Some(e) = self.binary_error(r.status, r.content_type.as_deref(), &r.body) {
             return Err(self.failed(endpoint, e));
@@ -470,7 +470,7 @@ impl Client {
         }
 
         let mut a = Adapter { sink, range_start, head: None, error: None, empty_end: false };
-        let r = http_client::download(&req, &mut a);
+        let r = http_client::download_same_server(&req, &mut a);
         if let Some((status, ct, body)) = a.error.take() {
             let e = self.binary_error(status, ct.as_deref(), &body).unwrap_or_else(|| Error::BadResponse("an error answer without an error".into()));
             return Err(self.failed(endpoint, e));
@@ -593,7 +593,7 @@ impl Client {
     /// One call: the `subsonic-response` envelope of a successful answer.
     fn call(&self, endpoint: &'static str, params: Params) -> Result<Value, Error> {
         let url = self.url(endpoint, &params)?;
-        let r = http_client::request_bytes(&Request { method: "GET", url: &url, headers: &[], body: &[], user_agent: &self.user_agent, timeout_ms: self.timeout_ms })
+        let r = http_client::request_bytes_same_server(&Request { method: "GET", url: &url, headers: &[], body: &[], user_agent: &self.user_agent, timeout_ms: self.timeout_ms })
             .map_err(|e| self.failed(endpoint, Error::Network(e.to_string())))?;
         let env = envelope(r.status, &r.body).map_err(|e| self.failed(endpoint, e))?;
         log::debug!("subsonic {endpoint}: ok ({} bytes)", r.body.len());

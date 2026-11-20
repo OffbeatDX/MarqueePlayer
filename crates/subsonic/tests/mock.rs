@@ -796,3 +796,138 @@ fn no_error_or_log_line_carries_a_secret() {
         assert!(!t.contains("/rest/") || t.contains("cannot handle GET /rest/"), "a URL in: {t}");
     }
 }
+
+#[test]
+fn redirects_to_another_server_are_refused_and_same_server_redirects_are_followed() {
+    // Another server on a different port: must never receive any request or query string.
+    let other_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other_port = other_listener.local_addr().unwrap().port();
+    let other_seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    let os = other_seen.clone();
+    std::thread::spawn(move || {
+        for conn in other_listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let os = os.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) > 0 {
+                    os.lock().unwrap().push(line.trim_end().to_owned());
+                }
+                let body = format!(r#"{{"subsonic-response":{{{ENVELOPE}}}}}"#);
+                let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes());
+                let _ = conn.flush();
+            });
+        }
+    });
+
+    // A server that answers 301/302 pointing to the other port (carrying the original query).
+    let redir_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redir_url = format!("http://127.0.0.1:{}", redir_listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for conn in redir_listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let target = line.split(' ').nth(1).unwrap_or("/");
+                let status = if target.contains("ping") { "301 Moved Permanently" } else { "302 Found" };
+                let loc = format!("http://127.0.0.1:{other_port}{target}");
+                let _ = conn.write_all(format!("HTTP/1.1 {status}\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                let _ = conn.flush();
+            });
+        }
+    });
+
+    let c = Client::new(Credentials::from_password(&redir_url, USER, PASSWORD).unwrap(), true).unwrap();
+    let creds = c.credentials().clone();
+    let check_refused = |e: Error| {
+        assert!(matches!(&e, Error::Network(m) if m.contains("another address")), "{e:?}");
+        let s = format!("{e}");
+        assert!(!s.contains(&creds.token) && !s.contains(&creds.salt) && !s.contains(PASSWORD), "secret leaked: {s}");
+    };
+    check_refused(subsonic::sign_in(&redir_url, USER, PASSWORD).unwrap_err());
+    check_refused(c.ping().unwrap_err());
+    check_refused(c.cover_art("al-al0_0", Some(300)).unwrap_err());
+    let mut sink = Keep2::default();
+    check_refused(c.stream("s1", &Quality::Original, 100, &mut sink).unwrap_err());
+    assert!(sink.head.is_none() && sink.body.is_empty());
+    assert!(other_seen.lock().unwrap().is_empty(), "query string leaked to other server: {:?}", other_seen.lock().unwrap());
+
+    // Same-server 302 redirect (same scheme, host and port, new path): must be followed.
+    let same_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let same_url = format!("http://127.0.0.1:{}", same_listener.local_addr().unwrap().port());
+    let same_seen: Arc<Mutex<Vec<Req>>> = Arc::default();
+    let ss = same_seen.clone();
+    std::thread::spawn(move || {
+        for conn in same_listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let ss = ss.clone();
+            std::thread::spawn(move || {
+                let mut r = BufReader::new(conn.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 {
+                    return;
+                }
+                let target = line.split(' ').nth(1).unwrap_or("").to_owned();
+                if target.starts_with("/rest/") {
+                    loop {
+                        let mut h = String::new();
+                        if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                            break;
+                        }
+                    }
+                    let loc = format!("/v2{target}");
+                    let _ = conn.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                    let _ = conn.flush();
+                    return;
+                }
+                // Replay into a fresh handler isn't needed: answer directly as /v2.
+                let mut req = Req { raw: line.trim_end().to_owned(), ..Req::default() };
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    if let Some((k, v)) = h.split_once(':') {
+                        req.headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_owned());
+                    }
+                }
+                let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                req.path = path.to_owned();
+                req.params = query.split('&').filter(|kv| !kv.is_empty()).map(|kv| kv.split_once('=').unwrap_or((kv, ""))).map(|(k, v)| (decode(k), decode(v))).collect();
+                req.endpoint = path.strip_prefix("/v2/rest/").unwrap_or("").trim_end_matches(".view").to_owned();
+                let (salt, token) = (req.param("s").unwrap_or(""), req.param("t").unwrap_or(""));
+                req.auth_ok = req.param("u") == Some(USER) && !salt.is_empty() && token == subsonic::token(PASSWORD, salt) && req.param("p").is_none();
+                ss.lock().unwrap().push(req.clone());
+                let reply = if req.auth_ok { navidrome(&req) } else { failed(40, "Wrong username or password") };
+                let mut head = format!("HTTP/1.1 {} X\r\nContent-Type: {}\r\nConnection: close\r\n", reply.status, reply.content_type);
+                for h in &reply.headers {
+                    head.push_str(h);
+                    head.push_str("\r\n");
+                }
+                head.push_str(&format!("Content-Length: {}\r\n\r\n", reply.body.len()));
+                let _ = conn.write_all(head.as_bytes());
+                let _ = conn.write_all(&reply.body);
+                let _ = conn.flush();
+            });
+        }
+    });
+
+    let c2 = Client::new(Credentials::from_password(&same_url, USER, PASSWORD).unwrap(), true).unwrap();
+    assert_eq!(c2.ping().unwrap().kind, "navidrome");
+    assert_eq!(c2.cover_art("al-al0_0", None).unwrap().bytes, COVER);
+    let mut sink = Keep2::default();
+    let s = c2.stream("s1", &Quality::Original, 0, &mut sink).unwrap();
+    assert_eq!(s.received, file().len() as u64);
+    assert_eq!(same_seen.lock().unwrap().len(), 3);
+}

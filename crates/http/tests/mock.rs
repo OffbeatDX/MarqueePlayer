@@ -446,3 +446,44 @@ fn a_sign_in_follows_a_redirect_on_the_same_server_only() {
     let (url, _) = serve("/cover", move |_, c| write_head(c, "302 Found", &[format!("Location: {other}"), "Content-Length: 0".into()]));
     assert_eq!(http_client::request(&get(&url, &[], 5000)).unwrap().body, "y");
 }
+
+#[test]
+fn same_server_calls_refuse_other_addresses_and_follow_same_server_paths() {
+    // Same scheme, host and port: followed across request, request_bytes and download.
+    let (url, seen) = serve("/rest/ping.view?u=alice&t=secrettoken&s=secretsalt", |req, c| {
+        if req.path().starts_with("/rest/") {
+            write_head(c, "302 Found", &[format!("Location: /subsonic{}", req.path()), "Content-Length: 0".into()]);
+        } else {
+            write_head(c, "200 OK", &["Content-Length: 2".into()]);
+            c.write_all(b"ok").unwrap();
+        }
+    });
+    assert_eq!(http_client::request_same_server(&get(&url, &[], 5000)).unwrap().body, "ok");
+    assert_eq!(http_client::request_bytes_same_server(&get(&url, &[], 5000)).unwrap().body, b"ok");
+    let mut sink = Keep::default();
+    let d = http_client::download_same_server(&get(&url, &[], 5000), &mut sink).unwrap();
+    assert_eq!((d.head.status, sink.body.as_slice()), (200, &b"ok"[..]));
+    let paths: Vec<String> = seen.lock().unwrap().iter().map(|s| s.path().to_owned()).collect();
+    assert!(paths.iter().any(|p| p == "/subsonic/rest/ping.view?u=alice&t=secrettoken&s=secretsalt"), "{paths:?}");
+
+    // Another port (another server): refused by every same-server entry point, and the query
+    // string never reaches the other server.
+    let (other, other_seen) = serve("/steal", |_, c| write_head(c, "200 OK", &["Content-Length: 0".into()]));
+    let (url, _) = serve("/rest/ping.view?u=alice&t=secrettoken&s=secretsalt", move |req, c| {
+        let query = req.path().split_once('?').map_or("", |(_, q)| q);
+        let status = if query.contains("301") { "301 Moved Permanently" } else { "302 Found" };
+        write_head(c, status, &[format!("Location: {other}?{query}"), "Content-Length: 0".into()]);
+    });
+    for e in [
+        http_client::request_same_server(&get(&url, &[], 5000)).unwrap_err(),
+        http_client::request_bytes_same_server(&get(&url, &[], 5000)).unwrap_err(),
+        http_client::download_same_server(&get(&url, &[], 5000), &mut Keep::default()).unwrap_err(),
+    ] {
+        let text = e.to_string();
+        assert!(text.contains("another address") && !text.contains("secret"), "{text}");
+    }
+    let url_301 = format!("{url}&case=301");
+    let e = http_client::request_same_server(&get(&url_301, &[], 5000)).unwrap_err();
+    assert!(e.to_string().contains("another address") && !e.to_string().contains("secret"), "{e}");
+    assert!(other_seen.lock().unwrap().is_empty(), "the query string reached the other server: {:?}", other_seen.lock().unwrap());
+}

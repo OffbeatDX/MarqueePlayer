@@ -3,8 +3,12 @@
 //! (`rustls-platform-verifier`: on Linux the distribution's CA bundle, as every other
 //! program there uses). Proxies come from `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` and
 //! `NO_PROXY`, as is the convention there. Statuses are answers, not errors: a 404 or a
-//! 429 comes back as a `Head`, as WinHTTP gives it. Redirects are followed (ureq's default,
-//! up to 10, to any address) unless the caller follows them itself. Without ureq's `gzip` feature nothing is decompressed: a body comes as sent.
+//! 429 comes back as a `Head`, as WinHTTP gives it. When `follow` is true, ureq follows up
+//! to 10 redirects to any address (including https to http); signed-in requests (carrying an
+//! `Authorization` header, or made via the `*_same_server` calls such as Subsonic's) pass
+//! `follow = false` and are followed by `follow_same_server` in `lib.rs` instead, which
+//! refuses scheme changes and other hosts or ports. Without ureq's `gzip` feature nothing is
+//! decompressed: a body comes as sent.
 
 use std::io::Read;
 use std::ops::ControlFlow;
