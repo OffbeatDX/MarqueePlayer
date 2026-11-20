@@ -334,11 +334,19 @@ pub fn exported(total: usize, skipped: usize) -> String {
     }
 }
 
+/// Write `tracks` to `path` as M3U8 (adding `.m3u8` when `path` has no extension),
+/// replacing any existing file atomically so a failed write leaves the old file intact.
+fn write_m3u8(tracks: &[library::Track], path: &Path, relative: bool) -> std::io::Result<PathBuf> {
+    let path: PathBuf = if path.extension().is_none() { path.with_extension("m3u8") } else { path.to_path_buf() };
+    let text = m3u::export(tracks, &path, relative);
+    crate::settings::write_durably(&path, text.as_bytes())?;
+    Ok(path)
+}
+
 /// Write `tracks` to `path` as M3U8, and say how it went.
 pub fn write_tracks(st: &Rc<State>, tracks: &[library::Track], path: &Path, relative: bool) -> bool {
-    let path: PathBuf = if path.extension().is_none() { path.with_extension("m3u8") } else { path.to_path_buf() };
-    match std::fs::write(&path, m3u::export(tracks, &path, relative)) {
-        Ok(()) => {
+    match write_m3u8(tracks, path, relative) {
+        Ok(_) => {
             let skipped = m3u::skipped(tracks);
             let text = exported(tracks.len(), skipped);
             if skipped == 0 { views::flash(st, &text) } else { views::flash_long(st, &text) }
@@ -353,12 +361,53 @@ pub fn write_tracks(st: &Rc<State>, tracks: &[library::Track], path: &Path, rela
 
 #[cfg(test)]
 mod export_tests {
+    use super::*;
+
     #[test]
     fn an_export_says_what_it_left_out() {
         assert_eq!(super::exported(12, 0), "Exported 12 tracks");
         assert_eq!(super::exported(1, 0), "Exported 1 track");
         assert_eq!(super::exported(12, 3), "Exported 9 tracks; left out 3 tracks only on the server (no file to name)");
         assert_eq!(super::exported(2, 1), "Exported 1 track; left out 1 track only on the server (no file to name)");
+    }
+
+    #[test]
+    fn export_writes_atomically_and_leaves_the_existing_file_intact_on_failure() {
+        let dir = std::env::temp_dir().join(format!("mp-playlist-export-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tracks = vec![library::Track {
+            id: 1,
+            path: dir.join("01 Song.flac").to_string_lossy().into_owned(),
+            title: "Song".into(),
+            artist: "Artist".into(),
+            duration: 123.0,
+            ..Default::default()
+        }];
+
+        // Fresh export (extension added when omitted) writes the M3U8 and leaves no temp file.
+        let dest = write_m3u8(&tracks, &dir.join("Road Trip"), true).unwrap();
+        assert_eq!(dest, dir.join("Road Trip.m3u8"));
+        let expected = m3u::export(&tracks, &dest, true);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), expected);
+        assert!(!dir.join("Road Trip.m3u8.tmp").exists(), "no temp file left behind");
+
+        // Replacing an existing file writes via the temp file: if creating the temp file fails
+        // (blocked by a directory of the same name), the old playlist is left untouched.
+        let old = "#EXTM3U\n#EXTINF:10,Old\nold.flac\n";
+        std::fs::write(&dest, old).unwrap();
+        let blocker = dir.join("Road Trip.m3u8.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        assert!(write_m3u8(&tracks, &dest, false).is_err(), "blocked temp file must fail the export");
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), old, "existing playlist stays intact on failed write");
+
+        // Once unblocked, exporting over the existing file replaces it cleanly.
+        std::fs::remove_dir(&blocker).unwrap();
+        write_m3u8(&tracks, &dest, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), m3u::export(&tracks, &dest, false));
+        assert!(!blocker.exists(), "no temp file left behind after replace");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
