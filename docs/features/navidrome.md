@@ -109,7 +109,12 @@ below the sign-in, all on by default:
   (to different values), the later change wins when both times are known (the server's star
   time, the app's own change time), else the one made here. The first sync after this came
   (nothing agreed yet) keeps every favourite of either side (starred on one, starred on both).
-  A value no side changed is never written. Offline, a change waits: a value here that differs
+  A value no side changed is never written. An answer that would unstar more than 25
+  favourites at once, and more than half of those agreed starred, is taken for one that lost its
+  stars (a server that did not say them, an answer cut short), not for the user's doing: none
+  of those unstars is taken, nothing is sent over them either, and the log says so; a few
+  unstarred on the server go as ever. A star whose time does not read is still a star, and
+  `getStarred2` answering without its stars is an error, never "nothing starred". Offline, a change waits: a value here that differs
   from the agreed one is what is still to send, so the next sync sends it, also after a restart.
   Album favourites stay the app's own. A rating changed in an earlier version and not yet sent
   is dropped, never sent (its columns in `remote_marks` are kept, unused).

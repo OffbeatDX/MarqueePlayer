@@ -12,7 +12,8 @@
 //!   cannot be reached it is not lost: the local value differs from the agreed one, and the
 //!   next sync sends it.
 //! - after a sync (`after_sync`): the pass (`pass`) with what the sync read of the server's own
-//!   values, which takes the server's changes, sends the app's, and records each agreement.
+//!   values, which takes the server's changes, sends the app's, and records each agreement. A
+//!   mass unstar in what the server said is not taken (`unstar_held`).
 //! - a play counted of a track the server has (`plays_queued`): queued in the database with the
 //!   play (`query::record_plays_for`), sent from here (`flush_plays`) oldest first, each off the
 //!   queue once the server took it; offline, it waits for the next sync.
@@ -70,10 +71,28 @@ pub fn view_of(albums: &[library::remote::RemoteAlbum]) -> View {
 pub fn view_of_starred(kept: impl IntoIterator<Item = String>, starred: &[subsonic::Song]) -> View {
     let mut v: View = kept.into_iter().map(|id| (id, Seen { starred: Some(None) })).collect();
     for s in starred {
-        let at = s.starred.as_deref().and_then(crate::server::sync::iso_ms).unwrap_or(0);
+        // Listed among the stars: starred, whatever its time says.
+        let at = crate::server::sync::star_time(s.starred.as_deref()).unwrap_or(0);
         v.insert(s.id.clone(), Seen { starred: Some(Some(at)) });
     }
     v
+}
+
+/// More favourites unstarred on the server than this at once (and more than half of those
+/// agreed starred) is taken for an answer that lost its stars (a server that did not say them, a
+/// listing cut short), not for the user's doing: none of them is taken in that pass.
+const UNSTAR_GUARD_MIN: usize = 25;
+
+/// Whether the pass is to take none of the server's unstars (`UNSTAR_GUARD_MIN`): more than 25
+/// and more than half of the favourites agreed starred. 25, as the shrink guard of a scan and a
+/// sync (`scan::GUARD_MIN_MISSING`): a user unstarring a handful, or a tenth of a large
+/// collection, on the server is let through; a server whose answer has no stars at all for a
+/// collection of any size is not. Held, the favourites stay here, nothing is sent for them
+/// either (the server's value is not pushed back over), and each pass looks again.
+fn unstar_held(rows: &[Row], plans: &[Plan<bool>]) -> bool {
+    let unstars = plans.iter().filter(|p| p.set_local == Some(false)).count();
+    let agreed = rows.iter().filter(|r| r.agreed.starred == Some(true)).count();
+    unstars > UNSTAR_GUARD_MIN && unstars * 2 > agreed
 }
 
 /// Compare every track the server has (or only `only`) with what the server said (`view`), and
@@ -93,9 +112,16 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
             Some(t) => marks::row_of(&tx, t)?.into_iter().collect(),
             None => marks::rows(&tx)?,
         };
-        for r in &rows {
-            let seen = view.get(&r.song_id).copied().unwrap_or_default();
-            let s: Plan<bool> = marks::decide_star(r.starred, &r.agreed, seen.starred);
+        let plans: Vec<Plan<bool>> = rows.iter().map(|r| marks::decide_star(r.starred, &r.agreed, view.get(&r.song_id).copied().unwrap_or_default().starred)).collect();
+        let held = unstar_held(&rows, &plans);
+        if held {
+            let n = plans.iter().filter(|p| p.set_local == Some(false)).count();
+            log::warn!("server: the server unstarred {n} favourites at once; none of them taken this time (the favourites here sent as ever)");
+        }
+        for (r, s) in rows.iter().zip(plans) {
+            if held && s.set_local == Some(false) {
+                continue;
+            }
             if let Some(v) = s.set_local {
                 marks::set_local_star(&tx, r.track_id, v, s.at)?;
                 done.changed.push(Changed { track_id: r.track_id, favourite: Some(v) });
@@ -404,11 +430,15 @@ mod tests {
     impl Fixture {
         /// Three albums of two songs (`al0-1`, `al0-2`, `al1-1`...), only on the server.
         fn new(name: &str) -> Self {
+            Self::with(name, 3)
+        }
+        /// `albums` albums of two songs.
+        fn with(name: &str, albums: u64) -> Self {
             let dir = std::env::temp_dir().join(format!("mp-serverwrite-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let mut lib = mock::Library { last_scan: Some("2026-11-01T00:00:00Z".into()), ..Default::default() };
-            lib.albums = (0..3).map(|i| mock::album(&format!("al{i}"), "Ann", &format!("Record {i}"), 2000, "2026-01-01T00:00:00Z", &[("One", 1, 200, 1000 + i, ""), ("Two", 2, 180, 2000 + i, "")])).collect();
+            lib.albums = (0..albums).map(|i| mock::album(&format!("al{i}"), "Ann", &format!("Record {i}"), 2000, "2026-01-01T00:00:00Z", &[("One", 1, 200, 1000 + i, ""), ("Two", 2, 180, 2000 + i, "")])).collect();
             let mock = Mock::start("ann", "pw", lib).unwrap();
             let (creds, _) = subsonic::sign_in(&mock.url, "ann", "pw").unwrap();
             Fixture { dir, mock, creds }
@@ -507,6 +537,58 @@ mod tests {
         for song in ["al0-1", "al0-2", "al1-1", "al1-2", "al2-1", "al2-2"] {
             assert_eq!(f.local(song), f.server(song), "{song}");
         }
+    }
+
+    /// The server's answer with no star where many were agreed (a server that does not say
+    /// them, an answer cut short): not one favourite is unstarred here, and nothing is sent
+    /// back over the server's. A few unstarred there go as ever.
+    #[test]
+    fn a_mass_unstar_from_the_server_is_not_taken() {
+        let f = Fixture::with("mass-unstar", 20);
+        let songs: Vec<String> = (0..20).flat_map(|i| [format!("al{i}-1"), format!("al{i}-2")]).collect();
+        f.mock.edit(|l| {
+            for id in &songs {
+                l.song_mut(id).unwrap().starred = Some("2026-05-01T10:00:00Z".into());
+            }
+        });
+        let client = f.client(marks_only());
+        pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        assert!(songs.iter().all(|s| f.local(s)), "the 40 stars taken and agreed");
+        // Every star gone from the answer: none taken, none sent.
+        f.mock.edit(|l| {
+            for id in &songs {
+                l.song_mut(id).unwrap().starred = None;
+            }
+        });
+        f.mock.clear_requests();
+        let d = pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        assert!(d.changed.is_empty() && d.sent == 0, "{d:?}");
+        assert!(songs.iter().all(|s| f.local(s)), "every favourite kept");
+        assert_eq!(f.writes_sent(), 0);
+        // The stars back, three unstarred there: those three are taken.
+        f.mock.edit(|l| {
+            for id in &songs[3..] {
+                l.song_mut(id).unwrap().starred = Some("2026-05-01T10:00:00Z".into());
+            }
+        });
+        let d = pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        assert_eq!(d.changed.len(), 3, "{d:?}");
+        assert!(songs[..3].iter().all(|s| !f.local(s)) && songs[3..].iter().all(|s| f.local(s)));
+    }
+
+    /// A star whose time does not read is a star, read from the album or from the stars alone.
+    #[test]
+    fn a_star_with_a_time_that_does_not_read_is_a_star() {
+        assert_eq!(crate::server::sync::star_time(Some("yesterday")), Some(0));
+        assert_eq!(crate::server::sync::star_time(None), None);
+        let f = Fixture::new("odd-time");
+        f.mock.edit(|l| l.song_mut("al0-1").unwrap().starred = Some("not a time".into()));
+        let listed = f.sync(true, true);
+        assert_eq!(listed.get("al0-1").map(|s| s.starred), Some(Some(Some(0))));
+        let stars = f.sync(false, true);
+        assert_eq!(stars.get("al0-1").map(|s| s.starred), Some(Some(Some(0))));
+        pass(&mut f.conn(), &f.client(marks_only()), &listed, None).unwrap();
+        assert!(f.local("al0-1"));
     }
 
     /// A rating changed in an older build and not yet sent when it was replaced (the local

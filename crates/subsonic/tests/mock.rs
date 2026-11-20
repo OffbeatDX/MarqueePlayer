@@ -792,6 +792,19 @@ fn writes_send_what_they_say() {
     assert_eq!((m.last().endpoint.as_str(), m.last().param("id")), ("deletePlaylist", Some("pl9")));
 }
 
+/// An "ok" answer to `getStarred2` without its `starred2` is no answer (read as nothing
+/// starred, it would unstar every favourite); an empty one is nothing starred.
+#[test]
+fn stars_missing_from_the_answer_are_an_error_not_none() {
+    let m = mock(|r| match r.param("musicFolderId") {
+        Some("empty") => ok(r#""starred2":{}"#),
+        _ => ok(""),
+    });
+    let c = m.client(true);
+    assert!(matches!(c.starred2(None), Err(Error::BadResponse(_))));
+    assert!(c.starred2(Some("empty")).unwrap().song.is_empty());
+}
+
 #[test]
 fn servers_that_send_odd_types_still_read() {
     // Ids as numbers, numbers as strings, a lone object for a list, nulls, an item that does

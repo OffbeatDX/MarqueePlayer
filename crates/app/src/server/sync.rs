@@ -534,6 +534,13 @@ pub fn iso_ms(s: &str) -> Option<i64> {
     Some(((days * 86_400 + h * 3600 + mi * 60 + sec - offset_s) * 1000) + ms)
 }
 
+/// A song's `starred` as the library keeps it: None when not starred (no time given), its time
+/// (Unix ms) when starred, 0 when starred at a time that does not read. A time that does not
+/// read is still a star: taken for none, it would unstar the favourite here.
+pub fn star_time(starred: Option<&str>) -> Option<i64> {
+    starred.map(|t| iso_ms(t).unwrap_or(0))
+}
+
 fn artists(list: &[subsonic::ArtistRef]) -> Vec<RemoteArtist> {
     list.iter().filter(|a| !a.name.trim().is_empty()).map(|a| RemoteArtist { name: a.name.clone(), mbid: None, sort_name: None }).collect()
 }
@@ -595,7 +602,7 @@ fn song_of(s: &subsonic::Song, album_artist: &str) -> RemoteSong {
         sample_rate: s.sampling_rate.filter(|r| *r > 0),
         channels: s.channel_count.and_then(|c| u8::try_from(c).ok()).filter(|c| *c > 0),
         cover_art: s.cover_art.clone().filter(|c| !c.trim().is_empty()),
-        starred: s.starred.as_deref().and_then(iso_ms),
+        starred: star_time(s.starred.as_deref()),
         rating: None,
         play_count: s.play_count.map(|n| n as i64),
         path: opt(&s.path),

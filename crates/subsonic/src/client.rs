@@ -368,7 +368,9 @@ impl Client {
 
     /// The user's starred artists, albums and songs.
     pub fn starred2(&self, music_folder_id: Option<&str>) -> Result<SearchResult, Error> {
-        self.object_or_default("getStarred2", "starred2", opt(vec![], "musicFolderId", music_folder_id))
+        // An answer without it is no answer, not "nothing starred": read as nothing starred, it
+        // would unstar every favourite.
+        self.object("getStarred2", "starred2", opt(vec![], "musicFolderId", music_folder_id))
     }
 
     /// OpenSubsonic `getLyricsBySongId` (the `songLyrics` extension): every lyrics entry the
