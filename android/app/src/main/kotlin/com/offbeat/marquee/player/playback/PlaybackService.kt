@@ -711,6 +711,8 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            // Paused through deep sleep, the timer's delay stood still: its end is checked on the real clock.
+            if (playWhenReady && sleepTimer.recheck()) AppLog.i(TAG, "sleep timer: its time ran out while paused, cancelled")
             if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM &&
                 sleepTimer.mode.value == SleepMode.EndOfTrack
             ) {

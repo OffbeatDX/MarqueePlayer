@@ -215,6 +215,10 @@ The README describes the result.
   Automotive, and a few known system packages (system UI, Assistant, Wear's companion) get the browse
   tree, the custom commands (the heart writes to the server; queue edits; sleep timer) and the cover
   grant (`ControllerTrust` in `:core`). Others get the default player commands only.
+- **The sleep timer and deep sleep**: its end is on the real-time clock, but its delay follows
+  uptime, which stops while a paused phone sleeps. When play is pressed again the timer is checked
+  against the clock: past its end it is cancelled (Off), never a sudden pause later; otherwise it is
+  armed again for the time really left.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

@@ -36,6 +36,28 @@ class SleepTimer(
         cancelJob()
         val endsAt = clock() + minutes * 60_000L
         _mode.value = SleepMode.At(endsAt)
+        arm(endsAt)
+    }
+
+    /**
+     * The timer looked at again against [clock] (playback starting, a controller asking). `delay`
+     * follows uptime, which stops while the phone is in deep sleep (paused, screen off), but the end
+     * is on the real-time clock: a timer whose end has already passed is cancelled, as if it had ended
+     * (no pause later, no fade out of nowhere); one still to come is armed again for the time really
+     * left. Returns true when it was cancelled for having ended.
+     */
+    fun recheck(): Boolean {
+        val m = _mode.value as? SleepMode.At ?: return false
+        if (clock() >= m.endsAtMs) {
+            cancel()
+            return true
+        }
+        cancelJob()
+        arm(m.endsAtMs)
+        return false
+    }
+
+    private fun arm(endsAt: Long) {
         job = scope.launch {
             val fadeStart = endsAt - FADE_MS
             delay((fadeStart - clock()).coerceAtLeast(0))
