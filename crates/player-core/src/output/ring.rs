@@ -184,10 +184,16 @@ impl Ring {
         if seq != self.cut_seen.load(Ordering::Relaxed) {
             self.cut_seen.store(seq, Ordering::Relaxed);
             let end = self.skip.load(Ordering::Acquire);
-            let len = u64::from(self.cut_len.load(Ordering::Relaxed)).min(end.saturating_sub(r)) as u32;
-            self.fade_len.store(len, Ordering::Relaxed);
-            self.fade_pos.store(0, Ordering::Relaxed);
-            self.fade_end.store(end, Ordering::Relaxed);
+            let fading = self.fade_pos.load(Ordering::Relaxed) < self.fade_len.load(Ordering::Relaxed) && r < self.fade_end.load(Ordering::Relaxed);
+            if fading && self.cut_len.load(Ordering::Relaxed) > 0 {
+                // Another cut while the last one's fade is still going (two quick seeks, with
+                // callbacks shorter than the fade): that fade goes on from where it is, and
+                // what follows it is dropped up to the new cut. Starting a fade afresh would
+                // step the gain back up to 1. (A flush drops everything at once still.)
+                self.fade_end.store(end, Ordering::Relaxed);
+            } else {
+                self.start_fade(r, end);
+            }
         }
         let (fade_len, end) = (self.fade_len.load(Ordering::Relaxed), self.fade_end.load(Ordering::Relaxed));
         let mut fade_pos = self.fade_pos.load(Ordering::Relaxed);
@@ -219,6 +225,14 @@ impl Ring {
         self.fade_pos.store(fade_pos, Ordering::Relaxed);
         self.read.store(r, Ordering::Release);
         n
+    }
+
+    /// Consumer: a cut's fade over the frames from `r`, at most up to its `end`.
+    fn start_fade(&self, r: u64, end: u64) {
+        let len = u64::from(self.cut_len.load(Ordering::Relaxed)).min(end.saturating_sub(r)) as u32;
+        self.fade_len.store(len, Ordering::Relaxed);
+        self.fade_pos.store(0, Ordering::Relaxed);
+        self.fade_end.store(end, Ordering::Relaxed);
     }
 
     /// Consumer (real-time): after a callback that handed `real` frames of audio (of
@@ -389,6 +403,35 @@ mod tests {
         let (n, out) = take_vec(&r, 4);
         assert_eq!(n, 1);
         assert_eq!(&out[..2], [0.5, 0.5]);
+    }
+
+    /// A second cut while the first one's fade is half done (callbacks shorter than the
+    /// fade, two quick seeks): the gain goes on down from where it was, never back up to
+    /// 1, and what the first cut left before the second is dropped too.
+    #[test]
+    fn a_second_cut_mid_fade_goes_on_from_the_gain_it_had() {
+        let r = Ring::new(48_000, FRAMES);
+        assert!(r.push(&vec![1.0f32; 2 * 100]));
+        r.cut(8);
+        assert!(r.push(&[0.7f32; 2 * 3]));
+        let (n, first) = take_vec(&r, 3);
+        assert_eq!(n, 3);
+        r.cut(8);
+        assert!(r.push(&[0.5f32; 2 * 4]));
+        let (n, rest) = take_vec(&r, 16);
+        let left: Vec<f32> = first.iter().chain(&rest[..n * 2]).step_by(2).copied().collect();
+        assert!(left[..8].windows(2).all(|w| w[1] < w[0]), "one fade, always down: {left:?}");
+        assert!(left[7].abs() < 1e-6, "to silence: {left:?}");
+        assert_eq!(&left[8..], [0.5; 4], "then the second cut's audio, the first's dropped: {left:?}");
+        // A flush mid-fade still drops at once.
+        let r = Ring::new(48_000, FRAMES);
+        assert!(r.push(&vec![1.0f32; 2 * 100]));
+        r.cut(8);
+        assert_eq!(take_vec(&r, 3).0, 3);
+        r.flush();
+        assert!(r.push(&[0.5f32; 2 * 2]));
+        let (n, out) = take_vec(&r, 8);
+        assert_eq!((n, &out[..4]), (2, &[0.5f32; 4][..]));
     }
 
     #[test]
