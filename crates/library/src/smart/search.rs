@@ -35,6 +35,9 @@ pub struct Parsed {
     pub clauses: Vec<Vec<Atom>>,
     /// What was not understood and was searched as text instead, a few words each.
     pub notes: Vec<String>,
+    /// A word was negated (`-live`): an operator of its own. A negated field that was not
+    /// understood (`-composer:bach`, searched as text) is not one.
+    pub negated_word: bool,
 }
 
 /// Where a query's rules are evaluated: which tracks match, or which albums.
@@ -45,10 +48,11 @@ pub enum Level {
 }
 
 impl Parsed {
-    /// Whether an operator was understood (a field, a flag or OR): the query then takes the
-    /// rules' path; without one it is plain search, exactly as before.
+    /// Whether an operator was understood (a field, a flag, OR, or a negated word such as
+    /// `-live`): the query then takes the rules' path; without one it is plain search, exactly
+    /// as before.
     pub fn has_operators(&self) -> bool {
-        self.clauses.iter().any(|c| c.len() > 1 || c.iter().any(|a| matches!(a, Atom::Rule(_))))
+        self.clauses.iter().any(|c| c.len() > 1 || c.iter().any(|a| matches!(a, Atom::Rule(_)))) || self.negated_word
     }
 
     /// The query as smart playlist rules, evaluated at `level`; None when a term cannot apply
@@ -403,6 +407,7 @@ pub fn parse(q: &str, playlist: &dyn Fn(&str) -> Option<i64>) -> Parsed {
         }
         let atom = atom(&t, playlist, &mut p.notes);
         let Some(atom) = atom else { continue };
+        p.negated_word |= t.neg && t.key.is_none();
         match p.clauses.last_mut() {
             Some(last) if joining => last.push(atom),
             _ => p.clauses.push(vec![atom]),

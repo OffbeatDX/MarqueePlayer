@@ -183,8 +183,16 @@ fn negation_flips_to_the_rules_own_opposites() {
     // What nothing could match the opposite of is text, and said.
     let parsed = p("-plays:>=0");
     assert!(!parsed.has_operators() && parsed.notes.len() == 1, "{parsed:?}");
-    // A dash inside a word, or alone, is not a negation.
+    // A dash inside a word, or alone, is not a negation; a negated field not understood is text.
     assert_eq!(p("a-ha is:local").clauses[0], vec![text(false, "a-ha")]);
+    for q in ["a-ha", "rock - live", "--live", "-composer:bach", "-re:stacks"] {
+        assert!(!p(q).has_operators(), "{q}");
+    }
+    // A negated word is an operator by itself: "jazz -live" is jazz without live, not a search
+    // for the text "jazz -live".
+    for q in ["jazz -live", "-live", "-\"live at\""] {
+        assert!(p(q).has_operators(), "{q}");
+    }
 }
 
 #[test]
@@ -330,6 +338,8 @@ fn queries_select_what_they_say_on_the_fixture() {
     assert_eq!(set(ids(&conn, "artist:beyonce")), want(&|t| t.credited.iter().any(|a| has(a, "beyonce"))));
     assert_eq!(set(ids(&conn, "love is:lossless")), want(&|t| words(t, "love") && matches!(t.codec.as_deref(), Some("FLAC" | "ALAC" | "WAV" | "AIFF"))));
     assert_eq!(set(ids(&conn, "-love plays:0")), want(&|t| !words(t, "love") && t.plays.is_empty()));
+    assert_eq!(set(ids(&conn, "band -love")), want(&|t| words(t, "band") && !words(t, "love")));
+    assert_eq!(set(ids(&conn, "-love")), want(&|t| !words(t, "love")));
     assert_eq!(set(ids(&conn, "band OR café plays:0")), want(&|t| (words(t, "band") || words(t, "café")) && t.plays.is_empty()));
     let ago = |n: i64| ctx().now - n * 86_400;
     assert_eq!(set(ids(&conn, "played:<30d")), want(&|t| t.plays.iter().any(|p| *p >= ago(30))));
@@ -371,6 +381,9 @@ fn search_takes_the_rules_path_only_with_operators() {
     // "re:stacks" alone is plain search for the text, with the hint.
     let r = crate::query::search(&conn, "re:stacks", 10).unwrap();
     assert!(!r.operators && r.notes.len() == 1);
+    // A negated word alone takes the rules: every track without the word.
+    let r = crate::query::search(&conn, "-love", 1000).unwrap();
+    assert!(r.operators && !r.tracks.is_empty() && r.tracks.iter().all(|t| !has(&t.title, "love")), "{:?}", r.tracks.len());
     // Tracks by the rules, albums with them, artists by name.
     let r = crate::query::search(&conn, "is:remote", 1000).unwrap();
     assert!(r.operators);

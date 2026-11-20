@@ -68,7 +68,7 @@ playlists](#smart-playlists)); a query without any is plain search, exactly as b
 | `added:2024`, `added:2024-03`, `added:>2023`, `added:2023..2024-06`, `played:never` | a year, month or day, after it, before it, between (local calendar, as in the editor) |
 | `is:favourite` (`favorite`, `fav`), `is:favalbum`, `is:local`, `is:remote`, `is:lossless`, `is:lossy`, `is:played`, `is:unplayed` | flags; `is:remote` is what plays from the Navidrome server (a track only it has), `is:local` what has a file here |
 | `playlist:"Road trip"` (`in:`) | in that playlist (ordinary or smart), by name |
-| `-genre:live`, `-is:remote`, `-live` | not |
+| `-genre:live`, `-is:remote`, `-live` | not; a negated word is an operator by itself (`jazz -live`, or `-live` alone: every track without the word) |
 | `genre:jazz OR genre:soul` | either (`OR` in capitals, or `|`); it binds its two neighbours, everything else must all match |
 
 Field names, flags and units ignore case (`Artist:`, `IS:Fav`); `artist: nina` (a space after
