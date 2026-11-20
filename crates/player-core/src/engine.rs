@@ -1270,7 +1270,10 @@ impl Decoder {
             let known = self.current.as_ref().is_some_and(|c| c.token == t)
                 || self.prev.as_ref().is_some_and(|r| r.token == t)
                 || self.xfade.as_ref().and_then(|x| x.incoming.as_ref()).is_some_and(|i| i.token == t);
-            if !known {
+            // A track the decoder left two hand-overs ago (tracks shorter than its lead): not
+            // a seek in what it holds now. Straight after a play-now there is no `prev`, and
+            // the status may still name the track before: that seek is for the new track.
+            if !known && self.prev.is_some() {
                 return;
             }
         }
