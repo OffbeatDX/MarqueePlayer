@@ -453,7 +453,11 @@ export component NowPlayingPage inherits Rectangle {
     if root.full: HorizontalLayout {
         x: Theme.page-margin;
         y: Theme.page-top;
-        width: root.width - 2 * Theme.page-margin - 48px;
+        // Beside the ring the title ends before the ring's circle begins: the ring is in the
+        // page's middle, level with the title.
+        width: root.ring
+            ? min(root.width - 2 * Theme.page-margin - 48px, max(220px, (root.width - min(full-stage.width, full-stage.height)) / 2 - Theme.page-margin - 12px))
+            : root.width - 2 * Theme.page-margin - 48px;
         height: root.thumb;
         spacing: 20px;
         alignment: start;
@@ -492,10 +496,14 @@ export component NowPlayingPage inherits Rectangle {
         }
     }
     full-stage := Rectangle {
+        // Under the title, down to the player bar. The ring keeps that size but sits in the
+        // middle of the page above the bar (its circle and the cover in it centred there,
+        // not pushed down by the title, which is in the corner beside it).
+        private property <length> under-title: Theme.page-top + root.thumb + 28px;
         x: Theme.page-margin;
-        y: Theme.page-top + root.thumb + 28px;
+        y: root.ring ? (root.height - Theme.bar-height - self.height) / 2 : self.under-title;
         width: root.width - 2 * Theme.page-margin;
-        height: root.height - self.y - Theme.bar-height - 20px;
+        height: root.height - self.under-title - Theme.bar-height - 20px;
         if root.full: VisualizerStage { x: 0; y: 0; width: parent.width; height: parent.height; cover: true; open: true; }
     }
     // The visualizer's menu: on and off, the style, the presets, where it shows.
