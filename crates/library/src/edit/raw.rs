@@ -446,13 +446,18 @@ fn hash_box(b: &[u8], ty: &[u8; 4], start: usize, payload: usize, end: usize, ba
     }
     if ty == b"stco" || ty == b"co64" {
         let wide = ty == b"co64";
-        let n = be32(b, payload + 4).unwrap_or(0) as usize;
-        h.update(&b[payload..payload + 8]);
+        // Read only inside this box: a box too short for its version, flags and count, or
+        // for the offsets it counts, is a malformed file, not offsets borrowed from the
+        // box after it.
+        let body = &b[payload..end];
+        let head = body.get(..8).ok_or("short chunk offsets")?;
+        let n = be32(head, 4).ok_or("short chunk offsets")? as usize;
+        h.update(head);
         for i in 0..n {
             let off = if wide {
-                b.get(payload + 8 + i * 8..payload + 16 + i * 8).map(|x| u64::from_be_bytes(x.try_into().unwrap_or([0; 8])))
+                body.get(8 + i * 8..16 + i * 8).map(|x| u64::from_be_bytes(x.try_into().unwrap_or([0; 8])))
             } else {
-                be32(b, payload + 8 + i * 4).map(u64::from)
+                be32(body, 8 + i * 4).map(u64::from)
             }
             .ok_or("short chunk offsets")?;
             h.number(off.wrapping_sub(base));
@@ -630,5 +635,50 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].0.len(), s[0].1), (300, 0));
         assert_eq!((s[1].0.len(), s[1].1), (10, 960));
+    }
+
+    fn mp4_box(ty: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut out = ((8 + payload.len()) as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(ty);
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// An `ftyp`, an `mdat` and a `moov` holding `inner`.
+    fn mp4_with(inner: &[u8]) -> Vec<u8> {
+        let mut data = mp4_box(b"ftyp", b"M4A     M4A ");
+        data.extend_from_slice(&mp4_box(b"mdat", b"abcd"));
+        data.extend_from_slice(&mp4_box(b"moov", &mp4_box(b"stbl", inner)));
+        data
+    }
+
+    #[test]
+    fn short_chunk_offset_boxes_are_malformed_not_a_panic() {
+        for ty in [b"stco", b"co64"] {
+            // Fewer than 8 payload bytes: at the end of the file, and with a box after it
+            // (whose bytes must not be read as this box's).
+            for payload in [&[][..], &[0, 0, 0, 0][..]] {
+                let mut v = RawView::default();
+                assert!(mp4_file(&mp4_with(&mp4_box(ty, payload)), &mut v).is_err(), "{ty:?}, {} bytes", payload.len());
+                let mut inner = mp4_box(ty, payload);
+                inner.extend_from_slice(&mp4_box(b"free", &[0; 16]));
+                let mut v = RawView::default();
+                assert!(mp4_file(&mp4_with(&inner), &mut v).is_err(), "{ty:?}, {} bytes, then a box", payload.len());
+            }
+            // A count of offsets that do not fit in the box, with a box after it.
+            let mut inner = mp4_box(ty, &[0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 1]);
+            inner.extend_from_slice(&mp4_box(b"free", &[0; 32]));
+            let mut v = RawView::default();
+            assert!(mp4_file(&mp4_with(&inner), &mut v).is_err(), "{ty:?} counting past its end");
+        }
+        // A well-formed one still reads.
+        let mut v = RawView::default();
+        mp4_file(&mp4_with(&mp4_box(b"stco", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 40])), &mut v).unwrap();
+
+        // Through the public entry point.
+        let dir = crate::testdir::TestDir::new("raw-mp4-short-stco");
+        let path = dir.join("bad.m4a");
+        std::fs::write(&path, mp4_with(&mp4_box(b"stco", &[0, 0, 0, 0]))).unwrap();
+        assert!(crate::edit::raw_view(&path).is_err());
     }
 }
