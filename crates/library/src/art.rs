@@ -170,30 +170,47 @@ impl ArtCache {
         self.dir.join(format!("{stem}_a.txt"))
     }
 
-    /// The accent file: the colour (`rrggbb` or `none`), then the cache format.
+    /// The accent file: the colour (`rrggbb` or `none`), then the cache format the images
+    /// were made in. Only for images just made (or taken as current): the format line is
+    /// what makes them current.
     fn write_accent(&self, stem: &str, img: &DynamicImage) -> Option<[u8; 3]> {
+        self.write_accent_as(stem, img, Some(&format_tag()))
+    }
+
+    /// The accent file with this format line, or none (images of a format not known).
+    fn write_accent_as(&self, stem: &str, img: &DynamicImage, tag: Option<&str>) -> Option<[u8; 3]> {
         let small = img.resize_exact(64, 64, FilterType::Triangle).to_rgb8();
         let colour = crate::accent::extract(small.pixels().map(|p| p.0));
         let text = colour.map_or_else(|| "none".to_owned(), |[r, g, b]| format!("{r:02x}{g:02x}{b:02x}"));
-        let _ = write_atomic(&self.accent_path(stem), format!("{text}\n{}\n", format_tag()).as_bytes());
+        let text = match tag {
+            Some(tag) => format!("{text}\n{tag}\n"),
+            None => format!("{text}\n"),
+        };
+        let _ = write_atomic(&self.accent_path(stem), text.as_bytes());
         colour
     }
 
     /// The art's accent colour as found in the art (unclamped; see `accent::usable`).
     /// Read from the cache, or computed from the thumbnail and cached for art stored
     /// before accents existed. Does file IO and decoding: call it off the UI thread.
+    ///
+    /// Computing it does not make the images current: the accent file keeps the format
+    /// line it had, and an entry without one stays without, for the upgrade to re-make.
     pub fn accent(&self, stem: &str) -> Option<[u8; 3]> {
+        let mut tag = None;
         if let Ok(text) = std::fs::read_to_string(self.accent_path(stem)) {
-            let t = text.lines().next().unwrap_or("").trim();
+            let mut lines = text.lines();
+            let t = lines.next().unwrap_or("").trim();
             if t == "none" {
                 return None;
             }
             if let Ok(v) = u32::from_str_radix(t, 16) {
                 return Some([(v >> 16) as u8, (v >> 8) as u8, v as u8]);
             }
+            tag = lines.next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned);
         }
         let img = image::open(self.paths(stem).thumb).ok()?;
-        self.write_accent(stem, &img)
+        self.write_accent_as(stem, &img, tag.as_deref())
     }
 
     /// Up to three of the art's colours, most prominent first (`accent::palette`), from the
@@ -619,6 +636,36 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "no temp files left behind: {leftovers:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An entry of an older format without an accent file: reading its accent before the
+    /// upgrade scan caches the colour, but does not stamp the images current.
+    #[test]
+    fn reading_an_accent_does_not_make_old_images_current() {
+        let dir = crate::testdir::TestDir::new("art-accent-old");
+        let cache = ArtCache::new(&dir);
+        let img = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([200, 40, 20])));
+        let mut bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png).unwrap();
+        let stem = cache.store(&bytes).unwrap();
+        assert!(cache.is_current(&stem));
+        // As made before accent files existed: the images alone.
+        std::fs::remove_file(cache.accent_path(&stem)).unwrap();
+        assert!(!cache.is_current(&stem));
+        // Worked out from the thumbnail (a JPEG: near the original's, not always equal).
+        let colour = cache.accent(&stem);
+        assert!(colour.is_some());
+        assert!(!cache.is_current(&stem), "not stamped current by reading its colour");
+        assert_eq!(cache.accent(&stem), colour, "and read back from the file");
+        // An unreadable colour on a file with a format line keeps that line.
+        std::fs::write(cache.accent_path(&stem), "??\nv1\n").unwrap();
+        assert_eq!(cache.accent(&stem), colour);
+        assert_eq!(std::fs::read_to_string(cache.accent_path(&stem)).unwrap().lines().nth(1), Some("v1"));
+        assert!(!cache.is_current(&stem));
+        // The upgrade's store re-makes it, and only that stamps it current.
+        assert_eq!(cache.store(&bytes).unwrap(), stem);
+        assert!(cache.is_current(&stem));
+        assert!(cache.accent(&stem).is_some());
     }
 
     #[test]
