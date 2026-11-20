@@ -38,8 +38,11 @@ builds, then `cargo xtask release --skip-checks` on Windows, on Ubuntu 22.04 and
 and their symbols as the run's artifacts, after checking that every system built the same
 number. It runs:
 
-- **on a tag** `v<number>`: all three systems; it seeds `.build-version` so the build gets the
-  tag's number, which must be dated today (UTC), and fails if a build got another. The run
+- **on a tag** `v<number>`: all three systems; the first job makes the number once and gives it
+  to every build in `MP_RELEASE_VERSION` (which `build.rs` and `cargo xtask release` take
+  instead of numbering by the date and state files), so builds on either side of midnight
+  carry one number. The tag's number must be dated today or yesterday (UTC), and the run
+  fails if a build got another. The run
   ends by making a **draft** GitHub release named "Marquee Player <number>" for the tag, with
   the four packages attached (not the symbols, which hold the build machines' paths and stay
   the run's artifacts) and notes generated from the commits since the last release. Nothing is
@@ -47,10 +50,11 @@ number. It runs:
   tag again after a failed run (delete it, fix, tag again) updates the draft's files rather
   than failing; a release already published is never changed;
 - **by hand** (Actions > Release > Run workflow): with an optional release number (empty:
-  today's .1) and a tick box per system, all ticked by default. A system left out is neither
-  checked nor built, and the number comparison takes only those built (a macOS runner's
-  minute costs ten Linux ones on a private repository). It only keeps the artifacts: no
-  GitHub release is made. "A test build" (`skip-checks`) packages without running the checks
+  today's .1) and a tick box per system and for the Android app, all ticked by default. A
+  system left out is neither checked nor built, and the number comparison takes only those
+  built (a macOS runner's minute costs ten Linux ones on a private repository); Android can
+  be built alone. It only keeps the artifacts: no GitHub release is made, even when started
+  from a tag. "A test build" (`skip-checks`) packages without running the checks
   first, for trying a package (a build to hand to a tester); a tag's run always checks.
 
 The same run builds the Android app's signed APK (`MarqueePlayer-<version>-android.apk`, with
