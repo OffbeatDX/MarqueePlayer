@@ -872,7 +872,7 @@ fn search_rules(conn: &Connection, p: &crate::smart::search::Parsed, limit: usiz
     if want.albums
         && let Some(s) = p.rules(Level::Albums)
     {
-        let (sel, mut params) = crate::smart::album_selection(conn, &s, ctx);
+        let (sel, mut params) = crate::smart::album_selection(conn, &s, ctx)?;
         params.push(rusqlite::types::Value::Integer(limit));
         r.albums = query_albums(
             conn,

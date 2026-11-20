@@ -610,6 +610,49 @@ fn nesting_depth_is_the_longest_path_and_matches_evaluation() {
 }
 
 #[test]
+fn a_playlist_named_many_times_over_is_compiled_once() {
+    let conn = fixture();
+    let jazz = sql_ids(&conn, &one(Cond::new(Field::Genre, Op::Is, Value::Text("jazz".into()))));
+    let add = |id: i64, json: &str| {
+        conn.execute("INSERT INTO playlists (id, name, created_at, rules) VALUES (?1, ?2, 0, ?3)", params![id, format!("Many {id}"), json]).unwrap();
+    };
+    let any_of = |names: &[i64]| {
+        let rules: Vec<String> = names.iter().map(|n| format!(r#"{{"field":"playlist","op":"in","value":{n}}}"#)).collect();
+        format!(r#"{{"match":"any","rules":[{}]}}"#, rules.join(","))
+    };
+    // A chain of six, each naming the next four times over: 4^6 paths to the last.
+    add(1006, r#"{"rules":[{"field":"genre","op":"is","value":"JAZZ"}]}"#);
+    for k in (1000..1006).rev() {
+        add(k, &any_of(&[k + 1; 4]));
+    }
+    // A lattice: two playlists a layer, each naming both of the next layer's (2^6 paths).
+    add(2060, r#"{"rules":[{"field":"genre","op":"is","value":"JAZZ"}]}"#);
+    add(2061, r#"{"rules":[{"field":"favourite","op":"yes"}]}"#);
+    for k in (0..6).rev() {
+        let below = if k == 5 { [2060, 2061] } else { [2000 + (k + 1) * 10, 2001 + (k + 1) * 10] };
+        add(2000 + k * 10, &any_of(&below));
+        add(2001 + k * 10, &any_of(&below));
+    }
+    let lib = Lib::load(&conn);
+    let names = |id: i64| one(Cond::new(Field::Playlist, Op::In, Value::Id(id)));
+    assert_eq!(check_both(&conn, &lib, &names(1000), "chain"), jazz);
+    let lattice = check_both(&conn, &lib, &names(2000), "lattice");
+    let faves = sql_ids(&conn, &one(Cond::new(Field::Favourite, Op::Yes, Value::None)));
+    assert_eq!(lattice.len(), lattice.iter().filter(|id| jazz.contains(id) || faves.contains(id)).count());
+    // The SQL grows with the playlists named, not with the paths to them.
+    let size = |id: i64| super::sql::sql_size(&conn, &names(id), None, ctx());
+    assert!(size(1000) < 8_000, "{}", size(1000));
+    assert!(size(2000) < 12_000, "{}", size(2000));
+    // "Is not in" one of them, and the albums of one, read the same.
+    check_both(&conn, &lib, &one(Cond::new(Field::Playlist, Op::NotIn, Value::Id(2000))), "not in the lattice");
+    let (sel, params) = album_selection(&conn, &names(1000), ctx()).unwrap();
+    let albums: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM albums a WHERE a.id IN ({sel})"), rusqlite::params_from_iter(params), |r| r.get(0)).unwrap();
+    let want: i64 = conn.query_row("SELECT COUNT(DISTINCT album_id) FROM tracks t WHERE t.id IN (SELECT track_id FROM track_genres WHERE fold(name) = 'jazz')", [], |r| r.get(0)).unwrap();
+    assert!(albums > 0);
+    assert_eq!(albums, want);
+}
+
+#[test]
 fn groups_nest_and_empty_rules_mean_every_track() {
     let conn = fixture();
     let lib = Lib::load(&conn);

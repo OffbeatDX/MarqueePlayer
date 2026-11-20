@@ -251,8 +251,10 @@ a timer: with the app idle nothing runs.
 **Evaluation.** One SQL query (`smart/sql.rs`), its values bound as parameters; the SQL text is
 made only of the compiler's own fragments, so typed text can never change it. Multi-valued
 fields and favourites are non-correlated `IN (…)` subqueries; plays, last played and plays in a
-period read the `plays_track_time` index (schema 9). A rule naming another smart playlist inlines
-that playlist's query; a cycle (or nesting deeper than 8) is refused in the editor (its list of
+period read the `plays_track_time` index (schema 9). A smart playlist the rules name (at any depth)
+is evaluated once, on its own, and each rule naming it looks in its ids (bound as one JSON array,
+`json_each`), so the work grows with the playlists named, not with the ways to reach them (a
+`WITH` would not do: SQLite expands one afresh at every reference); a cycle (or nesting deeper than 8) is refused in the editor (its list of
 playlists leaves out those that would come back) and, if one is stored anyway, that rule matches
 nothing and the page says so. All evaluation runs on a thread of its own with its own read
 connection (`mp-smart`): the page, the preview (150 ms after the last change, the newest asked

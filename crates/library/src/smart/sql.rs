@@ -3,10 +3,18 @@
 //! fragments, so no value can change what the query does. Multi-valued fields and
 //! favourites are non-correlated `IN (...)` subqueries (evaluated once, then looked up);
 //! plays and last played are correlated lookups on their index (`plays_track_time`, schema 9).
+//!
+//! A smart playlist that the rules name ("is in", at any depth) is evaluated once per query, on
+//! its own, and every rule naming it looks in what it holds (its ids, bound as one JSON array:
+//! `t.id IN (SELECT value FROM json_each(?))`): the work grows with the playlists named, never
+//! with the paths to them (seven playlists each naming the next ten times over would otherwise
+//! paste the last one ten million times). Pasting its rules in, or a `WITH` of it, does not do:
+//! SQLite expands a common table expression afresh at every reference, and refuses past a
+//! thousand.
 
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{Ctx, Field, Group, Kind, Limiting, MAX_DEPTH, Node, Op, Smart, Sort, SortKey, Value, ago};
 use crate::query::{TRACK_COLS, Track, track_row};
@@ -73,7 +81,21 @@ struct Compiler<'c> {
     /// (a problem, or a rule this build cannot use): what it holds may be less than it
     /// should, so "is not in" it would be more, and is refused.
     lossy: bool,
+    /// What a smart playlist named under a given stack (`Key`) holds, as a JSON array of
+    /// ids, whether it is lossy, and whether it has a rule this build cannot use.
+    named: HashMap<Key, (String, bool, bool)>,
+    /// The smart playlists each smart playlist names, at any depth.
+    reach: HashMap<i64, HashSet<i64>>,
+    /// The first error evaluating a named playlist (returned instead of a result).
+    error: Option<rusqlite::Error>,
+    /// How much SQL the named playlists took, in bytes (for tests).
+    named_sql: usize,
 }
+
+/// What a named smart playlist holds depends on: the playlist, how deep it is entered (the
+/// depth limit), and which of the playlists already being compiled it names, at any depth
+/// (each such rule matches nothing). The rest of the stack changes nothing.
+type Key = (i64, usize, Vec<i64>);
 
 impl Compiler<'_> {
     fn problem(&mut self, p: String) {
@@ -337,27 +359,82 @@ impl Compiler<'_> {
                     self.problem(format!("Smart playlists refer to each other too deeply at “{name}”: that rule matches nothing."));
                     return Frag::of("0");
                 }
-                let inner = Smart::from_json(&rules);
-                let outer = std::mem::replace(&mut self.lossy, inner.incomplete());
-                self.stack.push(id);
-                let sel = self.selection(&inner);
-                self.stack.pop();
-                let lossy = std::mem::replace(&mut self.lossy, outer);
+                let reach = self.reach(id);
+                let mut met: Vec<i64> = self.stack.iter().copied().filter(|s| reach.contains(s)).collect();
+                met.sort_unstable();
+                let key = (id, self.stack.len(), met);
+                let (ids, lossy, incomplete) = match self.named.get(&key) {
+                    Some(c) => c.clone(),
+                    None => {
+                        let inner = Smart::from_json(&rules);
+                        let incomplete = inner.incomplete();
+                        let outer = std::mem::replace(&mut self.lossy, incomplete);
+                        self.stack.push(id);
+                        let sel = self.selection(&inner);
+                        self.stack.pop();
+                        let lossy = std::mem::replace(&mut self.lossy, outer);
+                        let ids = match self.ids(sel) {
+                            Ok(ids) => ids,
+                            Err(e) => {
+                                self.error.get_or_insert(e);
+                                "[]".to_owned()
+                            }
+                        };
+                        self.named.insert(key, (ids.clone(), lossy, incomplete));
+                        (ids, lossy, incomplete)
+                    }
+                };
                 if lossy {
                     if c.op == Op::NotIn {
                         self.problem(format!("“{name}” has a rule that matches nothing here, so “is not in” it matches nothing too."));
                         return Frag::of("0");
                     }
                     self.lossy = true;
-                    if inner.incomplete() {
+                    if incomplete {
                         self.problem(format!("“{name}” has a rule that matches nothing here: it holds only what its other rules match."));
                     }
                 }
-                let mut f = Frag::of(&format!("t.id {not}IN ("));
-                f.f(sel).s(")");
+                let mut f = Frag::of(&format!("t.id {not}IN (SELECT value FROM json_each("));
+                f.p(ids).s("))");
                 f
             }
         }
+    }
+
+    /// The ids selection `sel` gives, as a JSON array.
+    fn ids(&mut self, sel: Frag) -> rusqlite::Result<String> {
+        self.named_sql += sel.sql.len();
+        let mut st = self.conn.prepare_cached(&sel.sql)?;
+        let ids = st.query_map(params_from_iter(sel.params), |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        let mut json = String::with_capacity(ids.len() * 6 + 2);
+        json.push('[');
+        for (i, id) in ids.iter().enumerate() {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&id.to_string());
+        }
+        json.push(']');
+        Ok(json)
+    }
+
+    /// The smart playlists `id`'s rules name, at any depth (`id` too if they come back to it).
+    fn reach(&mut self, id: i64) -> HashSet<i64> {
+        if let Some(r) = self.reach.get(&id) {
+            return r.clone();
+        }
+        let mut seen = HashSet::new();
+        let mut todo = vec![id];
+        while let Some(p) = todo.pop() {
+            let Ok(Some(Some(rules))) = playlist_rules(self.conn, p) else { continue };
+            for r in references(&Smart::from_json(&rules)) {
+                if seen.insert(r) {
+                    todo.push(r);
+                }
+            }
+        }
+        self.reach.insert(id, seen.clone());
+        seen
     }
 
     /// ORDER BY terms for `s`: its key (missing values last, whichever way round), then the
@@ -407,7 +484,7 @@ impl Compiler<'_> {
 }
 
 fn compiler(conn: &Connection, me: Option<i64>, ctx: Ctx) -> Compiler<'_> {
-    Compiler { conn, ctx, stack: me.into_iter().collect(), problems: Vec::new(), lossy: false }
+    Compiler { conn, ctx, stack: me.into_iter().collect(), problems: Vec::new(), lossy: false, named: HashMap::new(), reach: HashMap::new(), error: None, named_sql: 0 }
 }
 
 fn problems(smart: &Smart, c: Compiler<'_>) -> Vec<String> {
@@ -428,6 +505,9 @@ pub fn evaluate(conn: &Connection, smart: &Smart, me: Option<i64>, ctx: Ctx) -> 
     f.s(" ORDER BY ");
     let o = c.order(&smart.order(), smart.seed);
     f.f(o);
+    if let Some(e) = c.error.take() {
+        return Err(e);
+    }
     let mut st = conn.prepare_cached(&f.sql)?;
     let tracks = st.query_map(params_from_iter(f.params), track_row)?.collect::<rusqlite::Result<Vec<Track>>>()?;
     Ok(Outcome { tracks, problems: problems(smart, c) })
@@ -440,6 +520,9 @@ pub fn evaluate_ids(conn: &Connection, smart: &Smart, me: Option<i64>, ctx: Ctx)
     f.s(" ORDER BY ");
     let o = c.order(&smart.order(), smart.seed);
     f.f(o);
+    if let Some(e) = c.error.take() {
+        return Err(e);
+    }
     let mut st = conn.prepare_cached(&f.sql)?;
     let ids = st.query_map(params_from_iter(f.params), |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
     Ok((ids, problems(smart, c)))
@@ -449,16 +532,34 @@ pub fn evaluate_ids(conn: &Connection, smart: &Smart, me: Option<i64>, ctx: Ctx)
 pub fn count(conn: &Connection, smart: &Smart, me: Option<i64>, ctx: Ctx) -> rusqlite::Result<(usize, f64)> {
     let mut c = compiler(conn, me, ctx);
     let f = c.query(smart, "COUNT(*), COALESCE(SUM(t.duration), 0)");
+    if let Some(e) = c.error.take() {
+        return Err(e);
+    }
     let mut st = conn.prepare_cached(&f.sql)?;
     st.query_row(params_from_iter(f.params), |r| Ok((r.get::<_, i64>(0)? as usize, r.get(1)?)))
 }
 
 /// The albums with a track `smart` holds, as a subquery (`SELECT DISTINCT t.album_id ...`) with
 /// its parameters in order, to go inside `IN (...)` of a query of albums (search by operators).
-pub fn album_selection(conn: &Connection, smart: &Smart, ctx: Ctx) -> (String, Vec<Sql>) {
+pub fn album_selection(conn: &Connection, smart: &Smart, ctx: Ctx) -> rusqlite::Result<(String, Vec<Sql>)> {
     let mut c = compiler(conn, None, ctx);
     let f = c.query(smart, "DISTINCT t.album_id");
-    (f.sql, f.params)
+    match c.error.take() {
+        Some(e) => Err(e),
+        None => Ok((f.sql, f.params)),
+    }
+}
+
+/// How much SQL `evaluate_ids` runs for `smart`, in bytes: its own query and the named
+/// playlists' (for tests).
+#[cfg(test)]
+pub fn sql_size(conn: &Connection, smart: &Smart, me: Option<i64>, ctx: Ctx) -> usize {
+    let mut c = compiler(conn, me, ctx);
+    let mut f = c.query(smart, "t.id");
+    f.s(" ORDER BY ");
+    let o = c.order(&smart.order(), smart.seed);
+    f.f(o);
+    f.sql.len() + c.named_sql
 }
 
 /// A playlist's stored rules: None if there is no such playlist, Some(None) for an ordinary
