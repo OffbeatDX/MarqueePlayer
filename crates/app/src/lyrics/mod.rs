@@ -425,14 +425,23 @@ impl Offsets {
     }
 }
 
-/// A small file replaced whole: written beside it, then moved over it.
+/// Numbers each write's temp file, so writers racing for one file (the server's lyrics of one
+/// song, from two `mp-lyrics` threads) never share one.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// A small file replaced whole: written beside it under a name of its own, then moved over it;
+/// if either fails, the temp file is removed.
 fn write_whole(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let tmp = file.with_extension("json.new");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, file)
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = file.with_extension(format!("json.{}.{seq}.new", std::process::id()));
+    let r = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, file));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
 }
 
 // ---- the server's lyrics ---------------------------------------------------------------
@@ -468,10 +477,8 @@ fn from_server(dir: &std::path::Path, client: Option<&subsonic::Client>, song_id
         Ok(list) => {
             let l = pick_server(&list);
             let k = Kept { asked: now_secs(), synced: l.as_ref().is_some_and(|l| l.synced), lines: l.map(|l| l.lines.into_iter().map(|x| (x.time_ms, x.text)).collect()) };
-            let _ = std::fs::create_dir_all(dir);
-            let tmp = file.with_extension("json.new");
-            if std::fs::write(&tmp, serde_json::to_vec(&k).unwrap_or_default()).is_ok() {
-                let _ = std::fs::rename(&tmp, &file);
+            if let Err(e) = write_whole(&file, &serde_json::to_vec(&k).unwrap_or_default()) {
+                log::info!("lyrics from the server: cannot keep them in {}: {e}", file.display());
             }
             as_lyrics(&k)
         }
@@ -522,6 +529,44 @@ mod tests {
         assert!(!l.synced && l.lines[0].time_ms.is_none());
         assert!(pick_server(&[entry(true, None, &[(Some(0), " ")])]).is_none(), "nothing to show");
         assert!(pick_server(&[]).is_none());
+    }
+
+    #[test]
+    fn racing_writes_of_the_servers_lyrics_each_use_their_own_temp_file() {
+        let dir = std::env::temp_dir().join(format!("mp-lyrics-server-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let names = |dir: &std::path::Path| {
+            let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            v.sort();
+            v
+        };
+        // Writers for the same song at once: the file is always one whole answer, and no temp
+        // file is left (a rename the system refuses removes its own).
+        let file = dir.join("s1.json");
+        let writers: Vec<_> = (0..6)
+            .map(|w| {
+                let file = file.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40 {
+                        let lines = (0..200).map(|n| (Some(n * 10), format!("writer {w} pass {i} line {n}"))).collect();
+                        let k = Kept { asked: now_secs(), synced: true, lines: Some(lines) };
+                        let _ = write_whole(&file, &serde_json::to_vec(&k).unwrap());
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let k: Kept = serde_json::from_slice(&std::fs::read(&file).unwrap()).expect("one whole answer");
+        assert_eq!(k.lines.unwrap().len(), 200);
+        assert_eq!(names(&dir), vec!["s1.json"]);
+        // A write that cannot be moved into place (a folder is in the way) leaves nothing behind.
+        let blocked = dir.join("s2.json");
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(write_whole(&blocked, b"{}").is_err());
+        assert_eq!(names(&dir), vec!["s1.json", "s2.json"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
