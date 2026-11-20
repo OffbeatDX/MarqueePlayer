@@ -452,16 +452,97 @@ class OfflineTest {
     @Test
     fun aTrackIsRetriedThenSkippedAfterThreeFailures() {
         val r = PlaybackRecovery()
-        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t1", networkError = true, online = true))
-        assertEquals(PlaybackRecovery.Action.WaitForNetwork(2), r.onError("t1", networkError = true, online = false))
-        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t1", networkError = true, online = true))
+        val retryable = PlaybackRecovery.FailureKind.Retryable
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t1", retryable, online = true))
+        assertEquals(PlaybackRecovery.Action.WaitForNetwork(2), r.onError("t1", retryable, online = false))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t1", retryable, online = true))
         // A new track starts counting afresh; playing resets the count.
-        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t2", true, true))
-        assertEquals(PlaybackRecovery.Action.Retry(4_000, 2), r.onError("t2", true, true))
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t2", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Retry(4_000, 2), r.onError("t2", retryable, true))
         r.onPlaying("t2")
-        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t2", true, true))
-        // Not a network error: retrying won't help.
-        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t3", networkError = false, online = true))
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t2", retryable, true))
+        // Not a retryable error: retrying won't help.
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t3", PlaybackRecovery.FailureKind.NotFound, online = true))
+    }
+
+    @Test
+    fun httpStatusesAndIoErrorsAreClassifiedProperly() {
+        for (code in listOf(408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 599)) {
+            assertEquals("HTTP $code", PlaybackRecovery.FailureKind.Retryable, PlaybackRecovery.classify(code, networkIo = false))
+        }
+        assertEquals(PlaybackRecovery.FailureKind.Auth, PlaybackRecovery.classify(401, networkIo = false))
+        assertEquals(PlaybackRecovery.FailureKind.Auth, PlaybackRecovery.classify(403, networkIo = false))
+        assertEquals(PlaybackRecovery.FailureKind.NotFound, PlaybackRecovery.classify(404, networkIo = false))
+        for (code in listOf(400, 410, 451)) {
+            assertEquals("HTTP $code", PlaybackRecovery.FailureKind.Other, PlaybackRecovery.classify(code, networkIo = false))
+        }
+        // HTTP status takes precedence over the generic IO flag.
+        assertEquals(PlaybackRecovery.FailureKind.Auth, PlaybackRecovery.classify(401, networkIo = true))
+        assertEquals(PlaybackRecovery.FailureKind.NotFound, PlaybackRecovery.classify(404, networkIo = true))
+        // Without an HTTP status, network IO errors retry and everything else skips.
+        assertEquals(PlaybackRecovery.FailureKind.Retryable, PlaybackRecovery.classify(null, networkIo = true))
+        assertEquals(PlaybackRecovery.FailureKind.Other, PlaybackRecovery.classify(null, networkIo = false))
+    }
+
+    @Test
+    fun authFailurePausesImmediatelyWithoutRetryingOrSkipping() {
+        val r = PlaybackRecovery()
+        assertEquals(
+            PlaybackRecovery.Action.Pause(PlaybackRecovery.FailureKind.Auth),
+            r.onError("t1", PlaybackRecovery.FailureKind.Auth, online = true),
+        )
+        assertEquals(
+            PlaybackRecovery.Action.Pause(PlaybackRecovery.FailureKind.Auth),
+            r.onError("t1", PlaybackRecovery.FailureKind.Auth, online = false),
+        )
+    }
+
+    @Test
+    fun threeConsecutiveTracksFailingForTheSameKindPausesPlayback() {
+        val r = PlaybackRecovery()
+        val retryable = PlaybackRecovery.FailureKind.Retryable
+        // Track 1 exhausts its 3 retries -> Skip (1st consecutive failed track).
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t1", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Retry(4_000, 2), r.onError("t1", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t1", retryable, true))
+        // Track 2 exhausts its 3 retries -> Skip (2nd consecutive failed track).
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t2", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Retry(4_000, 2), r.onError("t2", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t2", retryable, true))
+        // Track 3 (or repeat-all back to t1) exhausts its 3 retries -> Pause instead of skipping on.
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t3", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Retry(4_000, 2), r.onError("t3", retryable, true))
+        assertEquals(PlaybackRecovery.Action.Pause(retryable), r.onError("t3", retryable, true))
+
+        // After pausing, the counters reset so a later manual play gets fresh attempts.
+        assertEquals(PlaybackRecovery.Action.Retry(2_000, 1), r.onError("t3", retryable, true))
+    }
+
+    @Test
+    fun threeConsecutiveNotFoundTracksPauseAndPlayingResetsTheStreak() {
+        val r = PlaybackRecovery()
+        val notFound = PlaybackRecovery.FailureKind.NotFound
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t1", notFound, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t2", notFound, true))
+        // Playing a track resets the cross-track streak even though track t3 had no prior errors.
+        r.onPlaying("t3")
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t4", notFound, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t5", notFound, true))
+        assertEquals(PlaybackRecovery.Action.Pause(notFound), r.onError("t6", notFound, true))
+    }
+
+    @Test
+    fun differentFailureKindsDoNotCombineToPause() {
+        val r = PlaybackRecovery()
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t1", PlaybackRecovery.FailureKind.NotFound, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t2", PlaybackRecovery.FailureKind.NotFound, true))
+        // A different kind starts its own streak at 1 instead of triggering a pause.
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t3", PlaybackRecovery.FailureKind.Other, true))
+        assertEquals(PlaybackRecovery.Action.Skip, r.onError("t4", PlaybackRecovery.FailureKind.Other, true))
+        assertEquals(
+            PlaybackRecovery.Action.Pause(PlaybackRecovery.FailureKind.Other),
+            r.onError("t5", PlaybackRecovery.FailureKind.Other, true),
+        )
     }
 
     @Test

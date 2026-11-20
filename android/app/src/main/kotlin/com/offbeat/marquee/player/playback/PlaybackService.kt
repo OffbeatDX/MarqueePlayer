@@ -17,6 +17,7 @@ import androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceBitmapLoader
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.ShuffleOrder
@@ -51,6 +52,7 @@ import com.offbeat.marquee.core.subsonic.Song
 import com.offbeat.marquee.core.subsonic.SubsonicError
 import com.offbeat.marquee.player.BuildConfig
 import com.offbeat.marquee.player.MainActivity
+import com.offbeat.marquee.player.R
 import com.offbeat.marquee.player.art.Covers
 import com.offbeat.marquee.player.data.Item
 import com.offbeat.marquee.player.data.Library
@@ -219,6 +221,7 @@ class PlaybackService : MediaLibraryService() {
             AppSession.client.collect { c ->
                 if (c == null && signedIn) {
                     AppLog.i(TAG, "signed out: clearing the queue")
+                    recovery.reset()
                     player.stop()
                     player.clearMediaItems()
                     prefetcher.stop()
@@ -353,12 +356,28 @@ class PlaybackService : MediaLibraryService() {
 
     private fun itemKey(item: MediaItem) = "${item.mediaId}#${SongItems.uid(item)}"
 
-    /** IO errors that mean the network, not the file: worth retrying. */
-    private fun isNetworkError(e: PlaybackException) = e.errorCode in setOf(
-        PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
-        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
-    ) || (e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS && e.cause?.message?.contains("50") == true)
+    /** Walks the cause chain for the HTTP status code when Media3 reported a bad HTTP response. */
+    private fun httpStatusOf(e: Throwable): Int? {
+        var cur: Throwable? = e
+        val seen = HashSet<Throwable>()
+        while (cur != null && seen.add(cur)) {
+            if (cur is HttpDataSource.InvalidResponseCodeException) return cur.responseCode
+            cur = cur.cause
+        }
+        return null
+    }
+
+    private fun classifyError(e: PlaybackException): PlaybackRecovery.FailureKind =
+        PlaybackRecovery.classify(httpStatusOf(e), e.errorCode in NETWORK_IO_ERRORS)
+
+    private fun pauseNotice(kind: PlaybackRecovery.FailureKind): String = getString(
+        when (kind) {
+            PlaybackRecovery.FailureKind.Auth -> R.string.notice_auth_failed
+            PlaybackRecovery.FailureKind.Retryable -> R.string.notice_paused_server_error
+            PlaybackRecovery.FailureKind.NotFound -> R.string.notice_paused_tracks_missing
+            PlaybackRecovery.FailureKind.Other -> R.string.notice_paused_tracks_unplayable
+        },
+    )
 
     private fun onError(error: PlaybackException) {
         val item = player.currentMediaItem ?: return
@@ -372,7 +391,8 @@ class PlaybackService : MediaLibraryService() {
             }
             return
         }
-        when (val action = recovery.onError(itemKey(item), isNetworkError(error), online)) {
+        val kind = classifyError(error)
+        when (val action = recovery.onError(itemKey(item), kind, online)) {
             is PlaybackRecovery.Action.Retry -> {
                 AppLog.i(TAG, "recovery: failure ${action.failures} on ${item.mediaId}, retrying in ${action.afterMs} ms")
                 retryJob = scope.launch {
@@ -386,7 +406,13 @@ class PlaybackService : MediaLibraryService() {
             }
             PlaybackRecovery.Action.Skip -> {
                 notice("Couldn't play “${item.mediaMetadata.title}”, skipped")
-                skipToPlayable("failed ${if (isNetworkError(error)) "3 times" else "(${error.errorCodeName})"}")
+                skipToPlayable("failed ${if (kind == PlaybackRecovery.FailureKind.Retryable) "3 times" else "(${error.errorCodeName})"}")
+            }
+            is PlaybackRecovery.Action.Pause -> {
+                AppLog.i(TAG, "recovery: pausing (${action.kind.name.lowercase()}) on ${item.mediaId}")
+                waitingForNetwork = false
+                player.pause()
+                notice(pauseNotice(action.kind))
             }
         }
     }
@@ -685,8 +711,9 @@ class PlaybackService : MediaLibraryService() {
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            // The error's cause can carry a request; log only its kind.
-            AppLog.w(TAG, "playback error: ${error.errorCodeName} (${error.cause?.javaClass?.simpleName})")
+            // The error's cause can carry a request; log only its kind or HTTP status.
+            val detail = httpStatusOf(error)?.let { "HTTP $it" } ?: error.cause?.javaClass?.simpleName
+            AppLog.w(TAG, "playback error: ${error.errorCodeName} ($detail)")
             onError(error)
         }
 
@@ -1212,5 +1239,10 @@ class PlaybackService : MediaLibraryService() {
     private companion object {
         const val TAG = "MarqueePlayback"
         const val SAVE_EVERY_MS = 30_000L
+        val NETWORK_IO_ERRORS = setOf(
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+        )
     }
 }

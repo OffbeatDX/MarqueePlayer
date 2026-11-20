@@ -3,4 +3,8 @@
     <string name="widget_description">Now playing, with play, pause and skip</string>
     <string name="widget_preview_title">Marquee Player</string>
     <string name="widget_preview_subtitle">Play from your library</string>
+    <string name="notice_auth_failed">The server refused the sign-in. Sign in again in Settings.</string>
+    <string name="notice_paused_server_error">Can\'t reach the server, playback paused</string>
+    <string name="notice_paused_tracks_missing">Those tracks aren\'t on the server, playback paused</string>
+    <string name="notice_paused_tracks_unplayable">Couldn\'t play those tracks, playback paused</string>
 </resources>
