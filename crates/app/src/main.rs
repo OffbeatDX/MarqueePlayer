@@ -207,6 +207,7 @@ fn run() {
         paths: paths.clone(),
         settings: RefCell::new(settings),
         settings_dirty: Cell::new(true),
+        settings_delay: Cell::default(),
         settings_held: !settings_replaceable,
         db,
         art,

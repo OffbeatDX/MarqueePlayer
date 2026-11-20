@@ -723,7 +723,7 @@ pub fn tick(st: &Rc<State>) {
     crate::connections::presence::update(st, &s);
     crate::visualizer::wake(st);
     crate::sync_tray();
-    st.flush_settings();
+    st.save_settings_when_due();
     crate::session::autosave(st, false);
 }
 

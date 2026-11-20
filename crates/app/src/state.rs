@@ -8,6 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use library::ArtCache;
 use player_core::Player;
@@ -96,6 +97,8 @@ pub struct State {
     pub paths: Paths,
     pub settings: RefCell<Settings>,
     pub settings_dirty: Cell<bool>,
+    /// When the changes in `settings_dirty` are to be written (`SaveDelay`).
+    pub settings_delay: Cell<SaveDelay>,
     /// settings.json was there but could not be read, and no copy of it could be kept: it is
     /// not written over this run (the user's folders and the rest would be lost with it).
     pub settings_held: bool,
@@ -190,23 +193,50 @@ impl State {
         prune_tokens(&mut self.tokens.borrow_mut(), token);
     }
 
-    /// Saved on the next tick, which comes soon (`ticker::kick`).
+    /// Saved about a second after the last change (`SaveDelay`), on a tick: a slider dragged
+    /// across writes the file once it is let go, not ten times a second. Each change kicks the
+    /// ticker (`ticker::kick`), so the tick that writes it comes even with nothing playing.
     pub fn save_settings_soon(&self) {
         self.settings_dirty.set(true);
+        let mut d = self.settings_delay.get();
+        d.changed(Instant::now());
+        self.settings_delay.set(d);
         crate::ticker::kick();
     }
 
+    /// Each tick: write what changed once it is due (`save_settings_soon`). A crash or a power
+    /// cut before then loses the changes of that last second or so (at most `SaveDelay::LONGEST`
+    /// of a change made over and over); every one before is on the disk.
+    pub fn save_settings_when_due(&self) {
+        let due = self.settings_dirty.get() && self.settings_delay.get().due(Instant::now());
+        self.note_placement(due);
+        if due {
+            self.write_settings();
+        }
+    }
+
+    /// Write what changed now, not waiting for it to be due: at exit, when the session ends,
+    /// and wherever the file must be current at once.
     pub fn flush_settings(&self) {
-        // The window's placement goes with the settings: looked at every few seconds
-        // (not on every tick, so a drag does not rewrite the file), when something
-        // else is being saved anyway, and at exit.
+        self.note_placement(self.settings_dirty.get());
+        self.write_settings();
+    }
+
+    /// The window's placement goes with the settings: looked at every few seconds (not on
+    /// every tick, so a drag does not rewrite the file), when something else is being saved
+    /// anyway (`now`), and at exit. Moved: saved like any other change.
+    fn note_placement(&self, now: bool) {
         if let Some(app) = self.app.upgrade()
-            && let Some(w) = crate::placement::poll(&app, self.hwnd.get(), self.settings_dirty.get())
+            && let Some(w) = crate::placement::poll(&app, self.hwnd.get(), now)
             && self.settings.borrow().window != Some(w)
         {
             self.settings.borrow_mut().window = Some(w);
-            self.settings_dirty.set(true);
+            self.save_settings_soon();
         }
+    }
+
+    fn write_settings(&self) {
+        self.settings_delay.set(SaveDelay::default());
         if self.settings_held {
             self.settings_dirty.set(false);
             return;
@@ -220,6 +250,33 @@ impl State {
                     crate::views::flash_long(st, &format!("Settings cannot be saved in {folder}: the folder is read-only or the disk is full"));
                 });
             }
+        }
+    }
+}
+
+/// When changed settings are written: `QUIET` after the last change, so a run of changes (a
+/// slider dragged, a key held) is one write, but no later than `LONGEST` after the first, so
+/// one going on and on is still saved now and then. Settings marked changed without a time
+/// (`settings_dirty` set directly) are due at once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SaveDelay {
+    first: Option<Instant>,
+    last: Option<Instant>,
+}
+
+impl SaveDelay {
+    pub const QUIET: Duration = Duration::from_secs(1);
+    pub const LONGEST: Duration = Duration::from_secs(5);
+
+    pub fn changed(&mut self, now: Instant) {
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+    }
+
+    pub fn due(&self, now: Instant) -> bool {
+        match (self.first, self.last) {
+            (Some(first), Some(last)) => now >= last + Self::QUIET || now >= first + Self::LONGEST,
+            _ => true,
         }
     }
 }
@@ -249,5 +306,32 @@ mod tests {
         let mut many: HashMap<u64, u64> = (1..=1000).map(|t| (t, 0)).collect();
         prune_tokens(&mut many, 1000 - TOKENS_KEPT);
         assert_eq!(many.len() as u64, TOKENS_KEPT + 1);
+    }
+
+    #[test]
+    fn settings_changes_are_written_a_second_after_the_last_and_within_five_seconds() {
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        // Marked changed without a time: due at once.
+        assert!(SaveDelay::default().due(t0));
+        // A slider dragged for two seconds, a change every 100 ms: not written while it moves.
+        let mut d = SaveDelay::default();
+        for n in (0..=2000).step_by(100) {
+            d.changed(ms(n));
+            assert!(!d.due(ms(n)), "written at {n} ms, mid-drag");
+            assert!(!d.due(ms(n + 99)));
+        }
+        assert!(!d.due(ms(2999)));
+        assert!(d.due(ms(3000)), "a second after it was let go");
+        // Dragged on and on: still written five seconds after the first change.
+        let mut d = SaveDelay::default();
+        for n in (0..=10_000).step_by(100) {
+            d.changed(ms(n));
+            if d.due(ms(n)) {
+                assert_eq!(n, 5000);
+                return;
+            }
+        }
+        panic!("never written while a change went on and on");
     }
 }

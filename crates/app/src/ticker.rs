@@ -11,8 +11,9 @@
 //! - not playing, hidden: not at all.
 //!
 //! Anything that changes playback or asks for a save calls `kick`, which runs at the
-//! full rate for a moment (`SETTLE`), so a pause, a seek or a settings change is shown
-//! and saved promptly whatever the rate was.
+//! full rate for a moment (`SETTLE`), so a pause or a seek is shown promptly whatever
+//! the rate was, and a settings change is saved when it is due (`state::SaveDelay`, a
+//! second after the last change: within `SETTLE`).
 
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
