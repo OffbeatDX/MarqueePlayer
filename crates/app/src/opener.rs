@@ -7,7 +7,8 @@
 //! (a negative track id marks them; nothing is recorded for them). Folders are opened as
 //! the audio files under them, in path order. A drop on the queue (the queue sidebar, or
 //! Up next on now playing) adds to the end of the queue; anywhere else plays now. Playlist
-//! files (.m3u, .m3u8) among the dropped are imported as playlists (`playlistfile`).
+//! files (.m3u, .m3u8), dropped or on the command line, are imported as playlists
+//! (`playlists::file`).
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -27,8 +28,8 @@ pub enum Mode {
     Append,
 }
 
-/// Audio files and folders named on the command line, made absolute (a second launch
-/// may run in another folder).
+/// Audio files, playlist files and folders named on the command line, made absolute (a
+/// second launch may run in another folder).
 pub fn args() -> Vec<PathBuf> {
     std::env::args_os()
         .skip(1)
@@ -36,8 +37,13 @@ pub fn args() -> Vec<PathBuf> {
         .filter(|a| !a.to_string_lossy().starts_with("--"))
         .map(PathBuf::from)
         .filter_map(|p| std::path::absolute(&p).ok())
-        .filter(|p| p.is_dir() || (p.is_file() && scan::is_audio(p)))
+        .filter(|p| openable(p))
         .collect()
+}
+
+/// A folder, an audio file or a playlist file: what "Open with" and a drop can open.
+fn openable(p: &Path) -> bool {
+    p.is_dir() || (p.is_file() && (scan::is_audio(p) || crate::playlists::file::is_playlist_file(p)))
 }
 
 /// Files under `paths` (folders walked, in path order), audio only, in the order given. A
@@ -161,11 +167,16 @@ pub fn from_outside(paths: Vec<PathBuf>, at: Option<(i32, i32)>) {
             }
             _ => Mode::Play,
         };
-        // Playlist files (dropped) are imported, asking before any name clash; the rest plays.
-        let (lists, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| p.is_file() && crate::playlists::file::is_playlist_file(p));
-        crate::playlists::file::import_files(st, lists);
-        open(st, paths, mode);
+        open_given(st, paths, mode);
     });
+}
+
+/// What the command line, a second launch or a drop gave: playlist files are imported, asking
+/// before any name clash; the rest plays (or is queued).
+pub fn open_given(st: &Rc<State>, paths: Vec<PathBuf>, mode: Mode) {
+    let (lists, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| p.is_file() && crate::playlists::file::is_playlist_file(p));
+    crate::playlists::file::import_files(st, lists);
+    open(st, paths, mode);
 }
 
 /// Whether a window point (physical pixels) is over the queue: the queue sidebar while it
@@ -204,6 +215,20 @@ mod tests {
         let t = outside_track(&d.join("single.mp3"), -3);
         assert_eq!((t.id, t.title.as_str(), t.album_id), (-3, "single", -1), "untagged: named after the file");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn playlist_files_can_be_opened_from_outside() {
+        let d = std::env::temp_dir().join(format!("mp-opener-args-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for f in ["a.flac", "mix.m3u", "MIX.M3U8", "notes.txt"] {
+            std::fs::write(d.join(f), b"x").unwrap();
+        }
+        let kept: Vec<bool> = ["a.flac", "mix.m3u", "MIX.M3U8", "notes.txt", "gone.m3u"].iter().map(|f| openable(&d.join(f))).collect();
+        assert!(openable(&d));
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(kept, [true, true, true, false, false]);
     }
 
     /// A link (a junction on Windows) inside a folder back to that folder: its files once.

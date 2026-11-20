@@ -113,7 +113,8 @@ fn run() {
         std::process::exit(1);
     }
 
-    // Audio files or folders on the command line (an "Open with", a drop on the exe).
+    // Audio files, playlist files or folders on the command line (an "Open with", a drop on
+    // the exe).
     let open_args = opener::args();
     // One instance per data folder: a second launch brings the first one's window back,
     // and hands it the files it was given.
@@ -306,9 +307,10 @@ fn run() {
     // Position, play counting, settings and session saves: as often as needed (ticker.rs).
     ticker::install();
 
-    // Files from the command line play now, after the restored queue is in place.
+    // Files from the command line play now, after the restored queue is in place (playlist
+    // files among them are imported).
     if !open_args.is_empty() {
-        opener::open(&st, open_args, opener::Mode::Play);
+        opener::open_given(&st, open_args, opener::Mode::Play);
     }
 
     // Scan on start (incremental: fast when nothing changed), then watch.
