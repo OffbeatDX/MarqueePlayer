@@ -172,7 +172,9 @@ Auto browses the playback service: Home's shelves, Playlists, Recently played, D
 works (offline: the downloads), and the heart is a custom action in Auto's player. A sideloaded app
 only shows up in Auto with Auto's developer settings → **Unknown sources** on (tap the version in
 Auto's settings ten times to get the developer settings). Artwork goes to Auto as
-`content://…covers/…` URIs from the app's cover provider, never as URLs with the token.
+`content://…covers/…` URIs from the app's cover provider, never as URLs with the token. Other apps
+that connect to the player (anything not the system, Auto, Assistant or Wear) can only play, pause and
+skip: they get no browse tree, no covers and no heart.
 
 ## Lyrics
 

@@ -210,6 +210,11 @@ The README describes the result.
   through `SafeFile` (`:core`): a temp file synced to disk, then one atomic rename; a temp file left by
   a failed rename is read while the file is missing. A pins file that is there but damaged is kept as
   `pins.json.bad`, and nothing stored is deleted for not being pinned in that run (songs or covers).
+- **Who may control the session**: any app can connect to it. Only the app itself (same uid), the
+  controllers the system trusts (Media3's `isTrusted`), the media notification's, Android Auto and
+  Automotive, and a few known system packages (system UI, Assistant, Wear's companion) get the browse
+  tree, the custom commands (the heart writes to the server; queue edits; sleep timer) and the cover
+  grant (`ControllerTrust` in `:core`). Others get the default player commands only.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

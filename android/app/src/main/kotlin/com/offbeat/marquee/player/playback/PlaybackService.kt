@@ -35,6 +35,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.google.common.util.concurrent.SettableFuture
 import com.offbeat.marquee.core.auto.BrowseId
+import com.offbeat.marquee.core.auto.ControllerTrust
 import com.offbeat.marquee.core.auto.BrowsePaging
 import com.offbeat.marquee.core.eq.EqSetting
 import com.offbeat.marquee.core.offline.Playable
@@ -1036,11 +1037,27 @@ class PlaybackService : MediaLibraryService() {
 
     private val sessionCallback = object : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
-            // Android Auto, the system's media controls: they load artwork URIs themselves.
+            // Any app can connect: only the app itself and the controllers the system vouches for
+            // (the notification, Auto, Bluetooth, Assistant, Wear) get the browse tree, the custom
+            // commands (the heart writes to the server) and the covers; others only play and pause.
+            val grant = ControllerTrust.grantFor(
+                sameApp = controller.uid == android.os.Process.myUid(),
+                trustedBySystem = controller.isTrusted,
+                mediaNotification = session.isMediaNotificationController(controller),
+                autoOrAutomotive = session.isAutoCompanionController(controller) ||
+                    session.isAutomotiveController(controller),
+                packageName = controller.packageName,
+            )
             if (controller.packageName != packageName) {
-                AppLog.i(TAG, "controller connected: ${controller.packageName}")
-                Covers.grantTo(this@PlaybackService, controller.packageName)
+                AppLog.i(TAG, "controller connected: ${controller.packageName} (${if (grant == ControllerTrust.Grant.Full) "trusted" else "playback only"})")
             }
+            if (grant == ControllerTrust.Grant.PlayerOnly) {
+                return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                    .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS)
+                    .build()
+            }
+            // Android Auto, the system's media controls: they load artwork URIs themselves.
+            if (controller.packageName != packageName) Covers.grantTo(this@PlaybackService, controller.packageName)
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(PlaybackCommands.favourite)
                 .add(PlaybackCommands.sleepTimer)
