@@ -416,7 +416,7 @@ On Linux the device list is PipeWire's sinks and exclusive mode is "Bit-perfect 
 see [Linux](../linux.md#linux). Exclusive mode (Settings > Output, off by default) opens the device without the Windows
 mixer at the track's own sample rate, in the best format it accepts: 32-bit float, then
 32-bit, 24-in-32, 24 and 16-bit integer (`output/exclusive.rs`). Volume and ReplayGain still
-apply, in software, and the equalizer while it is on; reducing to 16-bit adds TPDF dither. Tracks of the same rate stay
+apply, in software, and the equalizer while it is on; reducing to 16-bit adds TPDF dither, except to a 16-bit track nothing has changed (volume at 100%, no ReplayGain, equalizer, limiting or fade), which reaches a 16-bit device bit for bit. Tracks of the same rate stay
 gapless; a rate change reopens the device, as in shared mode, except into a track a crossfade
 brings in at another rate, which is converted to the device's format until the next pause (see
 [Crossfade](#crossfade)). Paused for 3 s, or stopped,

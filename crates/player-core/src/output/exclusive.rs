@@ -5,8 +5,11 @@
 //! The WASAPI device (`wasapi.rs`) asks a [`FormatProbe`] (the real one wraps
 //! `IAudioClient::IsFormatSupported`); tests use a fake device. Volume and ReplayGain
 //! are applied before this, in f32, by the output loop; reducing to 16-bit adds TPDF
-//! dither so the quantisation error is noise, not distortion. 24- and 32-bit are not
-//! dithered (their quantisation is far below any DAC's noise floor).
+//! dither so the quantisation error is noise, not distortion. A block that is already
+//! 16-bit (a 16-bit track nothing has changed: volume at 100%, no ReplayGain, equalizer,
+//! limiting or fade) is written exactly as it is, bit-perfect. 24- and 32-bit are not
+//! dithered (their quantisation is far below any DAC's noise floor); a 16- or 24-bit
+//! track reaches them exactly.
 
 /// A PCM sample format, in the order they are tried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,15 +152,27 @@ impl Converter {
                 }
             }
             SampleFormat::I16 => {
+                // Every sample already on the 16-bit grid: nothing to quantise, so no dither
+                // (it would only add noise to a bit-perfect stream). Decided for the block,
+                // not per sample: processed audio stays dithered throughout instead of the
+                // dither going off wherever a sample happens to land on the grid (silence,
+                // every other code under a gain of exactly a half).
+                let exact = samples.iter().all(|&s| on_grid(s, 32768.0));
                 for &s in samples {
                     // TPDF: the sum of two uniform variables, ±1 LSB peak.
-                    let d = self.rand() - self.rand();
+                    let d = if exact { 0.0 } else { self.rand() - self.rand() };
                     let v = (f64::from(s) * 32768.0 + f64::from(d)).round().clamp(-32768.0, 32767.0) as i16;
                     out.extend_from_slice(&v.to_le_bytes());
                 }
             }
         }
     }
+}
+
+/// `s` is exactly a code of a signed integer format of full scale `scale` (in range).
+fn on_grid(s: f32, scale: f64) -> bool {
+    let x = f64::from(s) * scale;
+    x == x.round() && (-scale..scale).contains(&x)
 }
 
 /// A sample in [-1, 1] to a signed integer of `bits` + 1 bits, clamped (full scale
@@ -259,6 +274,29 @@ mod tests {
         assert!((mean - (1000.0 + 1.0 / 3.0)).abs() < 0.01, "mean {mean}");
         assert!(out.iter().any(|&x| x != out[0]), "dithered, not constant");
         assert_eq!(ints(SampleFormat::I16, &[1.5, -1.5, 2.0])[..], [32767, -32768, 32767], "clamped");
+    }
+
+    /// A 16-bit track nothing has changed reaches a 16-bit device bit for bit; a 24-bit
+    /// track, or a 16-bit one turned down, is dithered.
+    #[test]
+    fn sixteen_bit_content_is_written_exactly_and_anything_else_dithered() {
+        let codes: Vec<i32> = (-32768..32768).step_by(7).chain([32767, -32768, 0, 1, -1]).collect();
+        let ramp: Vec<f32> = codes.iter().map(|&c| c as f32 / 32768.0).collect();
+        assert_eq!(ints(SampleFormat::I16, &ramp), codes, "bit-identical");
+        for fmt in [SampleFormat::I24, SampleFormat::I24In32, SampleFormat::I32] {
+            let shift = if fmt == SampleFormat::I24 { 8 } else { 16 };
+            assert_eq!(ints(fmt, &ramp), codes.iter().map(|&c| c << shift).collect::<Vec<_>>(), "{fmt:?}: exact too");
+        }
+        // 24-bit content: a third of a 16-bit step above each code.
+        let deep: Vec<f32> = (0..20_000).map(|i| ((i % 2000 - 1000) * 256 + 85) as f32 / 8_388_608.0).collect();
+        let plain: Vec<i32> = deep.iter().map(|&s| (f64::from(s) * 32768.0).round() as i32).collect();
+        let got = ints(SampleFormat::I16, &deep);
+        assert!(got != plain, "dithered, not plainly rounded");
+        assert!(got.iter().zip(&plain).all(|(a, b)| (a - b).abs() <= 1), "within the TPDF range");
+        // The 16-bit ramp turned down: dithered too.
+        let quieter: Vec<f32> = ramp.iter().map(|&s| s * 0.7).collect();
+        let plain: Vec<i32> = quieter.iter().map(|&s| (f64::from(s) * 32768.0).round() as i32).collect();
+        assert!(ints(SampleFormat::I16, &quieter) != plain, "attenuated: dithered");
     }
 
     #[test]
