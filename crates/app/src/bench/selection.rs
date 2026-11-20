@@ -398,7 +398,7 @@ pub fn run(report: String, pid: i64) {
         let want: Vec<i64> = [4, 5, 6].iter().filter_map(|&i| st.lists.playlist.get(i)).map(|t| t.id).collect();
         let target = c.borrow().target;
         let before = playlist_ids(st, target).len();
-        let payload = app.global::<Actions>().invoke_track_payload("playlist".into(), 5);
+        let payload = app.global::<Actions>().invoke_track_payload("playlist".into(), 5, st.lists.playlist.get(5).map_or(0, |t| t.id as i32));
         app.global::<Actions>().invoke_playlist_drop(payload, target as i32);
         let now = playlist_ids(st, target);
         check(c, "a chosen row dropped on a playlist carries the selection", now.len() == before + 3 && now[before..] == want[..], format!("{:?}", &now[before..]));

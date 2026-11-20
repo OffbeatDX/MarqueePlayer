@@ -706,7 +706,8 @@ export component TrackListRow inherits Rectangle {
     // Drag the row onto the queue to add the track there (with the rows chosen, when it is one).
     DragArea {
         enabled: root.ctx != "";
-        data: Actions.track-payload(root.ctx, root.index);
+        // The track's id too: the drop finds it again if the list changed meanwhile.
+        data: Actions.track-payload(root.ctx, root.index, root.track.id);
         allow-copy: true;
         ta := TouchArea {
             double-clicked => { root.play(); }

@@ -1436,8 +1436,9 @@ fn wire(app: &AppWindow) {
 
     // Drag and drop.
     a.on_album_payload(|id| slint::SharedString::from(dnd::Payload::Album(i64::from(id)).encode()).into());
-    a.on_track_payload(|ctx, index| {
-        slint::SharedString::from(dnd::Payload::Track { ctx: ctx.to_string(), index: index.max(0) as usize }.encode()).into()
+    a.on_track_payload(|ctx, index, track| {
+        let index = dnd::Grabbed { index: index.max(0) as usize, track: Some(i64::from(track)) };
+        slint::SharedString::from(dnd::Payload::Track { ctx: ctx.to_string(), index }.encode()).into()
     });
     a.on_queue_payload(|i| slint::SharedString::from(dnd::Payload::QueueRow(i.max(0) as usize).encode()).into());
     a.on_accepts(|data| data.plain_text().ok().and_then(|t| dnd::Payload::decode(&t)).is_some());
@@ -1660,7 +1661,11 @@ fn wire(app: &AppWindow) {
     a.on_playlist_reorder(|data, at| {
         let Some(dnd::Payload::Track { ctx, index }) = data.plain_text().ok().and_then(|t| dnd::Payload::decode(&t)) else { return };
         if ctx == "playlist" {
-            state::with(|st| selected::reorder_playlist(st, index, at.max(0) as usize));
+            state::with(|st| {
+                if let Some(index) = selected::regrab(st, &ctx, index) {
+                    selected::reorder_playlist(st, index, at.max(0) as usize);
+                }
+            });
         }
     });
     a.on_is_playlist_row(|data| {

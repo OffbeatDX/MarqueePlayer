@@ -18,6 +18,7 @@ use std::rc::Rc;
 use library::{Track, query};
 use slint::ComponentHandle;
 
+use crate::dnd::Grabbed;
 use crate::rows::Selectable;
 use crate::selection::Selection;
 use crate::state::State;
@@ -127,9 +128,30 @@ pub fn dragged_rows(st: &State, ctx: &str, index: usize) -> Vec<usize> {
     if chosen { rows(st, ctx) } else { vec![index] }
 }
 
-/// The tracks a drag from row `index` of `ctx` carries, in list order.
-pub fn dragged(st: &State, ctx: &str, index: usize) -> Vec<Track> {
+/// The tracks a drag from `row` of `ctx` carries, in list order; none when the track grabbed
+/// has left the list. A list that changed under the drag has lost its selection with it
+/// (`rows::TrackModel::set`), so then the drag carries the track grabbed alone.
+pub fn dragged(st: &State, ctx: &str, row: impl Into<Grabbed>) -> Vec<Track> {
+    let Some(index) = regrab(st, ctx, row.into()) else { return Vec::new() };
     tracks_at(st, ctx, &dragged_rows(st, ctx, index))
+}
+
+/// Where the row a drag took hold of is now: the row showing its track, the one nearest where
+/// it was when the track is in the list more than once (a playlist). `None` when it is gone.
+pub fn regrab(st: &State, ctx: &str, row: Grabbed) -> Option<usize> {
+    let Some(track) = row.track else { return Some(row.index) };
+    if ctx == QUEUE {
+        let q = st.queue.borrow();
+        return nearest(q.items().len(), row.index, |i| q.items()[i].track.id == track);
+    }
+    st.lists.by_ctx(ctx)?.find_near(row.index, track)
+}
+
+/// The first of `0..len` nearest `at` for which `is` holds: `at` itself, then one after, one
+/// before, two after and so on.
+pub fn nearest(len: usize, at: usize, is: impl Fn(usize) -> bool) -> Option<usize> {
+    let at = at.min(len.saturating_sub(1));
+    (0..len).flat_map(|d| [at.checked_add(d), if d == 0 { None } else { at.checked_sub(d) }]).flatten().filter(|&i| i < len).find(|&i| is(i))
 }
 
 /// "1 track", "12 tracks".
@@ -397,5 +419,23 @@ mod tests {
         assert_eq!(kept.iter().map(|t| t.id).collect::<Vec<_>>(), [3, 4]);
         assert_eq!(note, ", 2 skipped: not in the library");
         assert_eq!(in_library(vec![t(1)]).1, "");
+    }
+
+    #[test]
+    fn a_grabbed_row_is_found_again_nearest_where_it_was() {
+        // The list a drag started on: track 7 grabbed at row 2.
+        let rows = |ids: &'static [i64]| move |at: usize| nearest(ids.len(), at, |i| ids[i] == 7);
+        // Unchanged.
+        assert_eq!(rows(&[1, 2, 7, 4])(2), Some(2));
+        // Re-sorted under the drag: wherever it went.
+        assert_eq!(rows(&[7, 1, 2, 4])(2), Some(0));
+        assert_eq!(rows(&[1, 2, 4, 5, 7])(2), Some(4));
+        // In the list twice: the copy nearest the row grabbed.
+        assert_eq!(rows(&[7, 1, 2, 7, 4])(2), Some(3));
+        assert_eq!(rows(&[7, 1, 2, 4, 5, 7])(2), Some(0));
+        // Gone, or the list shorter now.
+        assert_eq!(rows(&[1, 2, 4])(2), None);
+        assert_eq!(rows(&[7])(5), Some(0));
+        assert_eq!(nearest(0, 3, |_| true), None);
     }
 }

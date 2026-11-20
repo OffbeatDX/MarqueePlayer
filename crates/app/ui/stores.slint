@@ -1095,7 +1095,7 @@ export global Actions {
     callback menu-sub(int);
     // Drag and drop. Payloads are built and read in Rust (`dnd.rs`).
     pure callback album-payload(int /* album id */) -> data-transfer;
-    pure callback track-payload(string /* ctx */, int /* index */) -> data-transfer;
+    pure callback track-payload(string /* ctx */, int /* index */, int /* track id */) -> data-transfer;
     pure callback queue-payload(int /* queue index */) -> data-transfer;
     pure callback accepts(data-transfer) -> bool;
     // Insert albums/tracks, or move a queue row, so it lands at `index`.

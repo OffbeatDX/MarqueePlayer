@@ -149,6 +149,12 @@ impl TrackModel {
         }
     }
 
+    /// The row nearest `at` that shows track `id` (`selected::nearest`).
+    pub fn find_near(&self, at: usize, id: i64) -> Option<usize> {
+        let tracks = self.tracks.borrow();
+        crate::selected::nearest(tracks.len(), at, |i| tracks[i].id == id)
+    }
+
     pub fn tracks(&self) -> Vec<Track> {
         self.tracks.borrow().clone()
     }
