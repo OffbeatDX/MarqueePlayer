@@ -502,3 +502,57 @@ fn no_log_line_or_status_carries_the_token() {
         assert!(!t.contains(TOKEN) && !t.contains(&TOKEN[..12]), "the token in: {t}");
     }
 }
+
+#[test]
+fn a_redirect_to_another_server_is_refused_without_sending_the_token() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
+    let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+    let trap_port = trap.local_addr().unwrap().port();
+    let trapped: Arc<Mutex<Vec<String>>> = Arc::default();
+    let t = trapped.clone();
+    std::thread::spawn(move || {
+        for conn in trap.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            t.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let body = r#"{"valid":true,"user_name":"alice","status":"ok"}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = conn.write_all(resp.as_bytes());
+        }
+    });
+
+    let redir = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redir_url = format!("http://127.0.0.1:{}", redir.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut n = 0usize;
+        for conn in redir.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut r = BufReader::new(conn.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let _ = r.read_exact(&mut vec![0; len]);
+            let status = if n == 0 { "302 Found" } else { "307 Temporary Redirect" };
+            n += 1;
+            let resp = format!("HTTP/1.1 {status}\r\nLocation: http://127.0.0.1:{trap_port}/1/validate-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = conn.write_all(resp.as_bytes());
+        }
+    });
+
+    let client = listenbrainz::Client::new(&redir_url, TOKEN, "MarqueePlayer/test", listenbrainz::api::Player::default());
+    assert!(matches!(client.validate_token(), Err(listenbrainz::ApiError::Network(_))));
+    assert!(matches!(client.playing_now(&play(1, "A")), Err(listenbrainz::ApiError::Network(_))));
+    assert!(matches!(client.recording_feedback(REC, 1), Err(listenbrainz::ApiError::Network(_))));
+    assert!(trapped.lock().unwrap().is_empty(), "other server received a redirected token: {:?}", trapped.lock().unwrap());
+}

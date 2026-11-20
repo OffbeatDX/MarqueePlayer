@@ -134,7 +134,17 @@ impl Client {
         let sig = sign(&params, &self.secret);
         params.push(("api_sig".into(), sig));
         params.push(("format".into(), "json".into()));
-        let (status, body) = http::post(&self.root, &http::form_encode(&params), &self.agent, TIMEOUT_MS).map_err(|e| ApiError::Network(e.to_string()))?;
+        let form = http::form_encode(&params);
+        let r = http::request_same_server(&http::Request {
+            method: "POST",
+            url: &self.root,
+            headers: &["Content-Type: application/x-www-form-urlencoded"],
+            body: form.as_bytes(),
+            user_agent: &self.agent,
+            timeout_ms: TIMEOUT_MS,
+        })
+        .map_err(|e| ApiError::Network(e.to_string()))?;
+        let (status, body) = (r.status, r.body);
         let json: Option<Value> = serde_json::from_str(&body).ok();
         if let Some(j) = &json
             && let Some(code) = j.get("error").and_then(Value::as_i64)

@@ -551,3 +551,54 @@ fn a_new_key_while_authorising_is_kept_and_connect_starts_again_with_it() {
     assert!(matches!(&st.state, State::Error(e) if e.contains("API key or secret")), "the mock knows only the old one: {st:?}");
     assert_eq!(Credentials::read(&d.join("lastfm.json"), &Sealer::PLAIN).0.api_secret, "corrected-secret", "saved");
 }
+
+#[test]
+fn a_redirect_to_another_server_is_refused_without_sending_the_body() {
+    let trap = TcpListener::bind("127.0.0.1:0").unwrap();
+    let trap_port = trap.local_addr().unwrap().port();
+    let trapped: Arc<Mutex<Vec<String>>> = Arc::default();
+    let t = trapped.clone();
+    std::thread::spawn(move || {
+        for conn in trap.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            t.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            let body = r#"{"token":"leaked"}"#;
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let _ = conn.write_all(resp.as_bytes());
+        }
+    });
+
+    let redir = TcpListener::bind("127.0.0.1:0").unwrap();
+    let redir_url = format!("http://127.0.0.1:{}/2.0/", redir.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let mut n = 0usize;
+        for conn in redir.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut r = BufReader::new(conn.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let _ = r.read_exact(&mut vec![0; len]);
+            let status = if n.is_multiple_of(2) { "307 Temporary Redirect" } else { "308 Permanent Redirect" };
+            n += 1;
+            let resp = format!("HTTP/1.1 {status}\r\nLocation: http://127.0.0.1:{trap_port}/2.0/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = conn.write_all(resp.as_bytes());
+        }
+    });
+
+    let client = lastfm::Client::new(&redir_url, KEY, SECRET, "MarqueePlayer-test/1");
+    assert!(matches!(client.scrobble("sk-secret", &[play(1, "A")]), Err(lastfm::ApiError::Network(_))));
+    assert!(matches!(client.now_playing("sk-secret", &play(1, "A")), Err(lastfm::ApiError::Network(_))));
+    assert!(matches!(client.get_token(), Err(lastfm::ApiError::Network(_))));
+    assert!(matches!(client.get_session("tok-1"), Err(lastfm::ApiError::Network(_))));
+    assert!(trapped.lock().unwrap().is_empty(), "other server received a redirected signed request: {:?}", trapped.lock().unwrap());
+}
