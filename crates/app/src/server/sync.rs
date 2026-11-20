@@ -304,6 +304,7 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
     let total = listed.len();
     let mut catalog: Vec<RemoteAlbum> = Vec::with_capacity(total);
     let mut failed = 0;
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
     // What the chunks wrote (the last pass then finds those entries unchanged).
     let mut wrote = SyncReport::default();
     let opts = SyncOptions { cancel: Some(job.cancel.clone()), ..SyncOptions::default() };
@@ -322,7 +323,13 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
                     failed += 1;
                     complete = false;
                 }
-                Some(Ok(a)) => part.push(album_of(&a)),
+                Some(Ok(a)) => {
+                    // A song listed under two albums goes with the first (in the listing's
+                    // order, the same at every sync), also across chunks written apart.
+                    let mut album = album_of(&a);
+                    album.songs.retain(|s| claimed.insert(s.id.clone()));
+                    part.push(album);
+                }
                 // Removed on the server since it was listed: rightly not in the catalog.
                 Some(Err(Error::NotFound(_))) => {}
                 Some(Err(e)) if is_sign_in(&e) => return Outcome::Server(e),

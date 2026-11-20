@@ -1176,6 +1176,14 @@ pub fn sync(conn: &mut Connection, identity: &str, catalog: &Catalog, opts: &Syn
     let cancel: &AtomicBool = opts.cancel.as_deref().unwrap_or(&never);
     let cap = opts.batch_songs.unwrap_or(BATCH_SONGS).max(1);
     let mut unsettled = Unsettled::default();
+    // A song listed under two albums (a server's inconsistency) is kept under the first that
+    // lists it: under each in turn, it would be written over and placed again at every sync.
+    let mut first: HashMap<&str, &str> = HashMap::new();
+    for a in &catalog.albums {
+        for s in &a.songs {
+            first.entry(s.id.as_str()).or_insert(a.id.as_str());
+        }
+    }
     let mut at = 0;
     let mut wrote = 0;
     while at < catalog.albums.len() {
@@ -1197,7 +1205,7 @@ pub fn sync(conn: &mut Connection, identity: &str, catalog: &Catalog, opts: &Syn
         let mut w = Work::default();
         let mut any = false;
         for a in batch {
-            let (changed_album, changed_songs) = keep(&tx, a)?;
+            let (changed_album, changed_songs) = keep(&tx, a, &first)?;
             report.changed_albums += usize::from(changed_album);
             report.changed_songs += changed_songs;
             let placed: bool = tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM albums WHERE remote_id = ?1)")?.query_row([&a.id], |r| r.get(0))?;
@@ -1234,10 +1242,11 @@ pub fn sync(conn: &mut Connection, identity: &str, catalog: &Catalog, opts: &Syn
     Ok(report)
 }
 
-/// Keep album `a` and its songs as the catalog lists them, writing only what changed. Returns
-/// whether the album changed (or is new), and how many of its songs did (new, changed, moved
-/// to it, or gone from it).
-fn keep(tx: &Connection, a: &RemoteAlbum) -> rusqlite::Result<(bool, usize)> {
+/// Keep album `a` and its songs as the catalog lists them, writing only what changed; a song
+/// `first` gives to an album before it in the catalog is left to that one. Returns whether the
+/// album changed (or is new), and how many of its songs did (new, changed, moved to it, or gone
+/// from it).
+fn keep(tx: &Connection, a: &RemoteAlbum, first: &HashMap<&str, &str>) -> rusqlite::Result<(bool, usize)> {
     let data = serde_json::to_string(a).unwrap_or_default();
     let hash = hash_of(&[&data]);
     let stored: Option<i64> = tx.prepare_cached("SELECT hash FROM remote_albums WHERE id = ?1")?.query_row([&a.id], |r| r.get(0)).optional()?;
@@ -1254,6 +1263,9 @@ fn keep(tx: &Connection, a: &RemoteAlbum) -> rusqlite::Result<(bool, usize)> {
     let mut changed = 0;
     let mut listed: HashSet<&str> = HashSet::new();
     for s in &a.songs {
+        if first.get(s.id.as_str()).is_some_and(|f| *f != a.id) {
+            continue;
+        }
         listed.insert(&s.id);
         let data = serde_json::to_string(s).unwrap_or_default();
         let hash = hash_of(&[&a.id, &data]);

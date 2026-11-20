@@ -726,6 +726,26 @@ fn a_sync_is_idempotent_and_picks_up_where_it_stopped() {
     assert_eq!(remote::server(&stopped.conn).unwrap().unwrap().sync_started, None);
 }
 
+/// A song the server lists under two albums is kept under the first that lists it: a second
+/// sync of the same catalog writes nothing (under each in turn, it was written over and placed
+/// again at every sync).
+#[test]
+fn a_song_listed_under_two_albums_stays_with_the_first() {
+    let mut lib = Lib::new("twice-listed");
+    let a = server("r1", &al("Ann", "First", Some("2000"), None, tracks("T", 3)), None);
+    let mut b = server("r2", &al("Ann", "Second", Some("2001"), None, tracks("U", 2)), None);
+    b.songs.push(a.songs[0].clone());
+    let albums = vec![a.clone(), b];
+    lib.sync(albums.clone());
+    let holder: String = lib.conn.query_row("SELECT album_id FROM remote_songs WHERE id = ?1", [&a.songs[0].id], |r| r.get(0)).unwrap();
+    assert_eq!(holder, "r1");
+    assert_eq!(lib.one("SELECT COUNT(*) FROM tracks"), 5, "the song once");
+    let changes = lib.conn.total_changes();
+    let again = lib.sync(albums);
+    assert_eq!((again.changed_albums, again.changed_songs), (0, 0), "{again:?}");
+    assert!(lib.conn.total_changes() - changes <= 2, "only the sync times: {}", lib.conn.total_changes() - changes);
+}
+
 /// What the server no longer lists: a server-only track goes with its plays, a file's row only
 /// loses its id; an empty or much smaller listing removes nothing unless confirmed, and an
 /// incomplete one never removes.
