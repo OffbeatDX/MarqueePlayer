@@ -48,11 +48,20 @@ pub fn limit_note() -> Option<String> {
     ))
 }
 
+/// The inotify instance and its watches. Owns the descriptor: closed when dropped (the
+/// thread's end, or `start` failing after it was made, the thread not started included).
 struct Watcher {
     fd: i32,
     recursive: bool,
     dirs: HashMap<i32, PathBuf>,
     limit_logged: bool,
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor from `inotify_init1`, owned by this alone; closed once.
+        unsafe { libc::close(self.fd) };
+    }
 }
 
 impl Watcher {
@@ -122,7 +131,8 @@ pub struct Inner {
 }
 
 pub fn start(path: &Path, recursive: bool, mut on: Box<dyn FnMut(Seen) + Send>) -> std::io::Result<Inner> {
-    // SAFETY: plain descriptor creation; both are closed by the thread when it ends (or below).
+    // SAFETY: plain descriptor creation; the inotify one is closed by `Watcher`, the
+    // eventfd by `Inner::stop` (or below).
     let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
@@ -138,21 +148,16 @@ pub fn start(path: &Path, recursive: bool, mut on: Box<dyn FnMut(Seen) + Send>) 
     let mut w = Watcher { fd, recursive, dirs: HashMap::new(), limit_logged: false };
     // The root must be watched; folders below it as far as the limit allows.
     if let Err(e) = w.add_tree(path, false, &mut |_| {}) {
-        // SAFETY: opened above, not shared.
-        unsafe {
-            libc::close(fd);
-            libc::close(stop);
-        }
+        // SAFETY: opened above, not shared. (The inotify descriptor closes with `w`.)
+        unsafe { libc::close(stop) };
         return Err(e);
     }
     let root = path.to_path_buf();
     let name = format!("mp-dirwatch-{}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
-    let thread = std::thread::Builder::new().name(name).spawn(move || {
-        run(&mut w, &root, stop, &mut *on);
-        // SAFETY: the thread owns the inotify descriptor from here; closed once. (The
-        // eventfd is `Inner`'s, closed after the thread has ended.)
-        unsafe { libc::close(w.fd) };
-    });
+    // The thread owns `w` from here, and closes its descriptor as it ends; a thread that
+    // could not be started drops it unrun, which closes it too. (The eventfd is `Inner`'s,
+    // closed after the thread has ended.)
+    let thread = std::thread::Builder::new().name(name).spawn(move || run(&mut w, &root, stop, &mut *on));
     match thread {
         Ok(thread) => Ok(Inner { stop, thread }),
         Err(e) => {

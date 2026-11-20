@@ -31,11 +31,23 @@ const FILTER: u32 = FILE_NOTIFY_CHANGE_FILE_NAME
 const BUF_WORDS: usize = 64 * 1024 / 4;
 
 /// The folder handle and the read's event, used by the watch thread and closed after
-/// it has stopped.
+/// it has stopped: when the last of `Inner` and the thread lets go of them. Also when the
+/// thread could not be started, or ended before saying it was watching.
 struct Dir(HANDLE, HANDLE);
 // The handle is used by one thread at a time (the watch thread, then `stop`).
 unsafe impl Send for Dir {}
 unsafe impl Sync for Dir {}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        // SAFETY: both opened by `start` and owned here alone; nothing uses them now (the
+        // thread holds a share of this until it ends), so each is closed once.
+        unsafe {
+            CloseHandle(self.0);
+            CloseHandle(self.1);
+        }
+    }
+}
 
 pub struct Inner {
     dir: Arc<Dir>,
@@ -45,7 +57,7 @@ pub struct Inner {
 
 pub fn start(path: &Path, recursive: bool, mut on: Box<dyn FnMut(Seen) + Send>) -> std::io::Result<Inner> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: a NUL-terminated path; the handle is closed in `stop` (or below).
+    // SAFETY: a NUL-terminated path; the handle is closed by `Dir` (or below).
     let h = unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -60,7 +72,7 @@ pub fn start(path: &Path, recursive: bool, mut on: Box<dyn FnMut(Seen) + Send>) 
     if h == INVALID_HANDLE_VALUE || h.is_null() {
         return Err(std::io::Error::last_os_error());
     }
-    // SAFETY: an unnamed manual-reset event, closed in `stop` (or below).
+    // SAFETY: an unnamed manual-reset event, closed by `Dir`.
     let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if ev.is_null() {
         let e = std::io::Error::last_os_error();
@@ -149,16 +161,15 @@ pub fn start(path: &Path, recursive: bool, mut on: Box<dyn FnMut(Seen) + Send>) 
     })?;
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(Inner { dir, stop, thread }),
+        // The handles close with `dir` once the thread has let go of its share.
         Ok(Err(e)) => {
             let _ = thread.join();
-            // SAFETY: the thread has ended; closed once.
-            unsafe {
-                CloseHandle(dir.0);
-                CloseHandle(dir.1);
-            }
             Err(e)
         }
-        Err(_) => Err(std::io::Error::other("the watch thread ended")),
+        Err(_) => {
+            let _ = thread.join();
+            Err(std::io::Error::other("the watch thread ended"))
+        }
     }
 }
 
@@ -193,10 +204,56 @@ impl Inner {
             std::thread::sleep(Duration::from_millis(1));
         }
         let _ = self.thread.join();
-        // SAFETY: the thread that used them has ended; closed once.
-        unsafe {
-            CloseHandle(self.dir.0);
-            CloseHandle(self.dir.1);
+        // The handles close with `self.dir`: the thread's share went with it.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::System::Threading::OpenEventW;
+
+    /// The handles close when the last share of them goes, as when the watch thread could
+    /// not be started (its closure, holding one, dropped unrun). Seen from outside: the
+    /// folder, opened without delete sharing, can be removed again, and the named event is
+    /// gone.
+    #[test]
+    fn handles_close_with_their_last_owner() {
+        let dir = crate::testdir::TestDir::new("dirwatch-handles");
+        let folder = dir.join("watched");
+        std::fs::create_dir(&folder).unwrap();
+        let wide: Vec<u16> = folder.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: a NUL-terminated path; closed by `Dir` below.
+        let h = unsafe { CreateFileW(wide.as_ptr(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, std::ptr::null_mut()) };
+        assert!(h != INVALID_HANDLE_VALUE && !h.is_null());
+        let name: Vec<u16> = format!("mp-dirwatch-test-{}", std::process::id()).encode_utf16().chain(Some(0)).collect();
+        // SAFETY: a NUL-terminated name; closed by `Dir` below.
+        let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, name.as_ptr()) };
+        assert!(!ev.is_null());
+        let event_open = || {
+            // SAFETY: a NUL-terminated name; a handle found is closed at once.
+            let o = unsafe { OpenEventW(0x0010_0000, 0, name.as_ptr()) }; // SYNCHRONIZE
+            if !o.is_null() {
+                // SAFETY: just opened, closed once.
+                unsafe { CloseHandle(o) };
+            }
+            !o.is_null()
+        };
+        let shared = Arc::new(Dir(h, ev));
+        let theirs = shared.clone();
+        let never_run = move || drop(theirs);
+        assert!(std::fs::remove_dir(&folder).is_err(), "open, without delete sharing");
+        assert!(event_open());
+        drop(shared);
+        assert!(event_open(), "the closure still holds them");
+        drop(never_run);
+        // Something else (seen with the whole suite running, other tests starting child
+        // processes) can hold the event a moment longer: wait for it, not forever.
+        let since = std::time::Instant::now();
+        while event_open() && since.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(!event_open(), "the event is closed");
+        std::fs::remove_dir(&folder).expect("the folder handle is closed");
     }
 }
