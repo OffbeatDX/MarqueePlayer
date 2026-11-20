@@ -28,13 +28,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiError, BATCH, Client, Outcome, Scrobble};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Credentials {
     pub api_key: String,
     pub api_secret: String,
     pub session_key: String,
     pub username: String,
+}
+
+impl std::fmt::Debug for Credentials {
+    /// Never the API secret or session key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("api_key", &self.api_key)
+            .field("api_secret", &if self.api_secret.is_empty() { "" } else { "(set)" })
+            .field("session_key", &if self.session_key.is_empty() { "" } else { "(set)" })
+            .field("username", &self.username)
+            .finish()
+    }
 }
 
 /// How the API secret and session key are kept on disk: the app passes its own (`platform::secret`: DPAPI for
@@ -832,5 +844,15 @@ mod tests {
         Credentials { api_key: "k".into(), api_secret: "plain-secret".into(), session_key: String::new(), username: String::new() }.save(&p2, &broken);
         assert!(!p2.exists(), "a failed seal never writes a plain secret");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn debug_never_prints_the_api_secret_or_session_key() {
+        let c = Credentials { api_key: "pub-key".into(), api_secret: "my-api-secret".into(), session_key: "my-session-key".into(), username: "alice".into() };
+        let s = format!("{c:?}");
+        assert!(!s.contains("my-api-secret") && !s.contains("my-session-key"), "secret leaked in Debug: {s}");
+        assert!(s.contains("(set)") && s.contains("pub-key") && s.contains("alice"), "{s}");
+        let empty = Credentials { api_key: "pub-key".into(), ..Credentials::default() };
+        assert!(!format!("{empty:?}").contains("(set)"));
     }
 }

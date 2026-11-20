@@ -29,7 +29,7 @@ thread_local! {
     static STATUS: RefCell<Option<Status>> = const { RefCell::new(None) };
 }
 
-/// The session key in `lastfm.json` is sealed as `navidrome.json`'s token is (`platform::secret`).
+/// The API secret and session key in `lastfm.json` are sealed as `navidrome.json`'s token is (`platform::secret`).
 fn sealer() -> lastfm::Sealer {
     use crate::platform::secret;
     lastfm::Sealer { scheme: secret::SCHEME, seal: secret::seal, open: secret::open, write: secret::write_private }

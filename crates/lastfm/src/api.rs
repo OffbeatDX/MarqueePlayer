@@ -111,13 +111,25 @@ pub enum Outcome {
     Limited,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Client {
     pub root: String,
     pub key: String,
     pub secret: String,
     /// The client name sent with each call ("MarqueePlayer/<version>").
     pub agent: String,
+}
+
+impl std::fmt::Debug for Client {
+    /// Never the API secret.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("root", &self.root)
+            .field("key", &self.key)
+            .field("secret", &if self.secret.is_empty() { "" } else { "(set)" })
+            .field("agent", &self.agent)
+            .finish()
+    }
 }
 
 impl Client {
@@ -346,5 +358,15 @@ mod tests {
             ]}}"##,
         );
         assert!(parse_scrobble_outcomes(&long_arr, 2).unwrap_err().is_transient());
+    }
+
+    #[test]
+    fn debug_never_prints_the_api_secret() {
+        let c = Client::new(API_ROOT, "pub-key", "super-secret-value", "MarqueePlayer/test");
+        let s = format!("{c:?}");
+        assert!(!s.contains("super-secret-value"), "secret leaked in Debug: {s}");
+        assert!(s.contains("(set)") && s.contains("pub-key"), "{s}");
+        let empty = Client::new(API_ROOT, "pub-key", "", "MarqueePlayer/test");
+        assert!(!format!("{empty:?}").contains("(set)"));
     }
 }
