@@ -46,6 +46,10 @@ pub type View = HashMap<String, Seen>;
 const STAR_CHUNK: usize = 50;
 /// Plays read off the queue at a time.
 const PLAY_CHUNK: usize = 50;
+/// Tracks decided on per transaction by a pass: the first pass of a large library decides on
+/// every track, and one transaction for all of them would keep the app's own writes (a play
+/// counted) waiting.
+const DECIDE_CHUNK: usize = 1000;
 
 /// A local favourite the server's value replaced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,6 +65,8 @@ pub struct Done {
     pub changed: Vec<Changed>,
     /// Values the server took.
     pub sent: usize,
+    /// Transactions the decisions were written in.
+    pub batches: usize,
     /// Why sending stopped (the rest goes at the next sync).
     pub error: Option<Error>,
 }
@@ -116,39 +122,56 @@ fn pass_while(conn: &mut Connection, client: &Client, view: &View, only: Option<
     let mut star: Vec<(String, bool)> = Vec::new();
     {
         let _w = (only.is_none()).then(crate::server::sync::writer);
-        library::db::let_waiting_in();
-        // Read inside the write transaction, after any wait for the writer: a change the user
-        // made meanwhile is decided on as it is.
-        let tx = library::db::write(conn)?;
-        if !live() {
-            return Ok(done);
-        }
-        let rows: Vec<Row> = match only {
-            Some(t) => marks::row_of(&tx, t)?.into_iter().collect(),
-            None => marks::rows(&tx)?,
+        let decide = |r: &Row| marks::decide_star(r.starred, &r.agreed, view.get(&r.song_id).copied().unwrap_or_default().starred);
+        // Whether the server's unstars are held is decided on every track at once (read
+        // before the writes; each chunk then decides on its tracks as they are by then).
+        let held = only.is_none() && {
+            let rows = marks::rows(conn)?;
+            let plans: Vec<Plan<bool>> = rows.iter().map(decide).collect();
+            let held = unstar_held(&rows, &plans);
+            if held {
+                let n = plans.iter().filter(|p| p.set_local == Some(false)).count();
+                log::warn!("server: the server unstarred {n} favourites at once; none of them taken this time (the favourites here sent as ever)");
+            }
+            held
         };
-        let plans: Vec<Plan<bool>> = rows.iter().map(|r| marks::decide_star(r.starred, &r.agreed, view.get(&r.song_id).copied().unwrap_or_default().starred)).collect();
-        let held = unstar_held(&rows, &plans);
-        if held {
-            let n = plans.iter().filter(|p| p.set_local == Some(false)).count();
-            log::warn!("server: the server unstarred {n} favourites at once; none of them taken this time (the favourites here sent as ever)");
+        let mut after: Option<(String, i64)> = None;
+        loop {
+            library::db::let_waiting_in();
+            // Read inside the write transaction, after any wait for the writer: a change the
+            // user made meanwhile is decided on as it is.
+            let tx = library::db::write(conn)?;
+            if !live() {
+                return Ok(done);
+            }
+            let rows: Vec<Row> = match only {
+                Some(t) => marks::row_of(&tx, t)?.into_iter().collect(),
+                None => marks::rows_after(&tx, after.as_ref().map(|(s, t)| (s.as_str(), *t)), DECIDE_CHUNK)?,
+            };
+            let Some(last) = rows.last() else { break };
+            after = Some((last.song_id.clone(), last.track_id));
+            for r in &rows {
+                let s = decide(r);
+                if held && s.set_local == Some(false) {
+                    continue;
+                }
+                if let Some(v) = s.set_local {
+                    marks::set_local_star(&tx, r.track_id, v, s.at)?;
+                    done.changed.push(Changed { track_id: r.track_id, favourite: Some(v) });
+                }
+                if let Some(v) = s.agree {
+                    marks::agree_star(&tx, &r.song_id, v, s.at)?;
+                }
+                if let Some(v) = s.push {
+                    star.push((r.song_id.clone(), v));
+                }
+            }
+            tx.commit()?;
+            done.batches += 1;
+            if only.is_some() {
+                break;
+            }
         }
-        for (r, s) in rows.iter().zip(plans) {
-            if held && s.set_local == Some(false) {
-                continue;
-            }
-            if let Some(v) = s.set_local {
-                marks::set_local_star(&tx, r.track_id, v, s.at)?;
-                done.changed.push(Changed { track_id: r.track_id, favourite: Some(v) });
-            }
-            if let Some(v) = s.agree {
-                marks::agree_star(&tx, &r.song_id, v, s.at)?;
-            }
-            if let Some(v) = s.push {
-                star.push((r.song_id.clone(), v));
-            }
-        }
-        tx.commit()?;
     }
     // Sent, and agreed as each is taken.
     let mut agreed_stars: Vec<(String, bool)> = Vec::new();
@@ -582,6 +605,24 @@ mod tests {
         for song in ["al0-1", "al0-2", "al1-1", "al1-2", "al2-1", "al2-2"] {
             assert_eq!(f.local(song), f.server(song), "{song}");
         }
+    }
+
+    /// A first pass over a large library decides a chunk of tracks per transaction (the app's
+    /// own writes get in between), and still decides on every track.
+    #[test]
+    fn a_large_first_pass_is_written_a_chunk_at_a_time() {
+        let f = Fixture::with("chunks", 1100);
+        f.mock.edit(|l| {
+            for i in (0..1100).step_by(10) {
+                l.song_mut(&format!("al{i}-2")).unwrap().starred = Some("2026-05-01T10:00:00Z".into());
+            }
+        });
+        let view = f.sync(true, true);
+        let d = pass(&mut f.conn(), &f.client(marks_only()), &view, None).unwrap();
+        assert_eq!((d.batches, d.changed.len()), (3, 110), "2,200 tracks, 1,000 a transaction");
+        let agreed: i64 = f.conn().query_row("SELECT COUNT(*) FROM remote_marks WHERE star_agreed IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(agreed, 2200, "every track decided on");
+        assert!(f.local("al1090-2") && !f.local("al1090-1"));
     }
 
     /// The server's answer with no star where many were agreed (a server that does not say

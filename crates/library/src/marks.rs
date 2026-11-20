@@ -170,8 +170,16 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
 
 /// Every track the server has, ordered by song id.
 pub fn rows(conn: &Connection) -> rusqlite::Result<Vec<Row>> {
-    let mut st = conn.prepare(&format!("{ROWS} ORDER BY t.remote_id"))?;
+    let mut st = conn.prepare(&format!("{ROWS} ORDER BY t.remote_id, t.id"))?;
     st.query_map([], row)?.collect()
+}
+
+/// The next `limit` tracks the server has after `after` (song id, track id), in the order of
+/// `rows`: a pass a chunk at a time.
+pub fn rows_after(conn: &Connection, after: Option<(&str, i64)>, limit: usize) -> rusqlite::Result<Vec<Row>> {
+    let (song, track) = after.unwrap_or(("", i64::MIN));
+    let mut st = conn.prepare_cached(&format!("{ROWS} AND (t.remote_id, t.id) > (?1, ?2) ORDER BY t.remote_id, t.id LIMIT ?3"))?;
+    st.query_map(params![song, track, limit as i64], row)?.collect()
 }
 
 /// One track, when the server has it.
@@ -329,6 +337,8 @@ mod tests {
         // A rating and a rating change not yet sent, left by a build that kept them: nothing
         // to compare or to send.
         assert_eq!(rows.iter().map(|r| (r.song_id.as_str(), r.track_id, r.starred)).collect::<Vec<_>>(), [("s1", 10, None), ("s3", 12, Some(10_000))], "only the server's tracks");
+        assert_eq!(rows_after(&conn, None, 1).unwrap(), rows[..1], "a chunk at a time, in the same order");
+        assert_eq!(rows_after(&conn, Some(("s1", 10)), 5).unwrap(), rows[1..]);
         assert_eq!(rows[0].agreed, Agreed::default());
         assert_eq!(rows[1].agreed, Agreed::default(), "a pending rating is no pending favourite");
         assert_eq!(touched(&conn, 11).unwrap(), None, "a track the server does not have");
