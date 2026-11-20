@@ -28,6 +28,8 @@ pub struct Listening {
     pub token: u64,
     pub listened: f64,
     pub last_position: f64,
+    /// When the last playing position report arrived (`None` before the first, or while paused).
+    pub last_report: Option<std::time::Instant>,
     pub counted: bool,
     /// The play as Last.fm and ListenBrainz will get it (start time, tags), until it is
     /// scrobbled (`scrobble::Play`).

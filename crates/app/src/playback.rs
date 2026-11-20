@@ -727,15 +727,29 @@ pub fn tick(st: &Rc<State>) {
     crate::session::autosave(st, false);
 }
 
-/// One position report of the playing track: listening accrues from steady forward
-/// progress only (not seeks, not the jump to the middle of a crossfade). Returns whether
-/// the scrobbling rule is met (half or four minutes, longer than 30 s: Last.fm's and
-/// ListenBrainz's) and whether the play counts now (once).
-fn listen(l: &mut Listening, position: f64, duration: f64, playing: bool) -> (bool, bool) {
+/// Slack above elapsed wall-clock time when accepting a position step: allows small jitter
+/// between the audio clock and UI ticks while still rejecting seeks and crossfade jumps.
+const LISTEN_SLACK: f64 = 0.25;
+
+/// One position report of the playing track at `now`: listening accrues from steady forward
+/// progress only (not seeks, not the jump to the middle of a crossfade, and not paused spans),
+/// bounded by the wall-clock time since the previous playing report so UI stalls or throttled
+/// timers still count what actually played. Returns whether the scrobbling rule is met (half
+/// or four minutes, longer than 30 s: Last.fm's and ListenBrainz's) and whether the play
+/// counts now (once).
+fn listen(l: &mut Listening, position: f64, duration: f64, playing: bool, now: std::time::Instant) -> (bool, bool) {
     let step = position - l.last_position;
     l.last_position = position;
-    if playing && (0.0..1.0).contains(&step) {
-        l.listened += step;
+    if playing {
+        if let Some(prev) = l.last_report {
+            let wall = now.saturating_duration_since(prev).as_secs_f64();
+            if (0.0..=wall + LISTEN_SLACK).contains(&step) {
+                l.listened += step.min(wall);
+            }
+        }
+        l.last_report = Some(now);
+    } else {
+        l.last_report = None;
     }
     let scrobble = crate::connections::scrobble::counts(duration, l.listened);
     let count = !l.counted && l.listened >= counts_after(duration);
@@ -749,19 +763,19 @@ fn listen(l: &mut Listening, position: f64, duration: f64, playing: bool) -> (bo
 /// one started last is ignored: the engine's status still names the track before for a moment
 /// after `TrackStarted`, and starting afresh there would drop the play to be scrobbled. A newer
 /// track (one whose start was not seen) starts a play of its own, with nothing to scrobble.
-fn report(l: &mut Listening, token: u64, position: f64, duration: f64, playing: bool) -> Option<(bool, bool)> {
+fn report(l: &mut Listening, token: u64, position: f64, duration: f64, playing: bool, now: std::time::Instant) -> Option<(bool, bool)> {
     if token < l.token {
         return None;
     }
     if token > l.token {
         *l = Listening { token, ..Default::default() };
     }
-    Some(listen(l, position, duration, playing))
+    Some(listen(l, position, duration, playing, now))
 }
 
 fn count_listening(st: &Rc<State>, token: u64, position: f64, duration: f64, playing: bool) {
     let mut l = st.listening.borrow_mut();
-    let Some((scrobble, count)) = report(&mut l, token, position, duration, playing) else { return };
+    let Some((scrobble, count)) = report(&mut l, token, position, duration, playing, std::time::Instant::now()) else { return };
     if scrobble && let Some(s) = l.scrobble.take() {
         crate::connections::scrobble::scrobble(s);
     }
@@ -993,8 +1007,9 @@ mod tests {
             let mut l = super::Listening::default();
             let (mut scrobbled_at, mut counted_at) = (None, None);
             let mut pos = from;
+            let mut now = std::time::Instant::now();
             while pos <= to {
-                let (s, c) = super::listen(&mut l, pos, duration, true);
+                let (s, c) = super::listen(&mut l, pos, duration, true, now);
                 if s && scrobbled_at.is_none() {
                     scrobbled_at = Some(pos);
                 }
@@ -1002,6 +1017,7 @@ mod tests {
                     counted_at = Some(pos);
                 }
                 pos += 0.1;
+                now += std::time::Duration::from_millis(100);
             }
             assert!(counted_at.is_some(), "{duration} s with a {len:.2} s crossfade each side: counted");
             if duration > 30.0 {
@@ -1018,8 +1034,10 @@ mod tests {
         let t = library::query::Track { title: "Lantern".into(), artist: "A".into(), duration: 200.0, ..Default::default() };
         let play = || crate::connections::scrobble::Play { lastfm: crate::connections::scrobble::scrobble_of(&t, 0), listenbrainz: crate::connections::listens::listen_of(&t, 0, None) };
         let mut scrobbled = Vec::new();
-        let mut tick = |l: &mut super::Listening, token: u64, pos: f64| {
-            if let Some((true, _)) = super::report(l, token, pos, 200.0, true)
+        let mut now = std::time::Instant::now();
+        let mut tick = |l: &mut super::Listening, token: u64, pos: f64, advance: std::time::Duration| {
+            now += advance;
+            if let Some((true, _)) = super::report(l, token, pos, 200.0, true, now)
                 && l.scrobble.take().is_some()
             {
                 scrobbled.push(token);
@@ -1028,19 +1046,101 @@ mod tests {
         for token in 1..=3u64 {
             // `TrackStarted`, then a report still of the track before, then the track itself.
             let mut l = super::Listening { token, scrobble: Some(play()), ..Default::default() };
-            tick(&mut l, token - 1, 199.0);
+            tick(&mut l, token - 1, 199.0, std::time::Duration::from_millis(100));
             let mut pos = 0.0;
             while pos < 200.0 {
-                tick(&mut l, token, pos);
+                tick(&mut l, token, pos, std::time::Duration::from_millis(500));
                 pos += if (50.0..50.5).contains(&pos) { 60.0 } else { 0.5 };
                 if (150.0..150.5).contains(&pos) {
                     // A seek back to the start, and on.
-                    tick(&mut l, token, 0.0);
-                    tick(&mut l, token, 160.0);
+                    tick(&mut l, token, 0.0, std::time::Duration::from_millis(100));
+                    tick(&mut l, token, 160.0, std::time::Duration::from_millis(100));
                 }
             }
         }
         assert_eq!(scrobbled, [1, 2, 3]);
+    }
+
+    #[test]
+    fn listening_counts_steady_steps_and_stalls_but_rejects_seeks_crossfades_and_pauses() {
+        use std::time::{Duration, Instant};
+
+        // Steady 100 ms steps (visible window rate).
+        let mut l = super::Listening::default();
+        let mut now = Instant::now();
+        for i in 0..=100 {
+            super::listen(&mut l, i as f64 * 0.1, 200.0, true, now);
+            now += Duration::from_millis(100);
+        }
+        assert!((l.listened - 10.0).abs() < 1e-9, "100 ms steps: {}", l.listened);
+
+        // Steady 500 ms steps (hidden window rate).
+        let mut l = super::Listening::default();
+        let mut now = Instant::now();
+        for i in 0..=20 {
+            super::listen(&mut l, i as f64 * 0.5, 200.0, true, now);
+            now += Duration::from_millis(500);
+        }
+        assert!((l.listened - 10.0).abs() < 1e-9, "500 ms steps: {}", l.listened);
+
+        // A 3 s stall: counts what actually played, capped at wall-clock time.
+        let mut l = super::Listening::default();
+        let t0 = Instant::now();
+        super::listen(&mut l, 10.0, 200.0, true, t0);
+        super::listen(&mut l, 13.0, 200.0, true, t0 + Duration::from_secs(3));
+        assert!((l.listened - 3.0).abs() < 1e-9, "3 s stall: {}", l.listened);
+        // Slightly ahead of wall clock within slack: still counts, capped at wall time.
+        super::listen(&mut l, 16.15, 200.0, true, t0 + Duration::from_secs(6));
+        assert!((l.listened - 6.0).abs() < 1e-9, "capped at wall time: {}", l.listened);
+
+        // A 30 s forward seek: counts 0.
+        let mut l = super::Listening::default();
+        let t0 = Instant::now();
+        super::listen(&mut l, 10.0, 200.0, true, t0);
+        super::listen(&mut l, 40.0, 200.0, true, t0 + Duration::from_millis(100));
+        assert_eq!(l.listened, 0.0, "30 s forward seek must not count");
+
+        // Backward seek: counts 0, and steady progress after it counts normally.
+        let mut l = super::Listening::default();
+        let t0 = Instant::now();
+        super::listen(&mut l, 50.0, 200.0, true, t0);
+        super::listen(&mut l, 50.5, 200.0, true, t0 + Duration::from_millis(500));
+        super::listen(&mut l, 20.0, 200.0, true, t0 + Duration::from_millis(600));
+        assert!((l.listened - 0.5).abs() < 1e-9, "backward seek must not count");
+        super::listen(&mut l, 20.5, 200.0, true, t0 + Duration::from_millis(1100));
+        assert!((l.listened - 1.0).abs() < 1e-9, "progress after backward seek counts");
+
+        // Crossfade jump: first report mid-track counts 0, and a jump from 0 to 6 s in 100 ms counts 0.
+        let mut l = super::Listening::default();
+        let t0 = Instant::now();
+        super::listen(&mut l, 6.0, 200.0, true, t0);
+        assert_eq!(l.listened, 0.0, "first report mid-crossfade counts 0");
+        super::listen(&mut l, 6.1, 200.0, true, t0 + Duration::from_millis(100));
+        assert!((l.listened - 0.1).abs() < 1e-9);
+
+        let mut l = super::Listening::default();
+        super::listen(&mut l, 0.0, 200.0, true, t0);
+        super::listen(&mut l, 6.0, 200.0, true, t0 + Duration::from_millis(100));
+        assert_eq!(l.listened, 0.0, "crossfade jump from 0 counts 0");
+
+        // Pause and resume: nothing counted while paused, and the first report after resume
+        // does not count the paused span (even if position moved while paused or right at resume).
+        let mut l = super::Listening::default();
+        let t0 = Instant::now();
+        super::listen(&mut l, 10.0, 200.0, true, t0);
+        super::listen(&mut l, 10.5, 200.0, true, t0 + Duration::from_millis(500));
+        assert!((l.listened - 0.5).abs() < 1e-9);
+        // Paused for 20 s (with a report while paused, plus a position jump).
+        super::listen(&mut l, 10.5, 200.0, false, t0 + Duration::from_secs(1));
+        super::listen(&mut l, 15.0, 200.0, false, t0 + Duration::from_secs(10));
+        assert!((l.listened - 0.5).abs() < 1e-9, "nothing counted while paused");
+        // Resumed 10 s later: even if position advanced by 5 s since the last paused report,
+        // the first report after resume only anchors the clock and counts nothing.
+        super::listen(&mut l, 20.0, 200.0, true, t0 + Duration::from_secs(20));
+        assert!((l.listened - 0.5).abs() < 1e-9, "first report after resume must not count paused span");
+        // Subsequent steady playback counts normally.
+        super::listen(&mut l, 20.5, 200.0, true, t0 + Duration::from_millis(20_500));
+        assert!((l.listened - 1.0).abs() < 1e-9, "steady playback after resume counts");
     }
 
     #[test]
