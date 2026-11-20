@@ -258,10 +258,123 @@ class OfflineTest {
         assertEquals(FlushResult.Done, outbox.flush(sender))
         assertTrue(outbox.isEmpty)
         assertEquals(2, logs.count { "refused (read-only build)" in it })
-        outbox.addScrobble("b", 2)
-        sender.fail = SubsonicError.Server(70, null, "not found")
+        for (code in listOf(10, 20, 30, 50, 60, 70)) {
+            outbox.addScrobble("s$code", code.toLong())
+            outbox.setStar("song", "x$code", true, code.toLong())
+            sender.fail = SubsonicError.Server(code, null, "refused $code")
+            assertEquals(FlushResult.Done, outbox.flush(sender))
+            assertTrue("code $code should be dropped", outbox.isEmpty)
+            assertEquals(0, outbox.snapshot().failures)
+        }
+    }
+
+    @Test
+    fun transientServerAndCaptivePortalErrorsKeepEntriesAndBackOff() = runTest {
+        val transientErrors = listOf(
+            SubsonicError.NotSubsonic("unexpected response"),
+            SubsonicError.NotSubsonic("HTTP 429"),
+            SubsonicError.Server(null, 503, null),
+            SubsonicError.Server(null, 408, null),
+            SubsonicError.Server(null, 429, null),
+            SubsonicError.Server(0, null, "generic error"),
+            SubsonicError.AuthFailed(40, "wrong credentials"),
+            offline,
+        )
+        val backoff = Backoff(60_000, 600_000)
+        var now = 1_000L
+        val outbox = Outbox(MemFile(), { now }, backoff)
+        outbox.setStar("song", "x", starred = true, atMs = 10)
+        outbox.addScrobble("a", 20)
+        val sender = FakeSender()
+
+        for ((index, error) in transientErrors.withIndex()) {
+            val expectedFailures = index + 1
+            val expectedAt = now + backoff.delayFor(expectedFailures)
+            sender.fail = error
+            assertEquals("error ${error.message}", FlushResult.Retry(expectedAt), outbox.flush(sender, force = true))
+            assertEquals("both items must stay for ${error.message}", 2, outbox.size)
+            assertEquals(expectedFailures, outbox.snapshot().failures)
+            assertEquals(expectedAt, outbox.snapshot().nextAttemptAtMs)
+            now += 1_000L
+        }
+
+        // Also verify scrobbles alone (no star ahead of them) back off on the same errors.
+        val scrobbleOnly = Outbox(MemFile(), { now }, backoff)
+        scrobbleOnly.addScrobble("b", 30)
+        sender.fail = SubsonicError.NotSubsonic("captive portal")
+        assertEquals(FlushResult.Retry(now + 60_000), scrobbleOnly.flush(sender))
+        assertEquals(1, scrobbleOnly.size)
+        assertEquals(1, scrobbleOnly.snapshot().failures)
+
+        // Once the server recovers, everything queued goes out and backoff resets.
+        sender.fail = null
+        assertEquals(FlushResult.Done, outbox.flush(sender, force = true))
+        assertTrue(outbox.isEmpty)
+        assertEquals(0, outbox.snapshot().failures)
+        assertEquals(0L, outbox.snapshot().nextAttemptAtMs)
+        assertEquals(listOf("star song x true", "scrobble a@20"), sender.calls)
+    }
+
+    @Test
+    fun aRefusedScrobbleBatchIsRetriedOneByOneAndDropsOnlyTheBadItems() = runTest {
+        val logs = mutableListOf<String>()
+        val outbox = Outbox(MemFile(), { 0 }, log = { logs += it })
+        outbox.addScrobble("a", 1)
+        outbox.addScrobble("bad1", 2)
+        outbox.addScrobble("c", 3)
+        outbox.addScrobble("bad2", 4)
+
+        val attempts = mutableListOf<List<String>>()
+        val sent = mutableListOf<String>()
+        val sender = object : OutboxSender {
+            override suspend fun scrobble(ids: List<String>, timesMs: List<Long>) {
+                attempts += ids
+                if (ids.any { it.startsWith("bad") }) throw SubsonicError.Server(70, null, "not found")
+                sent += ids.zip(timesMs).map { (i, t) -> "$i@$t" }
+            }
+            override suspend fun star(kind: String, id: String, starred: Boolean) = Unit
+        }
+
         assertEquals(FlushResult.Done, outbox.flush(sender))
         assertTrue(outbox.isEmpty)
+        assertEquals(0, outbox.snapshot().failures)
+        assertEquals(listOf(listOf("a", "bad1", "c", "bad2"), listOf("a"), listOf("bad1"), listOf("c"), listOf("bad2")), attempts)
+        assertEquals(listOf("a@1", "c@3"), sent)
+        assertEquals(2, logs.count { "dropped" in it })
+    }
+
+    @Test
+    fun aTransientFailureDuringBatchSplitKeepsOnlyTheUnsentItems() = runTest {
+        var now = 0L
+        val outbox = Outbox(MemFile(), { now }, Backoff(60_000, 600_000))
+        outbox.addScrobble("a", 1)
+        outbox.addScrobble("bad", 2)
+        outbox.addScrobble("c", 3)
+
+        var cFails = true
+        val sent = mutableListOf<String>()
+        val sender = object : OutboxSender {
+            override suspend fun scrobble(ids: List<String>, timesMs: List<Long>) {
+                if ("bad" in ids) throw SubsonicError.Server(70, null, "not found")
+                if (cFails && "c" in ids) throw SubsonicError.Server(null, 503, null)
+                sent += ids.zip(timesMs).map { (i, t) -> "$i@$t" }
+            }
+            override suspend fun star(kind: String, id: String, starred: Boolean) = Unit
+        }
+
+        assertEquals(FlushResult.Retry(60_000), outbox.flush(sender))
+        assertEquals(listOf("a@1"), sent)
+        assertEquals(listOf("c"), outbox.snapshot().scrobbles.map { it.id })
+        assertEquals(1, outbox.snapshot().failures)
+        assertEquals(60_000L, outbox.snapshot().nextAttemptAtMs)
+
+        // When the server recovers, only the remaining item is sent.
+        cFails = false
+        now = 60_000
+        assertEquals(FlushResult.Done, outbox.flush(sender))
+        assertTrue(outbox.isEmpty)
+        assertEquals(listOf("a@1", "c@3"), sent)
+        assertEquals(0, outbox.snapshot().failures)
     }
 
     @Test

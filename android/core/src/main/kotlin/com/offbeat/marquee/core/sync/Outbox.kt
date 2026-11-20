@@ -66,17 +66,19 @@ sealed interface FlushResult {
     data object Done : FlushResult
     /** Backing off from a failure: nothing is tried before [atMs]. */
     data class NotDue(val atMs: Long) : FlushResult
-    /** Failed (network); try again at [atMs]. */
+    /** Failed transiently (network, sign-in, or server trouble); try again at [atMs]. */
     data class Retry(val atMs: Long) : FlushResult
 }
 
 /**
  * Writes that wait for the network, kept on disk: scrobble submissions (with their play time) and
- * favourite changes made offline. [flush] sends them in order, scrobbles in batches; on a network
- * failure it stops and backs off ([Backoff.OUTBOX]), keeping everything; what the server or a
- * read-only build refuses is dropped with a log line, so nothing piles up. A scrobble already
- * queued (same song, same time) is not queued again, and the queue keeps at most [maxScrobbles]
- * (the oldest go first).
+ * favourite changes made offline. [flush] sends them in order, scrobbles in batches; on a network,
+ * sign-in, captive-portal or transient server error it stops and backs off ([Backoff.OUTBOX]),
+ * keeping everything; what the server explicitly refuses (a non-zero Subsonic error code) or a
+ * read-only build blocks is dropped with a log line, so nothing piles up. When a batch of several
+ * scrobbles is refused permanently, its items are retried one by one so one bad song ID does not
+ * drop the rest. A scrobble already queued (same song, same time) is not queued again, and the
+ * queue keeps at most [maxScrobbles] (the oldest go first).
  */
 class Outbox(
     private val file: TextFile,
@@ -142,38 +144,75 @@ class Outbox(
             if (start.scrobbles.isEmpty() && start.stars.isEmpty()) break
             for (star in start.stars) {
                 val outcome = attempt("favourite ${star.kind} ${star.id}") { sender.star(star.kind, star.id, star.starred) }
-                if (outcome is FlushResult.Retry) return outcome
+                if (outcome is Attempt.Retry) return outcome.result
                 edit { d -> d.copy(stars = d.stars - star) }
             }
             for (batch in start.scrobbles.chunked(batchSize)) {
                 val what = if (batch.size == 1) "scrobble ${batch[0].id}" else "${batch.size} scrobbles"
-                val outcome = attempt(what) { sender.scrobble(batch.map { it.id }, batch.map { it.timeMs }) }
-                if (outcome is FlushResult.Retry) return outcome
-                val sent = batch.toSet()
-                edit { d -> d.copy(scrobbles = d.scrobbles.filterNot { it in sent }) }
+                when (val outcome = attempt(what, logRefusal = batch.size == 1) { sender.scrobble(batch.map { it.id }, batch.map { it.timeMs }) }) {
+                    is Attempt.Retry -> return outcome.result
+                    Attempt.Sent, Attempt.Dropped -> {
+                        val sent = batch.toSet()
+                        edit { d -> d.copy(scrobbles = d.scrobbles.filterNot { it in sent }) }
+                    }
+                    is Attempt.Refused -> {
+                        if (batch.size == 1) {
+                            edit { d -> d.copy(scrobbles = d.scrobbles - batch[0]) }
+                        } else {
+                            log("outbox: ${batch.size} scrobbles refused (code ${outcome.code}), retrying one by one")
+                            for (item in batch) {
+                                val single = attempt("scrobble ${item.id}") { sender.scrobble(listOf(item.id), listOf(item.timeMs)) }
+                                if (single is Attempt.Retry) return single.result
+                                edit { d -> d.copy(scrobbles = d.scrobbles - item) }
+                            }
+                        }
+                    }
+                }
             }
         }
         edit { d -> d.copy(failures = 0, nextAttemptAtMs = 0) }
         FlushResult.Done
     }
 
-    /** One send: null when it went (or was dropped for good), [FlushResult.Retry] to stop and back off. */
-    private suspend fun attempt(what: String, send: suspend () -> Unit): FlushResult? {
+    private sealed interface Attempt {
+        data object Sent : Attempt
+        data object Dropped : Attempt
+        data class Refused(val code: Int) : Attempt
+        data class Retry(val result: FlushResult.Retry) : Attempt
+    }
+
+    /** One send: [Attempt.Sent] / [Attempt.Dropped] / [Attempt.Refused] to remove it, [Attempt.Retry] to stop and back off. */
+    private suspend fun attempt(what: String, logRefusal: Boolean = true, send: suspend () -> Unit): Attempt {
         try {
             send()
             log("outbox: $what sent")
-            return null
-        } catch (e: SubsonicError.RefusedReadOnly) {
-            log("outbox: $what dropped: ${e.endpoint} refused (read-only build), not sent")
-            return null
-        } catch (e: SubsonicError.Network) {
-            return backOff(what, "network")
-        } catch (e: SubsonicError.AuthFailed) {
-            return backOff(what, "sign-in refused")
+            return Attempt.Sent
         } catch (e: SubsonicError) {
-            // The server answered and said no (an unknown song, say): sending again won't help.
-            log("outbox: $what dropped: the server refused it (${e.javaClass.simpleName})")
-            return null
+            return when (e) {
+                is SubsonicError.RefusedReadOnly -> {
+                    log("outbox: $what dropped: ${e.endpoint} refused (read-only build), not sent")
+                    Attempt.Dropped
+                }
+                is SubsonicError.Network -> Attempt.Retry(backOff(what, "network"))
+                is SubsonicError.AuthFailed -> Attempt.Retry(backOff(what, "sign-in refused"))
+                is SubsonicError.NotSubsonic -> Attempt.Retry(backOff(what, "unexpected response"))
+                is SubsonicError.InvalidUrl -> Attempt.Retry(backOff(what, "invalid address"))
+                is SubsonicError.Server -> {
+                    val code = e.code
+                    if (code == null || code == 0) {
+                        val why = when {
+                            code == 0 -> "server error 0"
+                            e.httpStatus != null -> "HTTP ${e.httpStatus}"
+                            else -> "server error"
+                        }
+                        Attempt.Retry(backOff(what, why))
+                    } else {
+                        // Explicit Subsonic refusal (e.g. 70 not found, 10/20/30 version/parameter, 50 unauthorized): sending again won't help.
+                        if (logRefusal) log("outbox: $what dropped: the server refused it (code $code)")
+                        Attempt.Refused(code)
+                    }
+                }
+            }
         }
     }
 
