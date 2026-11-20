@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn a_cut_with_fewer_frames_left_scales_the_fade_to_zero() {
         let r = Ring::new(48_000, FRAMES);
-        assert!(r.push(&vec![1.0f32; 2 * 10]));
+        assert!(r.push(&[1.0f32; 2 * 10]));
         assert_eq!(take_vec(&r, 8).0, 8);
         // Only 2 frames remain, fewer than the requested 8-frame fade.
         r.cut(8);
