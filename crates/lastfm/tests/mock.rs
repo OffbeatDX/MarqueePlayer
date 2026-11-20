@@ -430,6 +430,42 @@ fn an_answer_that_is_not_last_fms_keeps_the_queue() {
 }
 
 #[test]
+fn a_truncated_scrobble_reply_is_retried_and_keeps_the_queue() {
+    let d = dir("truncated");
+    connected(&d);
+    let calls = Arc::new(Mutex::new(0));
+    let c = calls.clone();
+    let m = mock(Box::new(move |f| {
+        assert_eq!(f.keys().filter(|k| k.starts_with("artist[")).count(), 2, "neither play dropped before a full reply");
+        let n = {
+            let mut g = c.lock().unwrap();
+            *g += 1;
+            *g
+        };
+        match n {
+            1 => (200, "{}".into()),
+            2 => (200, r#"{"scrobbles":{"@attr":{"accepted":2,"ignored":0}}}"#.into()),
+            3 => (200, r##"{"scrobbles":{"@attr":{"accepted":1,"ignored":0},"scrobble":{"ignoredMessage":{"code":"0","#text":""}}}}"##.into()),
+            4 => (200, r##"{"scrobbles":{"@attr":{"accepted":1,"ignored":0},"scrobble":[{"ignoredMessage":{"code":"0","#text":""}}]}}"##.into()),
+            _ => accept_all(f),
+        }
+    }));
+    // Queue while offline so both plays go together in one batch.
+    let mut run = start(&d, &offline());
+    run.wait("connected", |s| matches!(s.state, State::Connected { .. }));
+    run.s.scrobble(play(1, "A"));
+    run.s.scrobble(play(2, "B"));
+    run.wait("both queued offline", |s| s.note.contains("could not be reached") && s.queued == 2);
+    drop(run);
+
+    let mut run = start(&d, &m.url);
+    let st = run.wait("done", |s| s.queued == 0 && s.note.starts_with("Sent"));
+    assert_eq!(st.note, "Sent 2 scrobbles");
+    assert_eq!(*calls.lock().unwrap(), 5, "missing and short replies were retried until a full reply arrived");
+    assert!(queue_file(&d).is_empty());
+}
+
+#[test]
 fn plays_past_the_daily_limit_are_kept_for_later() {
     let d = dir("daily-limit");
     connected(&d);

@@ -207,28 +207,44 @@ impl Client {
 
     /// track.scrobble, up to `BATCH` at once: what became of each, in order.
     pub fn scrobble(&self, session: &str, batch: &[Scrobble]) -> Result<Vec<Outcome>, ApiError> {
+        if batch.is_empty() {
+            return Ok(Vec::new());
+        }
         let params: Vec<(String, String)> = batch.iter().enumerate().flat_map(|(i, s)| Self::track_params(s, Some(i))).collect();
         let j = self.call("track.scrobble", params, Some(session))?;
-        let list = match j.get("scrobbles").and_then(|s| s.get("scrobble")) {
-            Some(Value::Array(a)) => a.clone(),
-            Some(v @ Value::Object(_)) => vec![v.clone()],
-            _ => Vec::new(),
-        };
-        Ok((0..batch.len())
-            .map(|i| {
-                let ignored = list.get(i).and_then(|s| s.get("ignoredMessage"));
-                let code = ignored.and_then(|m| m.get("code")).map(|c| c.as_str().map(str::to_owned).unwrap_or_else(|| c.to_string()));
-                match code.as_deref() {
-                    None | Some("0") | Some("") => Outcome::Accepted,
-                    Some("5") => Outcome::Limited,
-                    Some(c) => {
-                        let text = ignored.and_then(|m| m.get("#text")).and_then(Value::as_str).unwrap_or("");
-                        Outcome::Ignored(format!("code {c}: {text}"))
-                    }
+        parse_scrobble_outcomes(&j, batch.len())
+    }
+}
+
+/// Parse `scrobbles.scrobble` from a `track.scrobble` reply. Last.fm returns an object rather
+/// than an array for a single play. A missing list or a count that does not match what was
+/// sent is treated as a transient error so nothing is dropped from the queue.
+fn parse_scrobble_outcomes(j: &Value, expected: usize) -> Result<Vec<Outcome>, ApiError> {
+    let list: &[Value] = match j.get("scrobbles").and_then(|s| s.get("scrobble")) {
+        Some(Value::Array(a)) => a.as_slice(),
+        Some(v @ Value::Object(_)) => std::slice::from_ref(v),
+        _ => return Err(ApiError::Transient(0, "no scrobbles in the answer".into())),
+    };
+    if list.len() != expected {
+        return Err(ApiError::Transient(0, format!("expected {expected} scrobble outcomes, got {}", list.len())));
+    }
+    list.iter()
+        .map(|entry| {
+            if !entry.is_object() {
+                return Err(ApiError::Transient(0, "unexpected scrobble outcome in the answer".into()));
+            }
+            let ignored = entry.get("ignoredMessage");
+            let code = ignored.and_then(|m| m.get("code")).map(|c| c.as_str().map(str::to_owned).unwrap_or_else(|| c.to_string()));
+            Ok(match code.as_deref() {
+                None | Some("0") | Some("") => Outcome::Accepted,
+                Some("5") => Outcome::Limited,
+                Some(c) => {
+                    let text = ignored.and_then(|m| m.get("#text")).and_then(Value::as_str).unwrap_or("");
+                    Outcome::Ignored(format!("code {c}: {text}"))
                 }
             })
-            .collect())
-    }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -263,5 +279,62 @@ mod tests {
         assert!(matches!(ApiError::from_code(13, "x".into()), ApiError::Credentials(13, _)));
         assert!(matches!(ApiError::from_code(6, "x".into()), ApiError::Rejected(6, _)));
         assert_eq!(ApiError::from_code(14, "x".into()), ApiError::NotAuthorised);
+    }
+
+    fn json(s: &str) -> Value {
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn scrobble_reply_parses_full_list_and_single_object_form() {
+        let full = json(
+            r##"{"scrobbles":{"@attr":{"accepted":1,"ignored":2},"scrobble":[
+                {"ignoredMessage":{"code":"0","#text":""}},
+                {"ignoredMessage":{"code":"3","#text":"Timestamp too old"}},
+                {"ignoredMessage":{"code":5,"#text":"Daily scrobble limit exceeded"}}
+            ]}}"##,
+        );
+        assert_eq!(
+            parse_scrobble_outcomes(&full, 3),
+            Ok(vec![Outcome::Accepted, Outcome::Ignored("code 3: Timestamp too old".into()), Outcome::Limited])
+        );
+
+        // Last.fm encodes a single-scrobble reply as an object instead of a 1-element array.
+        let single_obj = json(r##"{"scrobbles":{"@attr":{"accepted":1,"ignored":0},"scrobble":{"ignoredMessage":{"code":"0","#text":""}}}}"##);
+        assert_eq!(parse_scrobble_outcomes(&single_obj, 1), Ok(vec![Outcome::Accepted]));
+
+        let single_arr = json(r##"{"scrobbles":{"@attr":{"accepted":1,"ignored":0},"scrobble":[{"ignoredMessage":{"code":"0","#text":""}}]}}"##);
+        assert_eq!(parse_scrobble_outcomes(&single_arr, 1), Ok(vec![Outcome::Accepted]));
+    }
+
+    #[test]
+    fn scrobble_reply_missing_or_mismatched_list_is_transient() {
+        for raw in [
+            "{}",
+            r#"{"scrobbles":{}}"#,
+            r#"{"scrobbles":{"@attr":{"accepted":1,"ignored":0}}}"#,
+            r#"{"scrobbles":{"scrobble":null}}"#,
+            r#"{"scrobbles":{"scrobble":[]}}"#,
+            r#"{"scrobbles":{"scrobble":[null]}}"#,
+        ] {
+            let err = parse_scrobble_outcomes(&json(raw), 1).unwrap_err();
+            assert!(err.is_transient(), "{raw} -> {err:?}");
+        }
+
+        // Short list (1 entry for a 2-play batch), in both array and single-object forms.
+        let short_arr = json(r##"{"scrobbles":{"scrobble":[{"ignoredMessage":{"code":"0","#text":""}}]}}"##);
+        assert!(parse_scrobble_outcomes(&short_arr, 2).unwrap_err().is_transient());
+        let short_obj = json(r##"{"scrobbles":{"scrobble":{"ignoredMessage":{"code":"0","#text":""}}}}"##);
+        assert!(parse_scrobble_outcomes(&short_obj, 2).unwrap_err().is_transient());
+
+        // Overlong list (3 entries for a 2-play batch).
+        let long_arr = json(
+            r##"{"scrobbles":{"scrobble":[
+                {"ignoredMessage":{"code":"0","#text":""}},
+                {"ignoredMessage":{"code":"0","#text":""}},
+                {"ignoredMessage":{"code":"0","#text":""}}
+            ]}}"##,
+        );
+        assert!(parse_scrobble_outcomes(&long_arr, 2).unwrap_err().is_transient());
     }
 }
