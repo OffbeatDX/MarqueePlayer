@@ -580,19 +580,23 @@ fn nesting_depth_is_the_longest_path_and_matches_evaluation() {
     diamond(500, 5);
     assert!(too_deep(&names(500), None), "evaluation stops on the long way");
     assert_eq!(would_cycle(&conn, None, &names(500)), Some("Nest 500".into()), "so saving is refused");
-    // One shorter: eight, which is fine either way.
+    // One shorter: eight, which evaluation enters; but saved, the new playlist is evaluated
+    // as itself, a ninth, so saving it is refused too.
     diamond(600, 4);
     assert!(!too_deep(&names(600), None));
-    assert_eq!(would_cycle(&conn, None, &names(600)), None);
+    assert_eq!(would_cycle(&conn, None, &names(600)), Some("Nest 600".into()));
+    assert_eq!(would_cycle(&conn, None, &names(601)), None, "the short way alone is fine");
 
-    // A legal deep chain: eight smart playlists under a new one is fine; under a saved one
-    // (which counts itself when evaluated) it is one too many, both ways.
+    // A deep chain: eight smart playlists under a saved one (which counts itself when
+    // evaluated) is one too many, both ways; a new one is refused alike, as it will count
+    // itself once saved; seven under either is fine.
     for i in 0..8 {
         let below: Vec<i64> = if i == 7 { vec![] } else { vec![701 + i] };
         smart_naming(&conn, 700 + i, &below);
     }
-    assert!(!too_deep(&names(700), None));
-    assert_eq!(would_cycle(&conn, None, &names(700)), None);
+    assert!(!too_deep(&names(700), None), "evaluated unsaved (the editor's preview)");
+    assert!(would_cycle(&conn, None, &names(700)).is_some(), "saving it new");
+    assert_eq!(would_cycle(&conn, None, &names(701)), None);
     smart_naming(&conn, 799, &[]);
     assert!(too_deep(&names(700), Some(799)));
     assert!(would_cycle(&conn, Some(799), &names(700)).is_some());

@@ -596,7 +596,9 @@ pub fn references(smart: &Smart) -> Vec<i64> {
 /// yet (only depth is checked).
 ///
 /// Depth is counted the way evaluation counts it: the smart playlists entered on the way
-/// down, `me` among them once it is saved; an ordinary playlist adds none. Every path counts,
+/// down, `me` among them, a new playlist too (once saved, it is evaluated as itself, so a
+/// depth fine only before it is saved would be one too many after); an ordinary playlist adds
+/// none. Every path counts,
 /// not just the first one that reaches a playlist: two branches can meet again lower down,
 /// and the longer one decides.
 pub fn would_cycle(conn: &Connection, me: Option<i64>, smart: &Smart) -> Option<String> {
@@ -639,8 +641,8 @@ pub fn would_cycle(conn: &Connection, me: Option<i64>, smart: &Smart) -> Option<
         heights.insert(id, h);
         Some(h)
     }
-    // Evaluating `me` starts with it on the stack.
-    let limit = MAX_DEPTH - usize::from(me.is_some());
+    // Evaluating `me` starts with it on the stack; a new playlist will be `me` once saved.
+    let limit = MAX_DEPTH - 1;
     let mut heights = HashMap::new();
     for id in references(smart) {
         if height(conn, me, id, limit, &mut heights, &mut Vec::new()).is_none() {
