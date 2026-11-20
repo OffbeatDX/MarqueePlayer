@@ -12,9 +12,10 @@
 # runners' clock), and the run fails if the build came out with any other number. By hand
 # (Actions > Release > Run workflow) the number may be given; without one it is today's .1.
 #
-# A tag builds all three systems. By hand, each can be left out (a macOS runner's minute costs
-# ten Linux ones on a private repository); the checks run on the systems built, and the
-# number comparison compares those.
+# A tag builds all three systems and the Android APK. By hand, each can be left out (a macOS
+# runner's minute costs ten Linux ones on a private repository), down to Android alone; the
+# checks run on the desktop systems built (none: no checks), and the number comparison
+# compares those.
 name: Release
 
 on:
@@ -77,6 +78,8 @@ jobs:
       windows: ${{ steps.s.outputs.windows }}
       linux: ${{ steps.s.outputs.linux }}
       macos: ${{ steps.s.outputs.macos }}
+      android: ${{ steps.s.outputs.android }}
+      # The desktop systems, separated by commas; empty when only Android is built.
       systems: ${{ steps.s.outputs.systems }}
     steps:
       # A tag builds everything; a run by hand what was ticked.
@@ -86,23 +89,27 @@ jobs:
           WINDOWS: ${{ inputs.windows }}
           LINUX: ${{ inputs.linux }}
           MACOS: ${{ inputs.macos }}
+          ANDROID: ${{ inputs.android }}
         run: |
           # (Read below by name, ${!v}.)
           # shellcheck disable=SC2034
-          if [ "$EVENT" != workflow_dispatch ]; then WINDOWS=true LINUX=true MACOS=true; fi
-          systems=()
-          for s in windows linux macos; do
+          if [ "$EVENT" != workflow_dispatch ]; then WINDOWS=true LINUX=true MACOS=true ANDROID=true; fi
+          systems=() chosen=()
+          for s in windows linux macos android; do
             v=${s^^}; on=${!v}
             [ "$on" = true ] || on=false
             echo "$s=$on" >> "$GITHUB_OUTPUT"
-            if [ "$on" = true ]; then systems+=("$s"); fi
+            if [ "$on" = true ]; then
+              chosen+=("$s")
+              if [ "$s" != android ]; then systems+=("$s"); fi
+            fi
           done
-          if [ ${#systems[@]} -eq 0 ]; then
-            echo "::error::no system chosen: tick Windows, Linux or macOS"; exit 1
+          if [ ${#chosen[@]} -eq 0 ]; then
+            echo "::error::nothing chosen: tick Windows, Linux, macOS or Android"; exit 1
           fi
           list=$(IFS=,; echo "${systems[*]}")
           echo "systems=$list" >> "$GITHUB_OUTPUT"
-          echo "Building for $list."
+          echo "Building for $(IFS=,; echo "${chosen[*]}")."
 
       - id: n
         env:
@@ -131,12 +138,14 @@ jobs:
           echo "seed=$day $((count - 1)) ci-seed" >> "$GITHUB_OUTPUT"
           echo "This release is $want."
 
-  # The checks on the systems this release builds (macOS only when it is one of them).
+  # The checks on the desktop systems this release builds (macOS only when it is one of them).
+  # The Android app's tests and lint are android.yml's.
   checks:
     name: Checks
     needs: number
-    # Left out only when a run by hand asks for a test build (a tag's run has no such input).
-    if: ${{ !inputs.skip-checks }}
+    # Left out when a run by hand asks for a test build (a tag's run has no such input), or
+    # builds no desktop system (Android alone). The desktop jobs take a skipped checks job.
+    if: ${{ !inputs.skip-checks && needs.number.outputs.systems != '' }}
     uses: ./.github/workflows/desktop.yml
     with:
       systems: ${{ needs.number.outputs.systems }}
@@ -395,7 +404,9 @@ jobs:
   android:
     name: Android (signed APK)
     needs: number
-    if: ${{ github.ref_type == 'tag' || inputs.android }}
+    # As chosen (a tag: always). Not `inputs.android` with the ref type: a run by hand from a
+    # tag would then build it unticked.
+    if: ${{ needs.number.outputs.android == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:
@@ -468,7 +479,8 @@ jobs:
 
   # The builds of one release must carry one number (they could differ across midnight UTC).
   # It runs whatever the builds' outcome, so that a build chosen but failed or skipped fails
-  # the run here too, and compares only the systems chosen.
+  # the run here too, and compares only the systems chosen; with no desktop system (Android
+  # alone) it has nothing to compare and passes.
   same-number:
     name: Same release number
     needs: [number, windows, linux, macos]
@@ -501,9 +513,14 @@ jobs:
             if [ -z "$first" ]; then first=${!s}
             elif [ "${!s}" != "$first" ]; then failed=1; fi
           done
-          printf '%s\n' "${lines[@]}"
+          if [ ${#lines[@]} -gt 0 ]; then printf '%s\n' "${lines[@]}"; fi
           if [ "$failed" = 1 ]; then
             echo "::error::not every system chosen built the same number (above): run the release again"; exit 1
+          fi
+          if [ -z "$first" ]; then
+            echo "No desktop system was built."
+            echo "No desktop system was built." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
           echo "version=$first" >> "$GITHUB_OUTPUT"
           echo "### Marquee Player $first" >> "$GITHUB_STEP_SUMMARY"
@@ -513,12 +530,13 @@ jobs:
   # symbols, which hold the build machines' paths and stay this run's artifacts) and notes
   # generated from the commits; the owner reads it and publishes it, or not. A draft made by
   # an earlier run for the tag gets this run's files instead; a published release is never
-  # changed. Runs by hand stop at the artifacts. The one job that may write to the repository.
+  # changed. Runs by hand stop at the artifacts, even from a tag (those may leave systems out,
+  # and this job takes every package). The one job that may write to the repository.
   publish:
     name: Draft GitHub release
     needs: [number, same-number, android]
     # Not when the APK's build failed (a release without the secrets has none, and is made).
-    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.same-number.result == 'success' && needs.android.result == 'success' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref_type == 'tag' && needs.same-number.result == 'success' && needs.android.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
