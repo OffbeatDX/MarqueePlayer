@@ -63,7 +63,10 @@ Environment:
                       (default ~/.local/share/mp-build/appimage-tools)
   MP_CODESIGN_IDENTITY  macOS: a Developer ID Application identity in the keychain to sign
                       with (hardened runtime, timestamp) instead of the ad-hoc signature;
-                      notarising is not done (docs/macos.md, \"The package\")"
+                      notarising is not done (docs/macos.md, \"The package\")
+  MP_RELEASE_VERSION  the release number to build (YYYY.M.D.count), instead of the one
+                      crates/app/build.rs would make from the date and its state files (CI
+                      gives each system's build the number it made once for the release)"
     )
 }
 
@@ -82,7 +85,13 @@ pub fn run(args: Vec<String>) -> Result<(), Fail> {
             _ => return Err(p.unknown(&a)),
         }
     }
-    let result = Workspace::find(&common).and_then(|ws| {
+    let result = version::given(std::env::var(version::GIVEN_VAR).ok().as_deref()).map_err(Fail::msg).and_then(|given| {
+        if let Some(v) = given {
+            println!("release number {v}, from {}", version::GIVEN_VAR);
+        }
+        Workspace::find(&common)
+    });
+    let result = result.and_then(|ws| {
         let target = match (ws.chosen, home()) {
             (false, Some(home)) if cfg!(target_os = "linux") => home.join(".cache").join("mp-release-target"),
             _ => ws.target.clone(),

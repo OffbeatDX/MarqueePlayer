@@ -6,11 +6,13 @@
 # packages; nothing is public until the owner publishes that draft. Nothing is signed beyond
 # macOS' ad-hoc signature, which Apple Silicon requires.
 #
-# The release number (YYYY.M.D.count) is made by crates/app/build.rs from state files that a
-# fresh checkout does not have, so on its own every CI release would be today's count 1. A tag
-# names the number instead: pushing v2026.11.19.2 builds 2026.11.19.2, on that day (UTC: the
-# runners' clock), and the run fails if the build came out with any other number. By hand
-# (Actions > Release > Run workflow) the number may be given; without one it is today's .1.
+# The release number (YYYY.M.D.count) is made once, by the first job, and given to every build
+# in MP_RELEASE_VERSION (crates/app/build.rs takes it instead of numbering the build from the
+# date and state files a fresh checkout does not have), so builds on either side of midnight
+# get the same number. A tag names it: pushing v2026.11.19.2 builds 2026.11.19.2, on that day
+# or the next (UTC: the runners' clock; a tag pushed just before midnight), and the run fails
+# if a build came out with any other number. By hand (Actions > Release > Run workflow) the
+# number may be given; without one it is today's .1.
 #
 # A tag builds all three systems and the Android APK. By hand, each can be left out (a macOS
 # runner's minute costs ten Linux ones on a private repository), down to Android alone; the
@@ -73,8 +75,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      # The release number every build takes (MP_RELEASE_VERSION), always set.
       expected: ${{ steps.n.outputs.expected }}
-      seed: ${{ steps.n.outputs.seed }}
       windows: ${{ steps.s.outputs.windows }}
       linux: ${{ steps.s.outputs.linux }}
       macos: ${{ steps.s.outputs.macos }}
@@ -119,23 +121,24 @@ jobs:
         run: |
           want=""
           if [ "$REF_TYPE" = tag ]; then want=${REF_NAME#v}; else want=$INPUT; fi
+          today=$(date -u +%Y.%-m.%-d)
           if [ -z "$want" ]; then
+            want=$today.1
             echo "No release number given: this build is numbered today's (UTC) .1, as a fresh checkout is."
-            exit 0
           fi
-          # build.rs writes the date without leading zeros: 2026.1.5.3.
-          if ! [[ "$want" =~ ^([0-9]{4}\.[1-9][0-9]?\.[1-9][0-9]?)\.([1-9][0-9]{0,4})$ ]]; then
+          # As build.rs writes it, the date without leading zeros (2026.1.5.3); build.rs
+          # refuses any other MP_RELEASE_VERSION (src/release_number.rs).
+          if ! [[ "$want" =~ ^([0-9]{4}\.[1-9][0-9]?\.[1-9][0-9]?)\.([1-9][0-9]{0,4})$ ]] || [ "${BASH_REMATCH[2]}" -gt 65535 ]; then
             echo "::error::$want is not a release number (YYYY.M.D.count, no leading zeros)"; exit 1
           fi
-          day=${BASH_REMATCH[1]} count=${BASH_REMATCH[2]}
-          today=$(date -u +%Y.%-m.%-d)
-          if [ "$day" != "$today" ]; then
-            echo "::error::$want is not dated today: build.rs numbers a release by the day it is built ($today, UTC, on the runners)"; exit 1
+          day=${BASH_REMATCH[1]}
+          # A release is numbered by the day it is made: today, or yesterday for a tag pushed
+          # just before midnight UTC.
+          yesterday=$(date -u -d yesterday +%Y.%-m.%-d)
+          if [ "$day" != "$today" ] && [ "$day" != "$yesterday" ]; then
+            echo "::error::$want is not dated today ($today, UTC, on the runners) or yesterday"; exit 1
           fi
           echo "expected=$want" >> "$GITHUB_OUTPUT"
-          # crates/app/.build-version as build.rs reads it ("YYYY.M.D count fingerprint"): a
-          # fingerprint that matches no source, so the build takes the count after this one.
-          echo "seed=$day $((count - 1)) ci-seed" >> "$GITHUB_OUTPUT"
           echo "This release is $want."
 
   # The checks on the desktop systems this release builds (macOS only when it is one of them).
@@ -186,14 +189,11 @@ jobs:
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
-      - name: Release number state
-        if: needs.number.outputs.seed != ''
-        env:
-          SEED: ${{ needs.number.outputs.seed }}
-        run: printf '%s\n' "$SEED" > crates/app/.build-version
-
-      # The tests and clippy ran in the checks job, for this commit.
+      # The tests and clippy ran in the checks job, for this commit. The number is the one
+      # made once for the release, not this build's date (which may be the next day).
       - name: cargo xtask release
+        env:
+          MP_RELEASE_VERSION: ${{ needs.number.outputs.expected }}
         run: cargo xtask release --skip-checks
 
       - name: The number it was given
@@ -288,13 +288,10 @@ jobs:
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
-      - name: Release number state
-        if: needs.number.outputs.seed != ''
-        env:
-          SEED: ${{ needs.number.outputs.seed }}
-        run: printf '%s\n' "$SEED" > crates/app/.build-version
-
+      # The number made once for the release, not this build's date (which may be the next day).
       - name: cargo xtask release
+        env:
+          MP_RELEASE_VERSION: ${{ needs.number.outputs.expected }}
         run: cargo xtask release --skip-checks
 
       - name: The number it was given
@@ -360,13 +357,10 @@ jobs:
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
-      - name: Release number state
-        if: needs.number.outputs.seed != ''
-        env:
-          SEED: ${{ needs.number.outputs.seed }}
-        run: printf '%s\n' "$SEED" > crates/app/.build-version
-
+      # The number made once for the release, not this build's date (which may be the next day).
       - name: cargo xtask release
+        env:
+          MP_RELEASE_VERSION: ${{ needs.number.outputs.expected }}
         run: cargo xtask release --skip-checks
 
       - name: The number it was given
@@ -433,15 +427,17 @@ jobs:
       - if: ${{ env.HAS_KEY == 'true' }}
         uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
 
-      # The tag's number, or the one given by hand; without one, today's (UTC) .1, as the
-      # desktop builds number themselves.
+      # The number the desktop builds take, made once for the release (the tag's, the one given
+      # by hand, or the day's .1): not this job's date, which may be the next day. The
+      # versionCode follows from it (android/app/build.gradle.kts), not from the clock.
       - name: Version
         id: version
         if: ${{ env.HAS_KEY == 'true' }}
         env:
           EXPECTED: ${{ needs.number.outputs.expected }}
         run: |
-          version=${EXPECTED:-$(date -u +%Y.%-m.%-d).1}
+          version=$EXPECTED
+          if [ -z "$version" ]; then echo "::error::the number job gave no release number"; exit 1; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Building Marquee Player for Android $version"
 
@@ -477,7 +473,8 @@ jobs:
           archive: false
           if-no-files-found: error
 
-  # The builds of one release must carry one number (they could differ across midnight UTC).
+  # The builds of one release must carry one number (each is given it, and checks it got it;
+  # this holds them to it together).
   # It runs whatever the builds' outcome, so that a build chosen but failed or skipped fails
   # the run here too, and compares only the systems chosen; with no desktop system (Android
   # alone) it has nothing to compare and passes.

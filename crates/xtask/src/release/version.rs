@@ -19,6 +19,22 @@ pub fn release(text: &str) -> Result<String, String> {
     Ok(v.to_owned())
 }
 
+// The check `crates/app/build.rs` makes of a release number given in `MP_RELEASE_VERSION`.
+#[path = "../../../app/src/release_number.rs"]
+mod given;
+
+/// `MP_RELEASE_VERSION`.
+pub use given::VAR as GIVEN_VAR;
+
+/// `MP_RELEASE_VERSION`, when set and not empty: the number the release build will take, checked
+/// as `build.rs` checks it, so that a malformed one is refused before the tests and the build.
+pub fn given(value: Option<&str>) -> Result<Option<String>, String> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(None),
+        Some(v) => given::parse(v).map(|_| Some(v.to_owned())),
+    }
+}
+
 /// What `MarqueePlayer --version` prints for release `v`.
 pub fn says(v: &str) -> String {
     format!("Marquee Player {v}")
@@ -36,5 +52,24 @@ mod tests {
             assert!(release(bad).is_err(), "{bad:?} was taken");
         }
         assert_eq!(says("2026.11.17.4"), "Marquee Player 2026.11.17.4");
+    }
+
+    #[test]
+    fn given_numbers() {
+        assert_eq!(given(None), Ok(None));
+        assert_eq!(given(Some("")), Ok(None));
+        assert_eq!(given(Some("  ")), Ok(None));
+        assert_eq!(given(Some("2026.11.20.1")), Ok(Some("2026.11.20.1".to_owned())));
+        assert_eq!(given(Some(" 2026.1.5.3\r\n")), Ok(Some("2026.1.5.3".to_owned())));
+        assert_eq!(given::parse("2026.12.31.65535"), Ok([2026, 12, 31, 65535]));
+        assert_eq!(given::parse("2026.1.1.1"), Ok([2026, 1, 1, 1]));
+        for bad in [
+            "2026.11.20", "2026.11.20.1.1", "2026.11.20-dev", "v2026.11.20.1", "2026.01.5.3", "2026.1.05.3", "2026.1.5.03",
+            "2026.0.5.3", "2026.13.5.3", "2026.1.0.3", "2026.1.32.3", "2026.1.5.0", "2026.1.5.65536", "2026.1.5.123456",
+            "026.1.5.3", "20266.1.5.3", "0226.1.5.3", "2026..5.3", "2026.1.5.", "2026.+1.5.3", "2026.1.5.3 ", "x",
+        ] {
+            assert!(given::parse(bad).is_err(), "{bad:?} was taken");
+        }
+        assert!(given(Some("2026.13.5.3")).unwrap_err().contains("MP_RELEASE_VERSION"));
     }
 }

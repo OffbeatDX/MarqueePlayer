@@ -1,5 +1,7 @@
 #[path = "src/tray/icon_art.rs"]
 mod icon_art;
+#[path = "src/release_number.rs"]
+mod release_number;
 
 use std::path::Path;
 
@@ -84,6 +86,12 @@ const COPYRIGHT: &str = "Copyright \u{a9} 2026 Offbeat";
 // release builds of the same tree in the same checkout, one after the other in either
 // order (each with its own target folder, so each runs this script), get the same number.
 // Dev builds do not watch the sources (that would recompile the UI on every edit).
+//
+// A release build with `MP_RELEASE_VERSION` set (`src/release_number.rs`) takes that number
+// instead, whatever the date, the state files and the sources (and writes them as for any
+// release): CI makes a release's number once and gives it to every system's build, so builds
+// on either side of midnight cannot differ. Unset (or empty), nothing changes. A dev build
+// ignores it.
 
 struct Version {
     /// "2026.11.15.3", or "2026.11.15-dev".
@@ -122,12 +130,19 @@ fn app_version() -> Version {
     let state = Path::new(&dir).join(".build-version");
     let saved = std::fs::read_to_string(&state).ok();
     let print = fingerprint(&workspace);
-    let (day, count) = match same_sources(saved.as_deref(), &print) {
-        Some(kept) => {
+    println!("cargo:rerun-if-env-changed={}", release_number::VAR);
+    let given = std::env::var(release_number::VAR).ok().filter(|v| !v.trim().is_empty());
+    let (day, count) = match (given, same_sources(saved.as_deref(), &print)) {
+        (Some(v), _) => {
+            let [y, m, d, n] = release_number::parse(v.trim()).unwrap_or_else(|e| panic!("{e}"));
+            println!("cargo:warning=release {y}.{m}.{d}.{n}: the number {} gives", release_number::VAR);
+            (format!("{y}.{m}.{d}"), n)
+        }
+        (None, Some(kept)) => {
             println!("cargo:warning=release {}.{}: the same sources as the last release, so the same number", kept.0, kept.1);
             kept
         }
-        None => (date.clone(), next_count(saved.as_deref(), &date)),
+        (None, None) => (date.clone(), next_count(saved.as_deref(), &date)),
     };
     let parts: Vec<u16> = day.split('.').filter_map(|p| p.parse().ok()).collect();
     let [y, m, d] = parts[..] else { panic!(".build-version: bad date {day}") };
