@@ -1573,6 +1573,7 @@ pub fn refresh_player_settings(st: &Rc<State>) {
     p.set_no_tray(!crate::platform::system::tray_host());
     p.set_bar_autohide(s.bar_autohide);
     p.set_tray_animation(s.tray_animation);
+    p.set_tray_animation_offered(crate::platform::system::TRAY_ANIMATES);
     let edition = crate::edition::get();
     let autostart = crate::platform::integration::autostart(edition);
     p.set_autostart_offered(autostart.is_some());

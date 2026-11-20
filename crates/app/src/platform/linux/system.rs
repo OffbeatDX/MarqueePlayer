@@ -39,6 +39,9 @@ pub const THEME_FONT: &str = "\"\"";
 /// Skia's OpenGL surface is in every build here (`SLINT_BACKEND=winit-skia-opengl` works).
 pub const HAS_SKIA_OPENGL: bool = true;
 
+/// The tray icon's bars move while music plays (`tray::anim`, Settings > Window).
+pub const TRAY_ANIMATES: bool = true;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (OpenGL, else Vulkan through wgpu, else software)")];
 
 /// The theme's family as it can be drawn here: as named (fontconfig finds a fallback).

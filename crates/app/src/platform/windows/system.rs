@@ -18,6 +18,9 @@ pub fn app_dirs() -> crate::paths::Dirs {
 /// Skia's OpenGL surface only in builds with the `bench-opengl` feature (`select_renderer`).
 pub const HAS_SKIA_OPENGL: bool = false;
 
+/// The tray icon's bars move while music plays (`tray::anim`, Settings > Window).
+pub const TRAY_ANIMATES: bool = true;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia-wgpu", "Skia (wgpu)")];
 
 /// The theme's default font (theme.toml, `[type] font_family`).

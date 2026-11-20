@@ -93,7 +93,7 @@ export component WindowSection inherits VerticalLayout {
                 clicked => { Actions.choose-default-apps(); }
             }
         }
-        SwitchRow {
+        if Player.tray-animation-offered: SwitchRow {
             label: "Animated tray icon";
             hint: "The tray icon's bars move with the music while it plays, and rest when it stops.";
             checked: Player.tray-animation;

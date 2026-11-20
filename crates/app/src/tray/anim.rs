@@ -17,7 +17,8 @@
 //! old one. Each new icon also makes the shell redraw the notification area (in
 //! explorer.exe), so a frame in which no bar has moved by a third of a pixel since the
 //! last icon sent is not sent at all. (That is Windows; on Linux the frames go to the
-//! StatusNotifierItem through ksni, `platform::linux::tray`.)
+//! StatusNotifierItem through ksni, `platform::linux::tray`. macOS's status item does not
+//! move: `platform::system::TRAY_ANIMATES`.)
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -174,8 +175,14 @@ fn fps() -> u32 {
     FPS.with(Cell::get)
 }
 
+/// The setting is on and the system's tray takes a moving icon (not macOS:
+/// `platform::system::TRAY_ANIMATES`).
+fn animated(st: &State) -> bool {
+    crate::platform::system::TRAY_ANIMATES && st.settings.borrow().tray_animation
+}
+
 fn playing(st: &Rc<State>) -> bool {
-    st.settings.borrow().tray_animation && st.player.status().state == PlayState::Playing
+    animated(st) && st.player.status().state == PlayState::Playing
 }
 
 /// Playback or the setting may have changed: start the animation if music plays. Cheap;
@@ -185,7 +192,7 @@ pub fn wake(st: &Rc<State>) {
         return;
     }
     let on = playing(st);
-    let off = !st.settings.borrow().tray_animation;
+    let off = !animated(st);
     ANIM.with(|a| {
         let mut a = a.borrow_mut();
         let Some(t) = a.as_mut() else { return };

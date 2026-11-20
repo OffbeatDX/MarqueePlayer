@@ -468,6 +468,9 @@ While music plays, the tray icon's five bars bob like an equalizer, each on its 
 rhythms (`[tray] fps` = 5 frames a second); it does not read the audio. When playback
 pauses, stops or ends, the bars ease back to the static glyph over 0.6 s and the timer stops.
 Settings > Window > Animated tray icon turns it off (the icon is then always static).
+On macOS the menu bar's status item is always the static glyph and Settings has no switch for
+it: Slint's AppKit tray turns every frame into a PNG and back before AppKit redraws the menu bar
+(`platform::system::TRAY_ANIMATES`).
 Each frame is drawn at the notification area's icon size and handed to Slint's tray, which
 replaces the icon (`NIM_MODIFY`) and frees the old one. Measured (`MP_BENCH=tray`, window
 hidden, playing): 0.35% of one core with the animation off, 0.45% with it on; a frame takes

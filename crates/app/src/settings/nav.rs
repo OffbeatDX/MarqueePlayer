@@ -106,6 +106,7 @@ fn offered(label: &str) -> bool {
     match label {
         "Start with Windows" => crate::platform::integration::autostart(edition).is_some(),
         "Default app for music files" => crate::platform::integration::default_apps_available(edition),
+        "Animated tray icon" => crate::platform::system::TRAY_ANIMATES,
         // Settings > Playback > Music from the server, shown once there is a server or a cache.
         "Keep downloaded tracks" | "Downloaded tracks" => crate::server::streaming::settings_shown(),
         _ => true,
@@ -181,10 +182,10 @@ mod tests {
         // (never in a test run).
         let autostart = crate::platform::integration::autostart(crate::edition::get()).is_some();
         let start = crate::platform::system::words().autostart;
-        assert_eq!(
-            labels("tray"),
-            if autostart { vec!["Click on the tray icon", "Animated tray icon", "Close button", start] } else { vec!["Click on the tray icon", "Animated tray icon", "Close button"] }
-        );
+        // The moving tray icon only where the tray takes one (not macOS).
+        let mut tray = vec!["Click on the tray icon", "Animated tray icon", "Close button", start];
+        tray.retain(|&l| (l != "Animated tray icon" || crate::platform::system::TRAY_ANIMATES) && (l != start || autostart));
+        assert_eq!(labels("tray"), tray);
         assert_eq!(labels("tray click"), vec!["Click on the tray icon"]);
         assert_eq!(labels("double click"), vec!["Click on the tray icon"]);
         assert_eq!(labels("autostart").len(), usize::from(autostart));
@@ -195,7 +196,7 @@ mod tests {
         assert!(labels("associations").is_empty());
         assert_eq!(labels("autoscroll"), vec!["Middle-click scrolling"]);
         assert_eq!(labels("middle mouse"), vec!["Middle-click scrolling"]);
-        assert_eq!(labels("tray animation"), vec!["Animated tray icon"]);
+        assert_eq!(labels("tray animation").len(), usize::from(crate::platform::system::TRAY_ANIMATES));
         assert_eq!(labels("scrobble"), vec!["Scrobble server tracks from this app", "Report plays to the server", "Last.fm", "ListenBrainz"], "the server's switch by its name, then by what each is about");
         assert_eq!(labels("double scrobble"), vec!["Scrobble server tracks from this app"]);
         assert_eq!(labels("listenbrainz"), vec!["ListenBrainz", "ListenBrainz server address", "Love favourites on ListenBrainz", "Scrobble server tracks from this app"]);

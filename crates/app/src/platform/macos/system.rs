@@ -26,6 +26,11 @@ pub const HAS_SKIA_OPENGL: bool = false;
 
 pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (Metal)")];
 
+/// The menu bar's status item is always the static glyph: each frame of the moving one went
+/// through Slint's AppKit tray as a PNG encoded and decoded again, then a menu bar redraw, five
+/// times a second for as long as music played (`tray::anim`). Settings does not offer it.
+pub const TRAY_ANIMATES: bool = false;
+
 /// The theme's family as it can be drawn here: as named (Core Text finds a fallback).
 pub fn font_here(family: &str) -> String {
     family.to_owned()

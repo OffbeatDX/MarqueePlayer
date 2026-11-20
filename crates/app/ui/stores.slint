@@ -378,6 +378,8 @@ export global Player {
     in-out property <bool> bar-autohide;
     // Settings > Window: the tray icon's bars move while music plays.
     in-out property <bool> tray-animation: true;
+    // Whether the system's tray takes a moving icon (not macOS: platform::system::TRAY_ANIMATES).
+    in-out property <bool> tray-animation-offered: true;
     // Settings > Window > Start with Windows (edition.rs, platform::integration): offered
     // where the system has it; on when this exe is in the startup list. The portable edition
     // says what it writes.
