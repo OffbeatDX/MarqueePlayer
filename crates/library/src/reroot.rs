@@ -7,12 +7,12 @@
 //!
 //! What holds a path: `tracks.path`, `albums.folder`, `track_tags.group_folder` (lower
 //! case, `scan::group_folder`) and the folder part of an untagged album's key (`t:...|<folder>`,
-//! lower case, after the last `|`, which no Windows path contains). Art is cached by content
-//! and lyrics by track, so neither needs to change.
+//! lower case). Art is cached by content and lyrics by track, so neither needs to change.
 //!
 //! The app decides which folders moved (`plan`, with the file system's answers); `apply`
 //! only rewrites.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, TransactionBehavior, params};
@@ -29,30 +29,68 @@ fn is_sep(c: char) -> bool {
     c == '/' || (FOLD_CASE && c == '\\')
 }
 
+/// Remove `old` from the start of `s`, matching whole path components (ignoring letter case
+/// and slash kind on Windows) and returning the remainder of `s` untouched, byte for byte.
+fn strip_root<'a>(s: &'a str, old: &str) -> Option<&'a str> {
+    if old.is_empty() {
+        return None;
+    }
+    let old = old.trim_end_matches(is_sep);
+    if old.is_empty() {
+        return (s.is_empty() || s.starts_with(is_sep)).then_some(s);
+    }
+    let mut pos = 0;
+    let mut parts = old.split(is_sep).peekable();
+    while let Some(want) = parts.next() {
+        let rem = &s[pos..];
+        let len = rem.find(is_sep).unwrap_or(rem.len());
+        let got = &rem[..len];
+        let same = if FOLD_CASE { got.to_lowercase() == want.to_lowercase() } else { got == want };
+        if !same {
+            return None;
+        }
+        pos += len;
+        if parts.peek().is_some() {
+            let sep = s[pos..].chars().next().filter(|&c| is_sep(c))?;
+            pos += sep.len_utf8();
+        }
+    }
+    let rest = &s[pos..];
+    (rest.is_empty() || rest.starts_with(is_sep)).then_some(rest)
+}
+
 /// `s` with `old` at its start replaced by `new`, when `old` is the whole of `s` or a
 /// folder above it (not just a string prefix: `E:\Music` is not above `E:\Music2`).
 /// `lower`: `s` is one of the lower-case columns (on every system), so `old` is matched in
 /// lower case and the new start is written in lower case.
 pub fn replace_root(s: &str, old: &str, new: &str, lower: bool) -> Option<String> {
     let old = if lower { old.to_lowercase() } else { old.to_owned() };
-    let (ns, no) = (norm(s), norm(&old));
-    let no = no.trim_end_matches(is_sep);
-    if !ns.starts_with(no) {
-        return None;
-    }
-    // Byte offsets agree: `norm` only lowercases and swaps one ASCII byte for another, and
-    // the comparison is of the same characters. Guard anyway against a case mapping that
-    // changes length (non-ASCII), where the cut would be wrong.
-    if FOLD_CASE && s.len() != ns.len() {
-        return None;
-    }
-    let rest = &s[no.len()..];
-    if !(rest.is_empty() || rest.starts_with(is_sep)) {
-        return None;
-    }
+    let rest = strip_root(s, &old)?;
     let new = new.trim_end_matches(is_sep);
     let new = if lower { new.to_lowercase() } else { new.to_owned() };
     Some(format!("{new}{rest}"))
+}
+
+/// Rewrite the folder part of a tag-keyed album (`t:<artist>|<album>|<folder>`).
+/// Any of the three parts may contain `|` (on Unix a folder name can too), so when the
+/// album's `group_folder` is known it gives the exact tail; otherwise find the `|` after
+/// the first two fields whose tail starts with a moved root.
+fn reroot_album_key(key: &str, group_folder: Option<&str>, first: &impl Fn(&str, bool) -> Option<String>) -> Option<String> {
+    let body = key.strip_prefix("t:")?;
+    if let Some(gf) = group_folder
+        && let Some(head) = key.strip_suffix(gf)
+        && head.ends_with('|')
+    {
+        return Some(format!("{head}{}", first(gf, true)?));
+    }
+    let first_bar = body.find('|')?;
+    for (off, _) in body[first_bar + 1..].match_indices('|') {
+        let split = 2 + first_bar + 1 + off;
+        if let Some(moved) = first(&key[split + 1..], true) {
+            return Some(format!("{}|{moved}", &key[..split]));
+        }
+    }
+    None
 }
 
 /// Which of the library `folders` moved from under `old_root` to the same place under
@@ -102,6 +140,12 @@ pub fn apply(conn: &mut Connection, moves: &[(PathBuf, PathBuf)]) -> rusqlite::R
                 out.tracks += 1;
             }
         }
+        // Read each album's pre-move `group_folder` before rewriting `track_tags`, so `t:`
+        // album keys can strip the exact folder tail even if any part contains `|`.
+        let group_folders: HashMap<i64, String> = tx
+            .prepare("SELECT DISTINCT t.album_id, g.group_folder FROM tracks t JOIN track_tags g ON g.track_id = t.id WHERE g.group_folder IS NOT NULL")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
         let rows: Vec<(i64, String)> =
             tx.prepare("SELECT track_id, group_folder FROM track_tags WHERE group_folder IS NOT NULL")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
         let mut set = tx.prepare("UPDATE track_tags SET group_folder = ?2 WHERE track_id = ?1")?;
@@ -115,10 +159,7 @@ pub fn apply(conn: &mut Connection, moves: &[(PathBuf, PathBuf)]) -> rusqlite::R
         let mut set = tx.prepare("UPDATE albums SET folder = ?2, key = ?3 WHERE id = ?1")?;
         for (id, folder, key) in rows {
             let new_folder = first(&folder, false);
-            let new_key = key.strip_prefix("t:").and_then(|_| {
-                let (head, tail) = key.rsplit_once('|')?;
-                Some(format!("{head}|{}", first(tail, true)?))
-            });
+            let new_key = reroot_album_key(&key, group_folders.get(&id).map(String::as_str), &first);
             if new_folder.is_some() || new_key.is_some() {
                 set.execute(params![id, new_folder.unwrap_or(folder), new_key.unwrap_or(key)])?;
                 out.albums += 1;
@@ -163,6 +204,30 @@ mod tests {
         assert_eq!(replace_root(r"e:\music\A.flac", r"E:\Music", r"F:\Music", false).as_deref(), Some(r"F:\Music\A.flac"));
         assert_eq!(replace_root("E:/Music/a.flac", r"E:\Music\", r"F:\Music", false).as_deref(), Some(r"F:\Music/a.flac"));
         assert_eq!(replace_root(r"e:\music\x", r"E:\Music", r"F:\Music", true).as_deref(), Some(r"f:\music\x"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_keeps_suffix_byte_for_byte_with_expanding_case_mappings() {
+        // U+0130 ('İ') lowercases to 'i' + U+0307, changing UTF-8 byte length.
+        assert_eq!(
+            replace_root("E:\\Music\\\u{0130}stanbul\\01.flac", r"E:\Music", r"F:\Music", false).as_deref(),
+            Some("F:\\Music\\\u{0130}stanbul\\01.flac")
+        );
+        assert_eq!(
+            replace_root("e:\\music\\\u{0130}stanbul\\01.flac", r"E:\Music", r"F:\Music", false).as_deref(),
+            Some("F:\\Music\\\u{0130}stanbul\\01.flac")
+        );
+        // Expanding character in the old root itself.
+        assert_eq!(
+            replace_root("E:\\\u{0130}stanbul\\Album\\01.flac", "e:\\i\u{0307}stanbul", r"F:\Music", false).as_deref(),
+            Some(r"F:\Music\Album\01.flac")
+        );
+        assert_eq!(
+            replace_root("e:\\i\u{0307}stanbul\\album", "E:\\\u{0130}stanbul", r"F:\Music", true).as_deref(),
+            Some(r"f:\music\album")
+        );
+        assert_eq!(replace_root("E:\\\u{0130}\\01.flac", r"E:\i", r"F:\i", false), None);
     }
 
     #[test]
@@ -217,5 +282,33 @@ mod tests {
         assert_eq!(s("SELECT folder FROM albums WHERE id = 3"), other);
         // The play still belongs to the track.
         assert_eq!(conn.query_row("SELECT COUNT(*) FROM plays WHERE track_id = 10", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    }
+
+    #[test]
+    fn apply_rewrites_keys_containing_vertical_bars() {
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let old = "/media/alice/STICK/Music";
+        let new = "/run/media/bob/STICK/Music";
+        conn.execute_batch(&format!(
+            "INSERT INTO albums (id, key, title, album_artist, folder, added_at) VALUES
+               (1, 't:artist|album|/media/alice/stick/music/a | b/c | d', 'Album', 'Artist', '{old}/A | B/C | D', 0),
+               (2, 't:band | one|side a | side b|/media/alice/stick/music/band | one/side a | side b', 'Side A | Side B', 'Band | One', '{old}/Band | One/Side A | Side B', 0),
+               (3, 't:x | y|z | w|/media/alice/stick/music/dir | 1', 'Z | W', 'X | Y', '{old}/Dir | 1', 0);
+             INSERT INTO tracks (id, path, album_id, title, artist, duration, mtime, size, added_at) VALUES
+               (10, '{old}/A | B/C | D/01.flac', 1, 'One', 'Artist', 1.0, 0, 0, 0),
+               (11, '{old}/Band | One/Side A | Side B/01.flac', 2, 'Two', 'Band | One', 1.0, 0, 0, 0);
+             INSERT INTO track_tags (track_id, group_folder) VALUES
+               (10, '/media/alice/stick/music/a | b/c | d'),
+               (11, '/media/alice/stick/music/band | one/side a | side b');"
+        ))
+        .unwrap();
+        let moves = vec![(PathBuf::from(old), PathBuf::from(new))];
+        assert_eq!(apply(&mut conn, &moves).unwrap(), Rerooted { tracks: 2, albums: 3 });
+        let s = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(s("SELECT key FROM albums WHERE id = 1"), "t:artist|album|/run/media/bob/stick/music/a | b/c | d");
+        assert_eq!(s("SELECT key FROM albums WHERE id = 2"), "t:band | one|side a | side b|/run/media/bob/stick/music/band | one/side a | side b");
+        assert_eq!(s("SELECT key FROM albums WHERE id = 3"), "t:x | y|z | w|/run/media/bob/stick/music/dir | 1");
+        assert_eq!(s("SELECT group_folder FROM track_tags WHERE track_id = 10"), "/run/media/bob/stick/music/a | b/c | d");
+        assert_eq!(s("SELECT group_folder FROM track_tags WHERE track_id = 11"), "/run/media/bob/stick/music/band | one/side a | side b");
     }
 }
