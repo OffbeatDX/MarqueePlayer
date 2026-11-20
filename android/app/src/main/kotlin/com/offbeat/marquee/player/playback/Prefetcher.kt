@@ -5,6 +5,8 @@ import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.DataSpec
+import com.offbeat.marquee.core.playback.StreamQuality
+import com.offbeat.marquee.core.playback.TranscodeCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
@@ -163,7 +165,14 @@ class Prefetcher(
             withContext(NonCancellable + Dispatchers.IO) { Resumable.remember(source.cache, spec) }
         }
         val ms = (System.nanoTime() - started) / 1_000_000
-        AppLog.i(TAG, "song $id: cached ${source.cachedBytes(key)} bytes in $ms ms")
+        val bytes = source.cachedBytes(key)
+        val quality = StreamQuality.fromId(key.substringAfterLast('/'), StreamQuality.ORIGINAL)
+        if (TranscodeCheck.isCutShort(quality, source.durationOf(id), bytes)) {
+            // The transcode ended early but cleanly: not a whole song, whatever its length says.
+            withContext(NonCancellable + Dispatchers.IO) { Resumable.drop(source.cache, key) }
+            throw IOException("transcode cut short: $bytes bytes for ${source.durationOf(id)} s at ${quality.id}")
+        }
+        AppLog.i(TAG, "song $id: cached $bytes bytes in $ms ms")
     }
 
     private companion object {

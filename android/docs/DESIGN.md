@@ -201,6 +201,11 @@ The README describes the result.
   start, once; a part with no validator (stored by an older version) is fetched again. The download
   worker reads the cache's copy only when it is whole. The player's own reads (never stored) still go
   on with a plain range.
+- **A transcode cut short**: a live transcode has no length, so a server encoder that stops part way
+  ends the reply cleanly and the bytes look like a whole song. After a prefetch or a download of a
+  transcoded quality, a copy under a third of what the song's length and bitrate call for
+  (`TranscodeCheck`, songs of 20 s or more) is dropped: the prefetch counts as failed, the download is
+  set aside.
 - **The app's own files** (pins, outbox, favourites, saved queue, saved answers) are replaced whole
   through `SafeFile` (`:core`): a temp file synced to disk, then one atomic rename; a temp file left by
   a failed rename is read while the file is missing. A pins file that is there but damaged is kept as

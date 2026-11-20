@@ -147,3 +147,26 @@ object SourcePicker {
 /** The stream URL for a song at a quality. It carries the token: never log it. */
 fun SubsonicClient.streamUrl(songId: String, quality: StreamQuality): String =
     streamUrl(songId, format = quality.format, maxBitRate = quality.maxBitRate)
+
+/**
+ * Whether a transcode that ended cleanly is all there. A live transcode has no length: when the
+ * server's encoder stops part way, the reply just ends, and the bytes so far look like a whole song.
+ * The size a song should have follows from its length and the bitrate asked for; a copy under
+ * [MIN_RATIO] of that (Opus is variable, so quiet music comes in under the nominal rate, but never by
+ * that much) is taken as cut short.
+ */
+object TranscodeCheck {
+    const val MIN_RATIO = 1.0 / 3
+
+    /** Songs shorter than this aren't judged (a header's share of a few seconds is too large). */
+    const val MIN_SECONDS = 20
+
+    fun isCutShort(quality: StreamQuality, durationSeconds: Int?, bytes: Long): Boolean {
+        if (quality.isOriginal) return false
+        val kbps = quality.maxBitRate ?: return false
+        val seconds = durationSeconds ?: return false
+        if (seconds < MIN_SECONDS) return false
+        val expected = seconds.toLong() * kbps * 1000 / 8
+        return bytes < expected * MIN_RATIO
+    }
+}

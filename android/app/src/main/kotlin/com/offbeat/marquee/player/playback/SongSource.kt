@@ -44,6 +44,7 @@ class SongSource(context: Context, private val settings: PlaybackSettings) {
 
     private val decisions = ConcurrentHashMap<String, StreamQuality>()
     private val files = ConcurrentHashMap<String, SourceFile>()
+    private val durations = ConcurrentHashMap<String, Int>()
 
     /**
      * The player reads the downloads and the cache but writes neither: the prefetcher writes whole
@@ -93,12 +94,17 @@ class SongSource(context: Context, private val settings: PlaybackSettings) {
     fun retainOnly(songIds: Set<String>) {
         decisions.keys.retainAll(songIds)
         files.keys.retainAll(songIds)
+        durations.keys.retainAll(songIds)
     }
 
     /** What the song's file is, for its decision; learned before it is first decided. */
     fun learn(song: Song) {
         files[song.id] = SourceFile.of(song)
+        song.duration?.takeIf { it > 0 }?.let { durations[song.id] = it }
     }
+
+    /** The song's length in seconds, when [learn] was told it. */
+    fun durationOf(songId: String): Int? = durations[songId]
 
     /** A decision made before a download finished or the network changed is made again. */
     fun forget(songId: String) {

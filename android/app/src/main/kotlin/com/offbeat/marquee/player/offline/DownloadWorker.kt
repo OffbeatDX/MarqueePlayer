@@ -30,6 +30,7 @@ import com.offbeat.marquee.player.playback.Resumable
 import androidx.media3.datasource.cache.SimpleCache
 import kotlinx.coroutines.NonCancellable
 import com.offbeat.marquee.core.playback.PlaybackRecovery
+import com.offbeat.marquee.core.playback.TranscodeCheck
 import com.offbeat.marquee.player.session.AppSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,15 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
                     }
                     AppLog.w(TAG, "song $id: interrupted (${e.javaClass.simpleName}), will resume; $fetched fetched this run")
                     return Result.retry()
+                }
+                val bytes = withContext(Dispatchers.IO) { store.getCachedBytes(spec.key!!, 0, Long.MAX_VALUE) }
+                if (TranscodeCheck.isCutShort(q, Downloads.durationOf(id), bytes)) {
+                    // The server's transcode ended early but cleanly: not kept as a download.
+                    AppLog.w(TAG, "song $id: the transcode was cut short ($bytes bytes for ${Downloads.durationOf(id)} s at ${q.id}), set aside")
+                    withContext(Dispatchers.IO) { Resumable.drop(store, spec.key!!) }
+                    Downloads.markFailed(id)
+                    Downloads.refresh()
+                    continue
                 }
                 fetched++
                 AppLog.i(TAG, "song $id: downloaded (${q.id}, ${MediaStores.bytesOf(MediaStores.downloads(ctx), id)} bytes in ${SystemClock.elapsedRealtime() - started} ms)")

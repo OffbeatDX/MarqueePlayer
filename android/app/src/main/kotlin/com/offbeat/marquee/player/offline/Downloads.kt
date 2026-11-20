@@ -343,6 +343,9 @@ object Downloads {
             ?: _quality.value.forSource(pinnedSong(songId)?.let(SourceFile::of))
     }
 
+    /** The song's length in seconds, from its pin, when known. */
+    fun durationOf(songId: String): Int? = pinnedSong(songId)?.duration?.takeIf { it > 0 }
+
     private fun pinnedSong(songId: String): Song? =
         _pins.value.pins.firstNotNullOfOrNull { p -> p.songs.firstOrNull { it.id == songId } }
 
