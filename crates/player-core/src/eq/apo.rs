@@ -61,20 +61,63 @@ pub const AUTO: &str = "# Marquee Player: preamp auto";
 pub const OFF_NOTE: &str = "# Marquee Player: equalizer off";
 
 /// The longest float at the start of `s`, as C's `wcstod` reads it (`"1.2.3"` is 1.2;
-/// nothing readable is `None`).
+/// nothing readable is `None`). Linear in the length: the longest prefix that is a number
+/// is found in one scan and parsed once. Only when that overflows is a shorter one looked
+/// for (`"1e400"` is 1e40, the longest that is finite), and then only in a number of up to
+/// `LONGEST_NUMBER` characters: a longer one that overflows is no number.
 fn float_prefix(s: &str) -> Option<f64> {
-    let b = s.as_bytes();
-    let mut end = 0;
-    let mut best = None;
-    while end < b.len() && (b[end].is_ascii_digit() || matches!(b[end], b'+' | b'-' | b'.' | b'e' | b'E')) {
-        end += 1;
-        if let Ok(v) = s[..end].parse::<f64>()
-            && v.is_finite()
-        {
-            best = Some(v);
+    let end = number_len(s.as_bytes());
+    if end == 0 {
+        return None;
+    }
+    if let Ok(v) = s[..end].parse::<f64>()
+        && v.is_finite()
+    {
+        return Some(v);
+    }
+    if end > LONGEST_NUMBER {
+        return None;
+    }
+    (1..end).rev().find_map(|e| s[..e].parse::<f64>().ok().filter(|v| v.is_finite()))
+}
+
+/// The most characters a number that overflows is searched for a shorter finite one in.
+const LONGEST_NUMBER: usize = 64;
+
+/// The length of the longest prefix of `b` that is a decimal float as Rust and `wcstod`
+/// read it: a sign, digits with at most one point (at least one digit), an exponent with
+/// at least one digit. 0: none.
+fn number_len(b: &[u8]) -> usize {
+    let digits = |mut i: usize| {
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        i
+    };
+    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
+    let int_end = digits(i);
+    let mut seen = int_end > i;
+    let mut end = if seen { int_end } else { 0 };
+    i = int_end;
+    if b.get(i) == Some(&b'.') {
+        let frac_end = digits(i + 1);
+        seen |= frac_end > i + 1;
+        if seen {
+            end = frac_end;
+        }
+        i = frac_end;
+    }
+    if seen && matches!(b.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(b.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        let exp_end = digits(j);
+        if exp_end > j {
+            end = exp_end;
         }
     }
-    best
+    end
 }
 
 /// Case-insensitive search for `word` preceded by whitespace (or, with `at_start`, at the
@@ -407,6 +450,7 @@ pub fn read(text: &str) -> Result<Import, Refusal> {
     let mut name = None;
     let mut rew: Option<String> = None;
     let mut graphic: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut graphic_points_total = 0usize;
     let mut understood = false;
     let mut channel = Scope::Common;
     let mut device = Scope::Common;
@@ -488,6 +532,12 @@ pub fn read(text: &str) -> Result<Import, Refusal> {
                 if pts.is_empty() {
                     notes.push(Note::new(NoteKind::Info, format!("Line {no}: a GraphicEQ line without points")));
                 } else if applies("a GraphicEQ curve", &mut notes) {
+                    // Every curve is looked up at every frequency the fit and the graph ask
+                    // about: their points together are bounded as one line's are.
+                    graphic_points_total += pts.len();
+                    if graphic_points_total > super::fit::MAX_POINTS {
+                        return Err(refuse(format!("Line {no}: the GraphicEQ curves have more than {} points together", super::fit::MAX_POINTS)));
+                    }
                     graphic.push(pts);
                 }
             }
@@ -814,6 +864,68 @@ mod tests {
         assert_eq!(p.bands.len(), 2);
         assert_eq!(p.bands[0], Band::new(Kind::Peak, 63.7, -5.0, 4.0));
         assert!(p.notes.iter().all(|n| n.kind == NoteKind::Info), "{:?}", p.notes);
+    }
+
+    /// The old reading, a parse of every prefix (quadratic in the number's length): the
+    /// new one must give the same for every number that is not absurdly long.
+    fn float_prefix_every_prefix(s: &str) -> Option<f64> {
+        let b = s.as_bytes();
+        let mut end = 0;
+        let mut best = None;
+        while end < b.len() && (b[end].is_ascii_digit() || matches!(b[end], b'+' | b'-' | b'.' | b'e' | b'E')) {
+            end += 1;
+            if let Ok(v) = s[..end].parse::<f64>()
+                && v.is_finite()
+            {
+                best = Some(v);
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn numbers_read_as_before() {
+        let long = "9".repeat(400);
+        let cases = [
+            "", "x", "+", "-", ".", "+.", "-.e5", "e5", "E", "1", "-1", "+1", "1.", ".5", "-.5", "+.5e1", "1.2.3", "1.2.3e4", "1e", "1e+", "1e-", "1e5", "1E+5x", "1e-5", "1e5.5",
+            "1e400", "-1e400", "1e-400", "1.5e+3e2", "--1", "+-1", "1-2", "1+2", "0.000001", "105Hz", "3.0dB", "1e308", "1.8e308", "1e3e", "12e3.4", ".e1", "0e0", "00012.50",
+        ];
+        // The one difference: a number of more than `LONGEST_NUMBER` characters that
+        // overflows is no number (it was the longest finite prefix, 1e308 here).
+        assert_eq!(float_prefix(&long), None);
+        assert_eq!(float_prefix(&long[..64]), float_prefix_every_prefix(&long[..64]));
+        for c in cases {
+            let (new, old) = (float_prefix(c), float_prefix_every_prefix(c));
+            assert_eq!(new.map(f64::to_bits), old.map(f64::to_bits), "{c:?}: {new:?} vs {old:?}");
+        }
+        // Every string of up to four characters of the number alphabet.
+        let alphabet = ['1', '0', '+', '-', '.', 'e', 'E', '9'];
+        let mut all = vec![String::new()];
+        for _ in 0..4 {
+            all = all.iter().flat_map(|p| alphabet.iter().map(move |c| format!("{p}{c}"))).collect();
+            for c in &all {
+                assert_eq!(float_prefix(c).map(f64::to_bits), float_prefix_every_prefix(c).map(f64::to_bits), "{c:?}");
+            }
+        }
+    }
+
+    /// A 1 MiB text of one million-digit number, or of a GraphicEQ line after line: read (or
+    /// refused) at once, not after hours on the reading thread.
+    #[test]
+    fn a_huge_number_or_curve_is_read_promptly() {
+        let digits = "1".repeat(1 << 20);
+        let started = std::time::Instant::now();
+        for text in [format!("Filter: ON PK Fc {digits} Hz Gain 1 dB Q 1"), format!("Preamp: {digits} dB"), format!("GraphicEQ: 100 {digits}; 200 1"), format!("Filter: ON PK Fc 100 Hz Gain 1.{digits} dB Q 1")] {
+            let _ = read(&text);
+        }
+        let lines: String = (0..55_000).map(|i| format!("GraphicEQ: {} 1\n", 20 + i % 1000)).collect();
+        assert!(lines.len() <= 1 << 20);
+        let p = read(&lines);
+        assert!(p.is_err_and(|e| e.reason.contains("points together")), "refused, not fitted");
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
+        // A few curves together are still read (and their gains add).
+        let p = read_ok("GraphicEQ: 100 1; 1000 1\nGraphicEQ: 100 2; 1000 2");
+        assert_eq!(p.graphic.len(), 2);
     }
 
     #[test]
