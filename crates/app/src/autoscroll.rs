@@ -339,6 +339,11 @@ pub fn install(app: &AppWindow) {
     let weak = app.as_weak();
     app.window().on_winit_window_event(move |w, ev| {
         let Some(app) = weak.upgrade() else { return EventResult::Propagate };
+        // Covered or seen again (macOS, X11): what runs only while the window shows follows;
+        // Slint sees it too.
+        if let WindowEvent::Occluded(o) = ev {
+            crate::ticker::occluded(*o);
+        }
         // What the system's window module takes first (Linux: the caption's resize edges and
         // buttons, side buttons, file drops, the window-level pin keys).
         if crate::platform::window::winit_event(&app, w, ev) {

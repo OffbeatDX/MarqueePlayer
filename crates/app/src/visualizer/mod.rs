@@ -4,13 +4,14 @@
 //! It draws on one stage at a time (`VisualizerStage` in vizstage.slint): the band behind Now
 //! playing, the panel's Visualizer tab, the full page, or the preview in Settings >
 //! Visualizer. It runs only while that stage is on screen (the visualizer on, Now playing
-//! shown with that placement, or the Settings section shown), the window is shown and not
-//! minimized, and music plays: then a timer at the display's refresh rate (at most 60 a
+//! shown with that placement, or the Settings section shown), the window is shown, not
+//! minimized and not covered (`ticker::shown`: behind other windows or on another Space on
+//! macOS), and music plays: then a timer at the display's refresh rate (at most 60 a
 //! second, or 30 when asked) reads the engine's tap (`player_core::spectrum::Tap`: the
 //! samples being heard, after ReplayGain, the equalizer and the limiter, before volume),
 //! analyses them (`Analyzer`, the spectrum) and draws. Paused
 //! or stopped, it falls to rest, and then the timer, the tap and the analysis all stop;
-//! leaving the page or section, hiding or minimizing the window stops them at once. With
+//! leaving the page or section, hiding, minimizing or covering the window stops them at once. With
 //! nothing playing, the Settings preview shows one still frame of made-up music, drawn
 //! once. Nothing else wakes for it.
 //!
@@ -565,8 +566,7 @@ fn fetch_palette(st: &Rc<State>) {
 
 /// Where it is to be drawn now, if anywhere.
 fn stage(st: &State, app: &AppWindow) -> Option<Where> {
-    let w = app.window();
-    if !w.is_visible() || w.is_minimized() {
+    if !crate::ticker::shown(app.window()) {
         return None;
     }
     match app.global::<Nav>().get_page() {

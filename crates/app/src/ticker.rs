@@ -6,7 +6,7 @@
 //! moves by itself, and runs no more often than that needs:
 //!
 //! - playing, window shown: every 100 ms (the position, play counting);
-//! - playing, window hidden or minimized: every 500 ms (play counting, session saves);
+//! - playing, window hidden, minimized or covered: every 500 ms (play counting, session saves);
 //! - not playing, window shown: once a second (window placement, saves);
 //! - not playing, hidden: not at all.
 //!
@@ -14,6 +14,12 @@
 //! full rate for a moment (`SETTLE`), so a pause or a seek is shown promptly whatever
 //! the rate was, and a settings change is saved when it is due (`state::SaveDelay`, a
 //! second after the last change: within `SETTLE`).
+//!
+//! "Shown" (`shown`) is also what the visualizer runs by: the window visible, not minimized,
+//! and not covered. Covered is the system's word for it (winit's `WindowEvent::Occluded`):
+//! macOS says it when no pixel of the window can be seen (behind other windows, on another
+//! Space, the display asleep or locked, minimized to the Dock), X11 when it is fully obscured;
+//! Windows and Wayland never say it, so there a covered window counts as shown, as before.
 
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
@@ -32,6 +38,31 @@ const SETTLE: Duration = Duration::from_millis(1500);
 thread_local! {
     static TIMER: RefCell<Option<Timer>> = const { RefCell::new(None) };
     static FAST_UNTIL: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The system said no pixel of the window can be seen (`occluded`).
+    static OCCLUDED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The window is visible, not minimized and not covered (see the module doc).
+pub fn shown(w: &slint::Window) -> bool {
+    is_shown(w.is_visible(), w.is_minimized(), OCCLUDED.with(Cell::get))
+}
+
+fn is_shown(visible: bool, minimized: bool, occluded: bool) -> bool {
+    visible && !minimized && !occluded
+}
+
+/// The system says the window is covered (`true`) or can be seen again (winit's
+/// `WindowEvent::Occluded`, from the window's event hook). Covered, the visualizer stops at
+/// once and the ticks slow down from the next one; seen again, both come back at once.
+pub fn occluded(occluded: bool) {
+    if OCCLUDED.with(|o| o.replace(occluded)) == occluded {
+        return;
+    }
+    log::debug!("window {}", if occluded { "covered: the visualizer stops, ticks slow down" } else { "seen again" });
+    if !occluded {
+        kick();
+    }
+    state::with(crate::visualizer::wake);
 }
 
 /// Forward the engine's events: returns the receiver the UI drains (`State::events`),
@@ -97,7 +128,7 @@ fn reschedule() {
     let (playing, shown) = state::with(|st| {
         let playing = st.player.status().state == PlayState::Playing;
         // Minimized to the taskbar is still "visible" to the toolkit, but nothing shows.
-        let shown = st.app.upgrade().is_some_and(|a| a.window().is_visible() && !a.window().is_minimized());
+        let shown = st.app.upgrade().is_some_and(|a| shown(a.window()));
         (playing, shown)
     })
     .unwrap_or((false, false));
@@ -126,5 +157,13 @@ mod tests {
         assert_eq!(rate(false, false, true), Some(SLOW));
         assert_eq!(rate(false, false, false), None);
         assert_eq!(rate(true, false, false), Some(FAST));
+    }
+
+    #[test]
+    fn a_covered_window_is_not_shown() {
+        assert!(is_shown(true, false, false));
+        assert!(!is_shown(true, false, true), "covered");
+        assert!(!is_shown(true, true, false), "minimized");
+        assert!(!is_shown(false, false, false), "hidden");
     }
 }
