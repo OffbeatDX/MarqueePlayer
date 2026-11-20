@@ -83,8 +83,20 @@ the server software and those counts, never its address or the user.
 
 **Signing out** asks nothing: the server's music leaves the library (tracks only it had go,
 with their plays; the folders' tracks only forget the server), the sign-in is forgotten, and the
-folders' music is as it was. Signing in to another server (or as another user) replaces the
-first one's music the same way.
+folders' music is as it was.
+
+**Signing in under another name** (after a lost sign-in, say: the server's other address, a LAN
+address for a domain, http for https, another port, the user name spelt otherwise, or another
+user) loses nothing by itself. Once the new server's albums are listed, and before anything is
+written, their ids are compared with the kept catalog's (a few albums are read to compare their
+songs' ids when the album ids differ, as after a server upgrade): most of them known, it is the
+same server, and its music stays with every play, favourite, playlist place and play not yet
+reported, under the new name. As another user of it, the favourites agreed with the first user
+are forgotten, so the next sync keeps every favourite of either side as a first sync does; the
+plays not yet reported go to the user signed in to now. Another server's catalog stays as it was
+and nothing is sent to the new server (its plays would be refused as unknown songs, and lost):
+Settings says how many tracks, and plays not yet reported, would leave the library, and "Remove
+it from the library" replaces it, as signing out would, with the new server's music.
 
 **What goes back to the server** (`app/src/server/write.rs`, `library::marks`). Three switches,
 below the sign-in, all on by default:

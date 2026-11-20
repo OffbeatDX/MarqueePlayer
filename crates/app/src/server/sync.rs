@@ -20,6 +20,14 @@
 //!    Settings asks to confirm). Albums written already are not written again (their entries'
 //!    hashes match). Then `remote::reconcile`.
 //!
+//! **Signed in under another name** (the server's other address, http for https, another port,
+//! the user spelt otherwise, another user): the library's catalog is kept under the identity it
+//! was synced with. Once the albums are listed (before anything is written), their ids are
+//! compared with the catalog's (`same_server`): the same server's catalog is kept, under the new
+//! name (another user's agreements on favourites forgotten: `remote::rename`); another server's
+//! stays as it is, nothing written, until the user confirms its replacement in Settings (the
+//! shrink guard's confirmation: `Outcome::OtherServer`, then `Job::confirm_removal`).
+//!
 //! Writes wait for a running scan, and a scan for a sync's write (`WRITER`): each writes in short
 //! transactions that let the app's own writes in (`db::let_waiting_in`), but two background
 //! writers taking turns could keep the UI thread's write (a play counted) waiting. Stop is
@@ -69,8 +77,9 @@ pub fn writer() -> MutexGuard<'static, ()> {
 /// What one sync is to do.
 pub struct Job {
     pub client: Client,
-    /// The server and user (`remote::sync`'s identity): another server's catalog in the library
-    /// is removed first.
+    /// The server and user (`remote::sync`'s identity). A catalog kept under another identity is
+    /// this server's under another name (kept, renamed), or another server's: replaced only when
+    /// `confirm_removal` (see `same_server`).
     pub identity: String,
     pub db: PathBuf,
     pub force: bool,
@@ -113,6 +122,9 @@ pub enum Outcome {
         failed: usize,
         complete: bool,
     },
+    /// The library holds another server's music, and this server's catalog is not it: nothing
+    /// was written; it is replaced only once confirmed (`Job::confirm_removal`).
+    OtherServer(Elsewhere),
     /// Stop: what was written stays.
     Stopped,
     /// The server could not be asked (no connection, the sign-in refused...).
@@ -186,26 +198,22 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
         Ok(c) => c,
         Err(e) => return db_error(e),
     };
-    // Signed in to another server (or as another user): its catalog goes first.
-    let mut replaced = false;
-    match remote::server(&conn) {
-        Ok(Some(s)) if s.identity != job.identity => {
-            tell(Step::Replacing);
-            let Some(_w) = wait_writer(cancel, tell) else { return Outcome::Stopped };
-            if let Err(e) = remote::disconnect(&mut conn) {
-                return db_error(e);
-            }
-            replaced = true;
-        }
-        Ok(_) => {}
+    // The library holds the catalog of a server signed in to under another name: the same server
+    // (its other address, the user spelt otherwise) or another. Which one is decided once its
+    // albums are listed (`same_server`); nothing is written before.
+    let earlier = match remote::server(&conn) {
+        Ok(Some(s)) if s.identity != job.identity => Some(s.identity),
+        Ok(_) => None,
         Err(e) => return db_error(e),
-    }
+    };
+    let mut replaced = false;
     tell(Step::Asking);
     let status = match job.client.scan_status() {
         Ok(s) => s,
         Err(e) => return Outcome::Server(e),
     };
     if !job.force
+        && earlier.is_none()
         && let Ok(Some(s)) = remote::server(&conn)
         && s.synced_at.is_some()
         && s.sync_started.is_none()
@@ -246,6 +254,34 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
     // One album may be listed twice when the list moved under the pages: once is enough.
     let mut seen = std::collections::HashSet::new();
     listed.retain(|a| seen.insert(a.id.clone()));
+    if let Some(earlier) = &earlier {
+        let kin = match same_server(&job.client, &conn, &listed, cancel) {
+            Ok(k) => k,
+            Err(o) => return o,
+        };
+        match kin {
+            Kin::Same => {
+                let other_user = !user_of(earlier).eq_ignore_ascii_case(user_of(&job.identity));
+                log::info!("server sync: the server in the library, signed in to under another {}; its music kept", if other_user { "user" } else { "address" });
+                let Some(_w) = wait_writer(cancel, tell) else { return Outcome::Stopped };
+                if let Err(e) = remote::rename(&mut conn, &job.identity, other_user) {
+                    return db_error(e);
+                }
+            }
+            Kin::Other(held) if !job.confirm_removal => {
+                log::info!("server sync: another server's music is in the library ({} songs); kept until confirmed", held.songs);
+                return Outcome::OtherServer(held);
+            }
+            Kin::Other(_) | Kin::Nothing => {
+                tell(Step::Replacing);
+                let Some(_w) = wait_writer(cancel, tell) else { return Outcome::Stopped };
+                if let Err(e) = remote::disconnect(&mut conn) {
+                    return db_error(e);
+                }
+                replaced = true;
+            }
+        }
+    }
     let total = listed.len();
     let mut catalog: Vec<RemoteAlbum> = Vec::with_capacity(total);
     let mut failed = 0;
@@ -335,6 +371,70 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
         crate::scanning::sweep_art(&conn, art, replaced || report.removed_albums > 0);
     }
     Outcome::Synced { report, failed, complete, seen }
+}
+
+/// The music of the server in the library, kept while the server signed in to now is another
+/// (`Outcome::OtherServer`): what would leave the library if it is replaced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Elsewhere {
+    /// Songs of the earlier server's catalog.
+    pub songs: usize,
+    /// Its plays not yet reported to it.
+    pub plays: usize,
+}
+
+/// What the server signed in to is, to the one whose catalog the library holds.
+#[derive(Debug, PartialEq, Eq)]
+enum Kin {
+    /// The same server (another address of it, or another spelling of the user, or another user).
+    Same,
+    /// Another: its catalog would replace the one kept.
+    Other(Elsewhere),
+    /// Nothing is kept to lose.
+    Nothing,
+}
+
+/// Albums read, when the album ids do not settle it, to compare the songs' ids.
+const SAMPLE: usize = 8;
+
+/// The user of an identity ("address (user)").
+fn user_of(identity: &str) -> &str {
+    identity.split_once(" (").map_or("", |(_, u)| u.strip_suffix(')').unwrap_or(u))
+}
+
+/// Whether the server signed in to is the one whose catalog the library holds, by the ids it
+/// gives its music: a server's ids are its own (Navidrome's are made from its library and the
+/// files' paths), so another server shares few or none, and the same server under another
+/// address all of them. Most of the kept albums listed: the same. Else (a server whose album
+/// ids changed with an upgrade, while its songs' did not) a few albums spread over the listing
+/// are read, and most of their songs known: the same. A sign-in refused, or the library not
+/// read, ends the sync (the `Err`).
+fn same_server(client: &Client, conn: &rusqlite::Connection, listed: &[subsonic::Album], cancel: &AtomicBool) -> Result<Kin, Outcome> {
+    let (albums, songs) = remote::kept(conn).map_err(db_error)?;
+    let plays = library::marks::queued_count(conn).map_err(db_error)? as usize;
+    if albums == 0 && songs == 0 && plays == 0 {
+        return Ok(Kin::Nothing);
+    }
+    let found = remote::kept_albums_among(conn, listed.iter().map(|a| a.id.as_str())).map_err(db_error)?;
+    if albums > 0 && found * 2 >= albums {
+        return Ok(Kin::Same);
+    }
+    let step = listed.len().div_ceil(SAMPLE).max(1);
+    let sample: Vec<&str> = listed.iter().step_by(step).take(SAMPLE).map(|a| a.id.as_str()).collect();
+    let mut read: Vec<String> = Vec::new();
+    for r in read_albums(client, &sample, cancel) {
+        match r {
+            None => return Err(Outcome::Stopped),
+            Some(Ok(a)) => read.extend(a.song.into_iter().map(|s| s.id)),
+            Some(Err(e)) if is_sign_in(&e) => return Err(Outcome::Server(e)),
+            Some(Err(_)) => {}
+        }
+    }
+    let known = remote::kept_songs_among(conn, read.iter().map(String::as_str)).map_err(db_error)?;
+    if !read.is_empty() && known * 2 >= read.len() {
+        return Ok(Kin::Same);
+    }
+    Ok(Kin::Other(Elsewhere { songs, plays }))
 }
 
 /// The stars the server has now, when the catalog is not listed again (favourites synced): every
@@ -914,17 +1014,87 @@ mod tests {
         f.mock.set_delay_ms(0);
         assert!(matches!(f.run(&f.job(false)).0, Outcome::Synced { complete: true, .. }), "an unfinished sync is not skipped");
         assert_eq!(remote::counts(&f.conn()).unwrap().server, 400);
-        // Signed in elsewhere: the first server's music goes.
-        let other = Fixture::new("stop-other", library_of(3));
+        // Signed in elsewhere: the first server's music stays until the replacement is
+        // confirmed, then goes.
+        let other = Fixture::new("stop-other", other_library(3));
         let mut job = other.job(true);
         job.db = f.dir.join("library.db");
         job.identity = "other (bob)".into();
-        let steps = Mutex::new(Vec::new());
-        let o = run(&job, &|s| steps.lock().unwrap().push(s));
+        let (o, steps) = f.run(&job);
+        assert!(matches!(o, Outcome::OtherServer(Elsewhere { songs: 400, plays: 0 })), "{o:?}");
+        assert!(!steps.contains(&Step::Replacing));
+        assert_eq!(remote::counts(&f.conn()).unwrap().server, 400, "kept until confirmed");
+        assert_eq!(remote::server(&f.conn()).unwrap().unwrap().identity, "mock (ann)");
+        job.confirm_removal = true;
+        let (o, steps) = f.run(&job);
         assert!(matches!(o, Outcome::Synced { .. }), "{o:?}");
-        assert!(steps.lock().unwrap().contains(&Step::Replacing));
+        assert!(steps.contains(&Step::Replacing));
         assert_eq!(remote::counts(&f.conn()).unwrap().server, 6);
         assert_eq!(remote::server(&f.conn()).unwrap().unwrap().identity, "other (bob)");
+    }
+
+    /// Another server's albums and songs: the same music under ids of its own.
+    fn other_library(n: usize) -> mock::Library {
+        let mut lib = library_of(n);
+        for a in &mut lib.albums {
+            a.id = format!("x-{}", a.id);
+            for s in &mut a.song {
+                s.id = format!("x-{}", s.id);
+            }
+        }
+        lib
+    }
+
+    /// The same server signed in to under another address (after a lost sign-in): nothing of
+    /// its music goes, its plays not yet reported and favourites agreed stay; under another
+    /// user, the agreements go (that user's stars are not the ones agreed) and the plays stay.
+    /// A server whose album ids changed (an upgrade) is known by its songs'.
+    #[test]
+    fn the_same_server_under_another_name_keeps_its_music() {
+        let f = Fixture::new("renamed", library_of(40));
+        assert!(matches!(f.run(&f.job(false)).0, Outcome::Synced { complete: true, .. }));
+        let c = f.conn();
+        let track: i64 = c.query_row("SELECT id FROM tracks WHERE remote_id IS NOT NULL ORDER BY id LIMIT 1", [], |r| r.get(0)).unwrap();
+        library::query::toggle_favourite_track(&c, track).unwrap();
+        library::marks::agree_star(&c, "al0000-1", true, None).unwrap();
+        library::query::record_plays_for(&c, &mut vec![(track, 1_700_000_000)], true).unwrap();
+        let plays_before: i64 = c.query_row("SELECT COUNT(*) FROM plays", [], |r| r.get(0)).unwrap();
+        assert!(plays_before > 0 && library::marks::queued_count(&c).unwrap() == 1);
+        drop(c);
+        let mut job = f.job(true);
+        job.identity = "http://localhost:4533 (Ann)".into();
+        let (o, steps) = f.run(&job);
+        assert!(matches!(o, Outcome::Synced { complete: true, ref report, .. } if report.removed_songs == 0), "{o:?}");
+        assert!(!steps.contains(&Step::Replacing));
+        let c = f.conn();
+        assert_eq!(remote::server(&c).unwrap().unwrap().identity, "http://localhost:4533 (Ann)");
+        assert_eq!(remote::counts(&c).unwrap().server, 80);
+        assert!(library::query::is_favourite_track(&c, track).unwrap());
+        assert_eq!(library::marks::queued_count(&c).unwrap(), 1, "the play not yet reported waits");
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM remote_marks WHERE starred = 1", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "the same user: agreed as before");
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM plays", [], |r| r.get::<_, i64>(0)).unwrap(), plays_before);
+        drop(c);
+        // Another user of it: the catalog and the plays stay, the agreements go.
+        job.identity = "http://localhost:4533 (bob)".into();
+        assert!(matches!(f.run(&job).0, Outcome::Synced { complete: true, .. }));
+        let c = f.conn();
+        assert_eq!(remote::counts(&c).unwrap().server, 80);
+        assert!(library::query::is_favourite_track(&c, track).unwrap());
+        assert_eq!(library::marks::queued_count(&c).unwrap(), 1);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM remote_marks", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        drop(c);
+        // Its album ids changed, its songs' did not: the same server still.
+        f.mock.edit(|l| {
+            for a in &mut l.albums {
+                a.id = format!("new-{}", a.id);
+            }
+        });
+        job.identity = "https://music.example.org (bob)".into();
+        let (o, _) = f.run(&job);
+        assert!(matches!(o, Outcome::Synced { .. }), "{o:?}");
+        assert!(f.mock.count("getAlbum") > 0);
+        assert_eq!(remote::server(&f.conn()).unwrap().unwrap().identity, "https://music.example.org (bob)");
+        assert_eq!(library::marks::queued_count(&f.conn()).unwrap(), 1);
     }
 
     /// The server scanning while it is listed (its list may shift under the pages, and an

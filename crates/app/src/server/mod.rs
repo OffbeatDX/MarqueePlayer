@@ -17,7 +17,8 @@
 //!
 //! **What is said**: a server not answering is a quiet line in Settings (the library stays as it
 //! was last synced), never a dialog; a sign-in the server refuses asks to sign in again (and
-//! marks the section); what the shrink guard kept asks to confirm. The address, the user and the
+//! marks the section); what the shrink guard kept asks to confirm, and so does another server's
+//! music in the library when the server signed in to is not it (`Hold`). The address, the user and the
 //! token never reach the log (the log names what happened, not where); the password is never
 //! kept at all.
 //!
@@ -119,6 +120,16 @@ fn catalog_host(conn: &rusqlite::Connection) -> String {
         .unwrap_or_default()
 }
 
+/// What a sync kept in the library until the user confirms its removal (Settings' "Remove it
+/// from the library": `confirm_removal`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hold {
+    /// Most of the catalog is no longer listed (the shrink guard).
+    Shrink(remote::Held),
+    /// The server signed in to is not the one whose music the library shows.
+    Other(sync::Elsewhere),
+}
+
 #[derive(Default)]
 struct Ctl {
     /// Signed in: what signs requests, what the server is, and the client made of them.
@@ -136,7 +147,7 @@ struct Ctl {
     checked: Option<Instant>,
     /// Said under the status (quietly), and whether the user must act.
     problem: Option<(String, bool)>,
-    held: Option<remote::Held>,
+    held: Option<Hold>,
     step: Option<Step>,
     facts: Facts,
     /// Where the catalog in the library came from (`host_of` its address), signed in or not.
@@ -154,7 +165,7 @@ fn with<R>(f: impl FnOnce(&mut Ctl) -> R) -> R {
 }
 
 /// The library's identity for this server and user (`remote::sync`): one catalog at a time.
-fn identity(c: &Credentials) -> String {
+pub(crate) fn identity(c: &Credentials) -> String {
     format!("{} ({})", c.url, c.user)
 }
 
@@ -456,7 +467,7 @@ fn finished(st: &Rc<State>, generation: u64, outcome: Outcome) {
                 if report.held.is_some() { ", removal held back" } else { "" }
             );
             with(|c| {
-                c.held = report.held;
+                c.held = report.held.map(Hold::Shrink);
                 c.problem = (failed > 0).then(|| {
                     (
                         format!("{} could not be read at the last sync; the next one tries again (nothing was removed meanwhile).", if failed == 1 { "1 album".into() } else { format!("{} albums", count(failed)) }),
@@ -474,6 +485,16 @@ fn finished(st: &Rc<State>, generation: u64, outcome: Outcome) {
             }
             refresh_library(st);
             sync::covers_kick();
+        }
+        Outcome::OtherServer(e) => {
+            log::info!("server sync: another server's music is in the library; its replacement waits for a confirmation");
+            with(|c| {
+                c.held = Some(Hold::Other(e));
+                c.problem = None;
+            });
+            if reason.told() {
+                pill = Some("The library shows another server's music: Settings asks before replacing it".into());
+            }
         }
         Outcome::Stopped => {
             // What changed here still goes (the server's values were not all read).
@@ -763,6 +784,28 @@ pub fn describe_step(step: &Step) -> (String, String, f32, String) {
     }
 }
 
+/// What a sync kept, and why.
+pub fn hold_text(h: &Hold) -> String {
+    match h {
+        Hold::Shrink(h) => held_text(h),
+        Hold::Other(e) => other_text(e),
+    }
+}
+
+/// The library shows another server's music than the one signed in to.
+pub fn other_text(e: &sync::Elsewhere) -> String {
+    let plays = match e.plays {
+        0 => String::new(),
+        1 => " 1 play not yet reported to it would not be either.".into(),
+        n => format!(" {} plays not yet reported to it would not be either.", count(n)),
+    };
+    format!(
+        "This server's music is not the music the library shows from the server signed in to before: its {} {} stay in the library (with their plays, favourites and playlists) until you remove them to make way for this server's.{plays} If it is the same server under another address, sign in with the address used before instead.",
+        count(e.songs),
+        if e.songs == 1 { "track" } else { "tracks" }
+    )
+}
+
 /// What the guard kept.
 pub fn held_text(h: &remote::Held) -> String {
     format!(
@@ -788,7 +831,7 @@ pub fn show(st: &Rc<State>) {
         s.set_signing_in(c.signing_in);
         s.set_busy(c.sync.is_some() || c.signing_out);
         s.set_stopping(c.sync.as_ref().is_some_and(|s| s.0.load(Ordering::Relaxed)));
-        s.set_held(c.held.as_ref().map(held_text).unwrap_or_default().into());
+        s.set_held(c.held.as_ref().map(hold_text).unwrap_or_default().into());
         // The cloud's tooltip: the server signed in to, or the one whose music is still shown.
         let host = match &c.signed_in {
             Some((creds, ..)) => host_of(&creds.url),

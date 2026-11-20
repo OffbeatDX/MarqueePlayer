@@ -1471,6 +1471,52 @@ pub(crate) fn to_server_only(tx: &Connection, id: i64, touched: &mut Touched) ->
     Ok(true)
 }
 
+// ---- the same server under another name ------------------------------------------
+
+/// What the kept catalog holds: albums, songs.
+pub fn kept(conn: &Connection) -> rusqlite::Result<(usize, usize)> {
+    conn.query_row("SELECT (SELECT COUNT(*) FROM remote_albums), (SELECT COUNT(*) FROM remote_songs)", [], |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)))
+}
+
+/// How many of `ids` the kept catalog has as albums.
+pub fn kept_albums_among<'a>(conn: &Connection, ids: impl IntoIterator<Item = &'a str>) -> rusqlite::Result<usize> {
+    let mut st = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM remote_albums WHERE id = ?1)")?;
+    let mut n = 0;
+    for id in ids {
+        n += usize::from(st.query_row([id], |r| r.get::<_, bool>(0))?);
+    }
+    Ok(n)
+}
+
+/// How many of `ids` the kept catalog has as songs.
+pub fn kept_songs_among<'a>(conn: &Connection, ids: impl IntoIterator<Item = &'a str>) -> rusqlite::Result<usize> {
+    let mut st = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM remote_songs WHERE id = ?1)")?;
+    let mut n = 0;
+    for id in ids {
+        n += usize::from(st.query_row([id], |r| r.get::<_, bool>(0))?);
+    }
+    Ok(n)
+}
+
+/// The server in the library is the one now signed in to, under another name (`identity`: its
+/// other address, or another spelling of the user, or another user of it): the catalog and
+/// everything of it stay, only the name changes. `other_user`: signed in as another user of
+/// it, whose favourites on the server are not the ones agreed: every agreement is forgotten
+/// (`remote_marks`), so the next pass takes the union of the two sides as at a first sync. Kept,
+/// the old user's agreements would make the new user's differing stars look like changes made
+/// on the server and unstar local favourites, and a local change made long ago would unstar the
+/// new user's; the union removes nothing on either side. The plays not yet reported stay queued
+/// (`remote_plays`) and go to the account signed in to now: they are this library's plays, the
+/// earlier sign-in is gone, and dropping them would lose them.
+pub fn rename(conn: &mut Connection, identity: &str, other_user: bool) -> rusqlite::Result<()> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("UPDATE remote_server SET identity = ?1 WHERE id = 1", [identity])?;
+    if other_user {
+        tx.execute("DELETE FROM remote_marks", [])?;
+    }
+    tx.commit()
+}
+
 // ---- disconnecting -------------------------------------------------------------
 
 /// The server leaves the library: its server-only tracks go (with their plays), local tracks

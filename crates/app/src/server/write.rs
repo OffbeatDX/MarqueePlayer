@@ -176,6 +176,19 @@ pub fn flush_plays(conn: &Connection, client: &Client) -> rusqlite::Result<(usiz
     }
 }
 
+/// The library's catalog is this client's server and user (`remote::server`'s identity), so
+/// what is sent is about the songs it has.
+fn holds_catalog_of(conn: &Connection, client: &Client) -> bool {
+    match library::remote::server(conn) {
+        Ok(Some(s)) => s.identity == crate::server::identity(client.credentials()),
+        Ok(None) => false,
+        Err(e) => {
+            log::warn!("server writes: {e}");
+            false
+        }
+    }
+}
+
 // ---- the thread ----------------------------------------------------------------------------
 
 #[derive(Default)]
@@ -244,6 +257,13 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
                 }
             }
             let conn = conn.as_mut().expect("opened");
+            if !holds_catalog_of(conn, &client) {
+                // Signed in to another server than the one whose music the library shows (until
+                // the user confirms its replacement): its songs are not this server's, so a play
+                // sent would come back "not found" and be dropped. Everything waits.
+                log::info!("server writes: the library holds another server's music; nothing sent");
+                continue;
+            }
             let w = client.writes;
             if let Some(id) = now.filter(|_| w.plays)
                 && let Err(e) = client.scrobble(&id, None, false)
@@ -610,6 +630,21 @@ mod tests {
         library::marks::queue_play(&c, f.track("al0-2"), 3).unwrap();
         assert_eq!(flush_plays(&c, &client).unwrap(), (2, None));
         assert_eq!(library::marks::queued_count(&c).unwrap(), 0);
+    }
+
+    /// Signed in to a server whose music the library does not hold (another server's, until its
+    /// replacement is confirmed): the thread sends nothing, so no play is answered "not found"
+    /// and dropped.
+    #[test]
+    fn nothing_is_sent_for_a_catalog_of_another_server() {
+        let f = Fixture::new("other-catalog");
+        let client = f.client(Writes { marks: true, plays: true, playlists: false });
+        f.sync(true, true);
+        assert!(!holds_catalog_of(&f.conn(), &client), "the library's catalog is named otherwise");
+        library::remote::rename(&mut f.conn(), &crate::server::identity(&f.creds), false).unwrap();
+        assert!(holds_catalog_of(&f.conn(), &client));
+        library::remote::disconnect(&mut f.conn()).unwrap();
+        assert!(!holds_catalog_of(&f.conn(), &client), "no catalog at all");
     }
 
     /// With both switches off the client is read-only: no write request reaches the server,
