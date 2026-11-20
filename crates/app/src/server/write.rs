@@ -19,6 +19,10 @@
 //!   queue once the server took it; offline, it waits for the next sync.
 //! - "now playing" when such a track starts (`now_playing`): sent once, never queued.
 //!
+//! Signing out, another sign-in and a switch turned off bump the work's generation: what the
+//! thread is sending under the older one stops before its next request, unqueueing nothing
+//! and writing no agreement (`pass_while`, `flush_plays_while`).
+//!
 //! The server's play counts are not taken into the library: the app reports its own plays to the
 //! server, so taking the server's back would count each of them twice. Ratings are neither read
 //! nor sent: one changed in an older build and still waiting there is dropped, never sent
@@ -100,6 +104,14 @@ fn unstar_held(rows: &[Row], plans: &[Plan<bool>]) -> bool {
 /// each agreement recorded once the server took it. Sending stops at the first error that is not
 /// the song's own (no connection, the sign-in refused); what was not sent goes next time.
 pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i64>) -> rusqlite::Result<Done> {
+    pass_while(conn, client, view, only, &|| true)
+}
+
+/// `pass`, for as long as `live` says the client is still the one to send with (`Work`'s
+/// generation): looked at before each request and inside each agreement's transaction, so once
+/// signed out (or the switches changed) nothing more is sent with this client, and no agreement
+/// is written after the sign-out's removal forgot them.
+fn pass_while(conn: &mut Connection, client: &Client, view: &View, only: Option<i64>, live: &dyn Fn() -> bool) -> rusqlite::Result<Done> {
     let mut done = Done::default();
     let mut star: Vec<(String, bool)> = Vec::new();
     {
@@ -108,6 +120,9 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
         // Read inside the write transaction, after any wait for the writer: a change the user
         // made meanwhile is decided on as it is.
         let tx = library::db::write(conn)?;
+        if !live() {
+            return Ok(done);
+        }
         let rows: Vec<Row> = match only {
             Some(t) => marks::row_of(&tx, t)?.into_iter().collect(),
             None => marks::rows(&tx)?,
@@ -140,7 +155,12 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
     'send: for value in [true, false] {
         let ids: Vec<&str> = star.iter().filter(|(_, v)| *v == value).map(|(id, _)| id.as_str()).collect();
         for chunk in ids.chunks(STAR_CHUNK) {
-            let send = |ids: &[&str]| if value { client.star(ids, &[], &[]) } else { client.unstar(ids, &[], &[]) };
+            let send = |ids: &[&str]| {
+                if !live() {
+                    return Err(Error::ReadOnly("signed out"));
+                }
+                if value { client.star(ids, &[], &[]) } else { client.unstar(ids, &[], &[]) }
+            };
             match send(chunk) {
                 Ok(()) => agreed_stars.extend(chunk.iter().map(|id| ((*id).to_owned(), value))),
                 // One of them is gone from the server: each alone, the gone one left out.
@@ -166,6 +186,9 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
     done.sent = agreed_stars.len();
     if done.sent > 0 {
         let tx = library::db::write(conn)?;
+        if !live() {
+            return Ok(done);
+        }
         for (id, v) in &agreed_stars {
             marks::agree_star(&tx, id, *v, None)?;
         }
@@ -182,6 +205,12 @@ pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i6
 /// Send the plays queued, oldest first, each off the queue once the server took it (or when the
 /// server no longer has its song). How many were sent, and the error that stopped it.
 pub fn flush_plays(conn: &Connection, client: &Client) -> rusqlite::Result<(usize, Option<Error>)> {
+    flush_plays_while(conn, client, &|| true)
+}
+
+/// `flush_plays`, for as long as `live` says the client is still the one to send with: once it
+/// is not, the rest stays queued, unsent, for the next client.
+fn flush_plays_while(conn: &Connection, client: &Client, live: &dyn Fn() -> bool) -> rusqlite::Result<(usize, Option<Error>)> {
     let mut sent = 0;
     loop {
         let batch = marks::queued_plays(conn, PLAY_CHUNK)?;
@@ -189,6 +218,9 @@ pub fn flush_plays(conn: &Connection, client: &Client) -> rusqlite::Result<(usiz
             return Ok((sent, None));
         }
         for p in batch {
+            if !live() {
+                return Ok((sent, None));
+            }
             match client.scrobble(&p.song_id, Some(p.played_at), true) {
                 Ok(()) => sent += 1,
                 Err(Error::NotFound(_)) => log::info!("server: a play not reported, the song is no longer on the server"),
@@ -222,6 +254,9 @@ struct Work {
     /// The signed-in server's client (read-only as given; the writes are added here).
     client: Option<Client>,
     writes: Writes,
+    /// Bumped with every client and every change of the switches: work taken under an older
+    /// one stops before its next request or agreement, unqueueing nothing.
+    generation: u64,
     /// A pass after a sync, with what it read.
     pass: Option<View>,
     /// Tracks whose favourite the app changed.
@@ -265,14 +300,15 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
         let w = WORKER.get().expect("set above");
         let mut conn: Option<Connection> = None;
         loop {
-            let (client, pass, tracks, plays, now) = {
+            let (client, generation, pass, tracks, plays, now) = {
                 let mut g = w.work.lock().unwrap_or_else(|e| e.into_inner());
                 while g.idle() {
                     g = w.ready.wait(g).unwrap_or_else(|e| e.into_inner());
                 }
                 let client = g.client.clone().expect("checked").with_writes(Writes { playlists: false, ..g.writes });
-                (client, g.pass.take(), std::mem::take(&mut g.tracks), std::mem::take(&mut g.plays), g.now_playing.take())
+                (client, g.generation, g.pass.take(), std::mem::take(&mut g.tracks), std::mem::take(&mut g.plays), g.now_playing.take())
             };
+            let live = || lock().is_some_and(|g| g.generation == generation);
             if conn.is_none() {
                 match library::db::open(&db) {
                     Ok(c) => conn = Some(c),
@@ -291,7 +327,7 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
                 continue;
             }
             let w = client.writes;
-            if let Some(id) = now.filter(|_| w.plays)
+            if let Some(id) = now.filter(|_| w.plays && live())
                 && let Err(e) = client.scrobble(&id, None, false)
             {
                 log::debug!("server: now playing not said ({})", crate::server::class(&e));
@@ -299,13 +335,13 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
             let mut taken = Vec::new();
             if w.marks {
                 if let Some(view) = &pass {
-                    match self::pass(conn, &client, view, None) {
+                    match pass_while(conn, &client, view, None, &live) {
                         Ok(d) => taken.extend(d.changed),
                         Err(e) => log::warn!("server writes: {e}"),
                     }
                 }
                 for t in tracks {
-                    match self::pass(conn, &client, &View::new(), Some(t)) {
+                    match pass_while(conn, &client, &View::new(), Some(t), &live) {
                         Ok(d) => taken.extend(d.changed),
                         Err(e) => log::warn!("server writes: {e}"),
                     }
@@ -313,7 +349,7 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
             }
             if w.plays
                 && (plays || pass.is_some())
-                && let Err(e) = flush_plays(conn, &client)
+                && let Err(e) = flush_plays_while(conn, &client, &live)
             {
                 log::warn!("server writes: {e}");
             }
@@ -330,6 +366,7 @@ pub fn start(db: PathBuf, changed: impl Fn(Vec<Changed>) + Send + 'static) {
 /// The signed-in server's client, or None (signed out): nothing is sent without one.
 pub fn set_client(client: Option<Client>) {
     kick(|w| {
+        w.generation += 1;
         w.client = client;
         w.pass = None;
         w.tracks.clear();
@@ -341,7 +378,15 @@ pub fn set_client(client: Option<Client>) {
 
 /// The kinds of write the switches allow (Settings > Library > Server).
 pub fn set_writes(writes: Writes) {
-    kick(|w| w.writes = Writes { playlists: false, ..writes });
+    kick(|w| {
+        // A kind turned off stops what is being sent at once (not after the pass or the plays
+        // under way); what the switches still allow goes again.
+        if (w.writes.marks && !writes.marks) || (w.writes.plays && !writes.plays) {
+            w.generation += 1;
+            w.plays = true;
+        }
+        w.writes = Writes { playlists: false, ..writes };
+    });
 }
 
 /// The writes the settings allow.
@@ -712,6 +757,46 @@ mod tests {
         library::marks::queue_play(&c, f.track("al0-2"), 3).unwrap();
         assert_eq!(flush_plays(&c, &client).unwrap(), (2, None));
         assert_eq!(library::marks::queued_count(&c).unwrap(), 0);
+    }
+
+    /// Work taken under a client that is no longer the one (signed out, another account, a
+    /// switch turned off): it stops before its next request, unqueueing no play, and writes no
+    /// agreement once stopped (the sign-out's removal must not see them come back).
+    #[test]
+    fn work_of_an_older_client_stops_and_unqueues_nothing() {
+        let f = Fixture::new("generation");
+        let client = f.client(Writes { marks: true, plays: true, playlists: false });
+        pass(&mut f.conn(), &client, &f.sync(true, true), None).unwrap();
+        let c = f.conn();
+        for (i, song) in ["al0-1", "al0-2", "al2-1"].into_iter().enumerate() {
+            library::marks::queue_play(&c, f.track(song), 100 + i as i64).unwrap();
+        }
+        let calls = std::cell::Cell::new(0);
+        let live = || {
+            calls.set(calls.get() + 1);
+            calls.get() <= 1
+        };
+        assert_eq!(flush_plays_while(&c, &client, &live).unwrap(), (1, None));
+        assert_eq!(library::marks::queued_count(&c).unwrap(), 2, "the two not sent still queued");
+        // A favourite sent, then signed out before its agreement is written.
+        f.star_here("al1-1");
+        calls.set(0);
+        let live = || {
+            calls.set(calls.get() + 1);
+            calls.get() <= 2
+        };
+        let d = pass_while(&mut f.conn(), &client, &View::new(), Some(f.track("al1-1")), &live).unwrap();
+        assert_eq!(d.sent, 1);
+        assert!(f.server("al1-1"));
+        let agreed: Option<bool> = c.query_row("SELECT starred FROM remote_marks WHERE song_id = 'al1-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(agreed, Some(false), "the agreement of before: none written once stopped");
+        // Stopped from the start: nothing sent, nothing written.
+        f.star_here("al1-2");
+        f.mock.clear_requests();
+        let d = pass_while(&mut f.conn(), &client, &View::new(), Some(f.track("al1-2")), &|| false).unwrap();
+        assert_eq!((d.sent, f.writes_sent()), (0, 0));
+        assert_eq!(flush_plays_while(&c, &client, &|| false).unwrap(), (0, None));
+        assert_eq!(library::marks::queued_count(&c).unwrap(), 2);
     }
 
     /// Signed in to a server whose music the library does not hold (another server's, until its
