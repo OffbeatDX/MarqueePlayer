@@ -119,29 +119,38 @@ pub fn read_from<R: Read + Seek>(r: R, len: u64) -> Option<Trim> {
         if let Some(&(_, es, ee)) = trak.iter().find(|b| &b.0 == b"edts")
             && let Some(&(_, ls, le)) = rd.children(es, ee).iter().find(|b| &b.0 == b"elst")
             && let Some(b) = rd.bytes(ls, le)
+            && let Some(trim) = elst(&b, movie_scale, media_scale, media_duration)
         {
-            let version = *b.first()?;
-            let count = be32(&b, 4)?;
-            // Skip empty edits (media_time -1); the first real one carries the trim.
-            for i in 0..count as usize {
-                let (dur, media_time) = if version == 1 {
-                    (be64(&b, 8 + i * 20)?, be64(&b, 16 + i * 20)? as i64)
-                } else {
-                    (be32(&b, 8 + i * 12)?, i64::from(be32(&b, 12 + i * 12)? as u32 as i32))
-                };
-                if media_time < 0 {
-                    continue;
-                }
-                // Segment duration is in the movie's timescale; convert to the track's.
-                let frames = if movie_scale > 0 { (u128::from(dur) * u128::from(media_scale) / u128::from(movie_scale)) as u64 } else { 0 };
-                let delay = media_time as u64;
-                if frames > 0 && delay.checked_add(frames).is_some_and(|e| e <= media_duration.saturating_add(media_scale)) {
-                    return Some(Trim { delay, frames, scale: media_scale });
-                }
-                break;
-            }
+            return Some(trim);
         }
         return itunsmpb(&mut rd, &moov).map(|t| Trim { scale: media_scale, ..t });
+    }
+    None
+}
+
+/// Trim from an `elst` box payload; `None` if malformed or it carries no usable edit.
+fn elst(b: &[u8], movie_scale: u64, media_scale: u64, media_duration: u64) -> Option<Trim> {
+    let version = *b.first()?;
+    let count = be32(b, 4)?;
+    // Skip empty edits (media_time -1); the first real one carries the trim.
+    for i in 0..count as usize {
+        let (dur, media_time) = if version == 1 {
+            let at = i.checked_mul(20)?.checked_add(8)?;
+            (be64(b, at)?, be64(b, at + 8)? as i64)
+        } else {
+            let at = i.checked_mul(12)?.checked_add(8)?;
+            (be32(b, at)?, i64::from(be32(b, at + 4)? as u32 as i32))
+        };
+        if media_time < 0 {
+            continue;
+        }
+        // Segment duration is in the movie's timescale; convert to the track's.
+        let frames = if movie_scale > 0 { (u128::from(dur) * u128::from(media_scale) / u128::from(movie_scale)) as u64 } else { 0 };
+        let delay = media_time as u64;
+        if frames > 0 && delay.checked_add(frames).is_some_and(|e| e <= media_duration.saturating_add(media_scale)) {
+            return Some(Trim { delay, frames, scale: media_scale });
+        }
+        break;
     }
     None
 }
@@ -157,12 +166,19 @@ fn itunsmpb<R: Read + Seek>(rd: &mut Reader<R>, moov: &[([u8; 4], u64, u64)]) ->
             continue;
         }
         let parts = rd.children(s, e);
-        let name = parts.iter().find(|b| &b.0 == b"name").and_then(|&(_, s, e)| rd.bytes(s, e))?;
+        let Some(name) = parts.iter().find(|b| &b.0 == b"name").and_then(|&(_, s, e)| rd.bytes(s, e)) else {
+            continue;
+        };
         if name.get(4..) != Some(b"iTunSMPB") {
             continue;
         }
-        let data = parts.iter().find(|b| &b.0 == b"data").and_then(|&(_, s, e)| rd.bytes(s, e))?;
-        let text = String::from_utf8_lossy(data.get(8..)?).into_owned();
+        let Some(data) = parts.iter().find(|b| &b.0 == b"data").and_then(|&(_, s, e)| rd.bytes(s, e)) else {
+            continue;
+        };
+        let Some(payload) = data.get(8..) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(payload);
         let f: Vec<u64> = text.split_whitespace().filter_map(|x| u64::from_str_radix(x, 16).ok()).collect();
         if f.len() >= 4 && f[3] > 0 {
             return Some(Trim { delay: f[1], frames: f[3], scale: 0 });
@@ -285,5 +301,45 @@ mod tests {
         let data = std::fs::read(&p).unwrap();
         let _ = std::fs::remove_file(p);
         assert_eq!(read_bounded(data), Some(None), "nothing trimmed");
+    }
+
+    fn itunsmpb_freeform() -> Vec<u8> {
+        let mut name = vec![0u8; 4];
+        name.extend(b"iTunSMPB");
+        let mut data = vec![0u8, 0, 0, 1, 0, 0, 0, 0];
+        data.extend(b" 00000000 00000840 000001C0 0000000000040998".as_slice());
+        bx(b"----", &[bx(b"mean", b"\0\0\0\0com.apple.iTunes"), bx(b"name", &name), bx(b"data", &data)].concat())
+    }
+
+    fn udta_with_ilst(ilst_payload: &[u8]) -> Vec<u8> {
+        let mut meta = vec![0u8; 4];
+        meta.extend(bx(b"ilst", ilst_payload));
+        bx(b"udta", &bx(b"meta", &meta))
+    }
+
+    #[test]
+    fn skips_nameless_freeform_atom_before_itunsmpb() {
+        let nameless = bx(b"----", &bx(b"mean", b"\0\0\0\0com.example"));
+        let udta = udta_with_ilst(&[nameless, itunsmpb_freeform()].concat());
+        let p = file(None, Some(udta));
+        let got = read(&p);
+        let _ = std::fs::remove_file(p);
+        assert_eq!(got, Some(Trim { delay: 0x840, frames: 0x40998, scale: 44_100 }));
+    }
+
+    #[test]
+    fn malformed_elst_falls_back_to_itunsmpb() {
+        let udta = udta_with_ilst(&itunsmpb_freeform());
+        let want = Some(Trim { delay: 0x840, frames: 0x40998, scale: 44_100 });
+        for (label, bad_elst) in [
+            ("empty", Vec::new()),
+            ("truncated header", vec![0u8; 4]),
+            ("truncated entries", vec![0u8, 0, 0, 0, 0, 0, 0, 1]),
+        ] {
+            let p = file(Some(bx(b"edts", &bx(b"elst", &bad_elst))), Some(udta.clone()));
+            let got = read(&p);
+            let _ = std::fs::remove_file(p);
+            assert_eq!(got, want, "{label}: should fall back to iTunSMPB");
+        }
     }
 }
