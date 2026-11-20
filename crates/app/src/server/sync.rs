@@ -8,7 +8,8 @@
 //!    synced, its stars are read then (`getStarred2`, one request): a star changed on
 //!    the server needs no scan of its own.
 //! 2. The albums, `getAlbumList2` by name, 500 a page (the most Navidrome gives), until a page
-//!    comes back short; then each album with its songs (`getAlbum`), three at a time: gentle on a
+//!    comes back short (or brings no album not listed already, or `MAX_PAGES`: then the listing
+//!    is not complete); then each album with its songs (`getAlbum`), three at a time: gentle on a
 //!    home server, three times faster than one by one. (`search3` with an empty query would list
 //!    songs faster, but whether every server answers it with everything is not known; the album
 //!    route is the one the Subsonic API documents for every server.)
@@ -58,6 +59,8 @@ use crate::server::write::View;
 
 /// Albums per `getAlbumList2` page (Navidrome's most).
 const PAGE: u32 = 500;
+/// Pages listed at most (a million albums): a server that pages wrongly is not listed forever.
+const MAX_PAGES: usize = 2000;
 /// Albums read at once (`getAlbum`).
 const READERS: usize = 3;
 /// Albums read, then written, at a time while listing.
@@ -228,18 +231,30 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
     // The album list, page by page. Listed while the server scans, it may shift under the
     // pages (an album gone or renamed before the next page moves another past it, unlisted):
     // complete only if the server neither scans now nor scanned meanwhile.
+    // One album may be listed twice when the list moved under the pages: once is enough. A page
+    // that brings no album not listed already ends the listing: a server that ignores `offset`
+    // (each page its first) would otherwise be asked forever.
     let mut listed: Vec<subsonic::Album> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut complete = !status.scanning;
-    loop {
+    let mut offset: u32 = 0;
+    for pages in 1.. {
         if cancel.load(Ordering::Relaxed) {
             return Outcome::Stopped;
         }
-        match job.client.album_list2(&AlbumList::AlphabeticalByName, PAGE, listed.len() as u32, None) {
+        match job.client.album_list2(&AlbumList::AlphabeticalByName, PAGE, offset, None) {
             Ok(page) => {
                 let n = page.len();
-                listed.extend(page);
+                offset = offset.saturating_add(n as u32);
+                let before = listed.len();
+                listed.extend(page.into_iter().filter(|a| seen.insert(a.id.clone())));
                 tell(Step::Listing { albums: listed.len() });
                 if n < PAGE as usize {
+                    break;
+                }
+                if listed.len() == before || pages >= MAX_PAGES {
+                    log::warn!("server sync: the album list pages no further (after {} albums); nothing is removed this time", listed.len());
+                    complete = false;
                     break;
                 }
             }
@@ -251,9 +266,6 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
             }
         }
     }
-    // One album may be listed twice when the list moved under the pages: once is enough.
-    let mut seen = std::collections::HashSet::new();
-    listed.retain(|a| seen.insert(a.id.clone()));
     if let Some(earlier) = &earlier {
         let kin = match same_server(&job.client, &conn, &listed, cancel) {
             Ok(k) => k,
@@ -1140,6 +1152,31 @@ mod tests {
         f.mock.edit(|l| l.scanning = false);
         let Outcome::Synced { report, complete, .. } = f.run(&f.job(false)).0 else { panic!() };
         assert_eq!((complete, report.removed_albums), (true, 1));
+    }
+
+    /// A server that ignores `offset` (each page its first): the listing ends at the first page
+    /// that brings nothing new, each album once, and is not complete, so nothing is removed.
+    #[test]
+    fn a_server_that_ignores_the_offset_is_not_listed_forever() {
+        let f = Fixture::new("offset", library_of(530));
+        assert!(matches!(f.run(&f.job(false)).0, Outcome::Synced { complete: true, .. }));
+        f.mock.set_trouble(Trouble::IgnoreOffset);
+        f.mock.clear_requests();
+        let job = f.job(true);
+        let o = std::thread::scope(|s| {
+            let h = s.spawn(|| f.run(&job).0);
+            let t0 = std::time::Instant::now();
+            while !h.is_finished() && t0.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            job.cancel.store(true, Ordering::Relaxed);
+            h.join().unwrap()
+        });
+        let Outcome::Synced { report, complete, .. } = o else { panic!("{o:?}") };
+        assert_eq!((report.albums, complete, report.removed_albums), (500, false, 0));
+        assert_eq!(f.mock.count("getAlbumList2"), 2);
+        assert_eq!(f.mock.count("getAlbum"), 500, "each album read once");
+        assert_eq!(remote::counts(&f.conn()).unwrap().server, 1060);
     }
 
     /// A sync waits for a scan's writes (and says so), and goes on once the scan is done.

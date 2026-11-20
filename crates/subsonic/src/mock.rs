@@ -74,6 +74,8 @@ pub enum Trouble {
     WrongPassword,
     /// `getAlbum` of this album fails with a server error (code 0).
     FailAlbum(String),
+    /// `getAlbumList2` ignores `offset`: every page is the first.
+    IgnoreOffset,
 }
 
 struct Shared {
@@ -306,6 +308,10 @@ fn answer(mut conn: TcpStream, s: &Shared) {
         Trouble::WrongPassword => failed(40, "Wrong username or password"),
         _ if !auth_ok => failed(40, "Wrong username or password"),
         Trouble::FailAlbum(id) if endpoint == "getAlbum" && param("id") == Some(id.as_str()) => failed(0, "database is locked"),
+        Trouble::IgnoreOffset if endpoint == "getAlbumList2" => {
+            let first: Vec<(String, String)> = params.iter().filter(|(k, _)| k != "offset").cloned().collect();
+            serve(&endpoint, &first, range, &mut s.library.lock().unwrap_or_else(|e| e.into_inner()))
+        }
         _ => serve(&endpoint, &params, range, &mut s.library.lock().unwrap_or_else(|e| e.into_inner())),
     };
     let mut head = format!("HTTP/1.1 {} X\r\nContent-Type: {}\r\nConnection: close\r\nContent-Length: {}\r\n", reply.status, reply.content_type, reply.body.len());
