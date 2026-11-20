@@ -30,6 +30,8 @@ pub fn devices() -> Vec<DeviceInfo> {
 pub struct AlsaDevice {
     pcm: Option<PCM>,
     rate: u32,
+    /// Frames in a period, as the device opened.
+    period: usize,
     info: Option<OutputInfo>,
     /// What was queued when `stop` dropped the PCM (`cut` asks after stopping).
     stopped_queued: Option<usize>,
@@ -83,6 +85,7 @@ impl Device for AlsaDevice {
             sw.set_start_threshold(buffer as i64).map_err(err)?;
             sw.set_avail_min(period as i64).map_err(err)?;
             pcm.sw_params(&sw).map_err(err)?;
+            self.period = period as usize;
         }
         log::info!("alsa: opened {DEVICE} at {rate} Hz");
         self.info = Some(OutputInfo { device: "Default (ALSA)".into(), id: DEVICE.into(), rate, server: Some("ALSA"), ..OutputInfo::default() });
@@ -172,6 +175,11 @@ impl Device for AlsaDevice {
 
     fn info(&mut self) -> Option<OutputInfo> {
         self.info.clone()
+    }
+
+    /// Run dry, the PCM stops (an underrun) and waits for a full buffer to start again.
+    fn period(&mut self) -> Option<usize> {
+        self.pcm.as_ref().map(|_| self.period).filter(|&p| p > 0)
     }
 }
 

@@ -64,6 +64,8 @@ struct Stream {
     /// Shared mode is event-driven; exclusive mode is polled every `poll`.
     event: Option<Handle>,
     poll: Duration,
+    /// Frames between two refills: the engine's period (shared), the stream's (exclusive).
+    period: usize,
 }
 
 #[derive(Default)]
@@ -194,7 +196,8 @@ impl WasapiDevice {
         client.initialize_client(&format, Direction::Render, mode, None).map_err(err)?;
         let event = client.set_get_eventhandle().map_err(err)?;
         let render = client.get_audiorenderclient().map_err(err)?;
-        Ok((Stream { client, render, event: Some(event), poll: Duration::ZERO }, mix_rate))
+        let period = client.get_device_period().map_or(0, |(def, _)| frames(def, rate));
+        Ok((Stream { client, render, event: Some(event), poll: Duration::ZERO, period }, mix_rate))
     }
 
     /// Exclusive mode at `rate`, in the best format the device takes. `Err` carries the
@@ -233,7 +236,7 @@ impl WasapiDevice {
             }
         }
         let render = client.get_audiorenderclient().map_err(err)?;
-        Ok((Stream { client, render, event: None, poll: poll_interval(used.1) }, fmt))
+        Ok((Stream { client, render, event: None, poll: poll_interval(used.1), period: frames(used.1, rate) }, fmt))
     }
 }
 
@@ -249,6 +252,11 @@ fn exclusive_request(period: i64) -> (i64, i64) {
 fn aligned_retry(frames: u32, rate: u32, period: i64) -> (i64, i64) {
     let buffer = wasapi::calculate_period_100ns(i64::from(frames), i64::from(rate.max(1)));
     (buffer, period.min(buffer).max(1))
+}
+
+/// A duration in 100 ns units as frames at `rate`.
+fn frames(hns: i64, rate: u32) -> usize {
+    (hns.max(0) as u128 * u128::from(rate) / 10_000_000) as usize
 }
 
 /// How often a polled exclusive stream is topped up: every half period (at least 1 ms).
@@ -323,6 +331,12 @@ impl Device for WasapiDevice {
 
     fn queued(&mut self) -> usize {
         self.stream.as_ref().and_then(|s| s.client.get_current_padding().ok()).unwrap_or(0) as usize
+    }
+
+    /// Shared and exclusive alike: both are fed by the output thread, and neither may run
+    /// dry (shared glitches; an exclusive stream may replay stale audio from its buffer).
+    fn period(&mut self) -> Option<usize> {
+        self.stream.as_ref().map(|s| s.period).filter(|&p| p > 0)
     }
 
     fn write(&mut self, samples: &[f32]) -> Result<(), String> {

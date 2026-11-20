@@ -213,6 +213,14 @@ const CUT_HOLD: Duration = Duration::from_millis(100);
 const HISTORY_SECS: f64 = 0.25;
 /// The ring's summary in the log comes at most this often, and only when it changed.
 const HEALTH_EVERY: Duration = Duration::from_secs(10);
+/// What a push device that says its `period` may run down to while the decode thread is
+/// late before silence goes in: one and a half periods, and at least 10 ms (the output
+/// thread wakes about once a period; a starved WASAPI exclusive stream glitches, an ALSA
+/// one stops).
+fn low_water(period: usize, rate: u32) -> usize {
+    (period + period / 2).max(rate as usize / 100)
+}
+
 /// A device held exclusively is let go after a pause this long, so other applications
 /// get their sound back; the resume reopens it.
 pub const RELEASE_AFTER: Duration = Duration::from_secs(3);
@@ -291,6 +299,13 @@ pub trait Device {
     /// the decode thread is late, and must not: it would go in ahead of the audio that comes.
     fn pads_underruns(&self) -> bool {
         false
+    }
+    /// Frames the device plays between two refills (its period), for a push device that
+    /// says. While the decode thread is only a moment late, such a device is fed silence
+    /// only once what it holds runs low (`low_water`), never topped up ahead of the audio
+    /// that is coming. `None`: it is filled with silence whenever nothing is decoded.
+    fn period(&mut self) -> Option<usize> {
+        None
     }
     /// Short fades on pause, resume, stop and seek (see the module doc). On for real
     /// devices; an offline capture records the decoded stream exactly unless it asks.
@@ -1311,8 +1326,19 @@ impl Output {
             // it. Silence written there went in between two chunks the decode thread was only a
             // moment late with (after a seek or a play, when its queue starts empty and the
             // ring's depth is more than a chunk): a gap with hard edges, heard as a crackle.
-            let pads = self.dev.pads_underruns() && self.starved().is_none();
-            if self.late.is_none() && self.starved().is_none() && self.ending.is_none() && (!pads || self.dev.queued() == 0) {
+            // A push device (WASAPI, ALSA) whose buffer is longer than a chunk (above ~102 kHz
+            // on WASAPI's 40 ms, ~51 kHz on ALSA's 80 ms) had the same gap: it must be fed, but
+            // only once what it holds is about to run out, and only enough to keep it going.
+            let starved = self.starved().is_some();
+            let pads = self.dev.pads_underruns() && !starved;
+            let rate = self.rate.unwrap_or(48_000);
+            let low = if starved || pads { None } else { self.dev.period().map(|p| low_water(p, rate)) };
+            let queued = if pads || low.is_some() { self.dev.queued() } else { 0 };
+            let runs_dry = match low {
+                Some(low) => queued < low,
+                None => !pads || queued == 0,
+            };
+            if self.late.is_none() && !starved && self.ending.is_none() && runs_dry {
                 self.late = Some(Instant::now());
                 log::warn!("output: nothing decoded to play in time; the device plays silence until it comes");
             }
@@ -1320,7 +1346,19 @@ impl Output {
                 self.dev.wait(Duration::from_millis(50));
                 return;
             }
+            if let Some(low) = low
+                && queued >= low
+            {
+                // Enough to play meanwhile: look again when it is down to the low mark (a
+                // device's wait would return at once, it has room). The next chunk, if it
+                // comes first, goes in right after what is queued.
+                let secs = (queued - low) as f64 / f64::from(rate.max(1));
+                std::thread::sleep(Duration::from_secs_f64(secs).clamp(Duration::from_millis(1), Duration::from_millis(50)));
+                return;
+            }
             if let Ok(n) = self.dev.available() {
+                // Topped up to two low marks, not the whole buffer, when the device says its period.
+                let n = low.map_or(n, |low| n.min(2 * low - queued));
                 self.scratch.clear();
                 self.scratch.resize(n * 2, 0.0);
                 let silence = std::mem::take(&mut self.scratch);
@@ -1678,6 +1716,96 @@ mod tests {
         }
         fn stop(&mut self) {}
         fn flush(&mut self) {}
+    }
+
+    /// A push device as WASAPI's at 192 kHz: a 40 ms buffer (7680 frames) refilled every
+    /// 10 ms period (1920 frames). The second field is what it holds; a test plays it down
+    /// by hand.
+    #[derive(Clone)]
+    struct BufDev(Arc<Mutex<(Vec<f32>, usize)>>);
+
+    const BUF_FRAMES: usize = 7680;
+    const PERIOD_FRAMES: usize = 1920;
+
+    impl Device for BufDev {
+        fn open(&mut self, _rate: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _timeout: Duration) {}
+        fn available(&mut self) -> Result<usize, String> {
+            Ok(BUF_FRAMES - self.0.lock().unwrap().1)
+        }
+        fn queued(&mut self) -> usize {
+            self.0.lock().unwrap().1
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), String> {
+            let mut d = self.0.lock().unwrap();
+            assert!(d.1 + samples.len() / 2 <= BUF_FRAMES, "overfilled");
+            d.0.extend_from_slice(samples);
+            d.1 += samples.len() / 2;
+            Ok(())
+        }
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&mut self) {}
+        fn flush(&mut self) {}
+        fn period(&mut self) -> Option<usize> {
+            Some(PERIOD_FRAMES)
+        }
+    }
+
+    /// The same gap on a push device whose buffer is longer than a chunk (WASAPI above
+    /// ~102 kHz, ALSA above ~51 kHz): after a seek the first chunk goes in whole, the next is
+    /// not decoded yet, and the rest of the buffer used to be filled with silence, so the
+    /// next chunk came after a gap. It is fed silence only once it runs low.
+    #[test]
+    fn a_push_device_gets_no_silence_between_chunks_while_it_holds_enough() {
+        let dev = BufDev(Arc::new(Mutex::new((Vec::new(), 0))));
+        let (mut out, tx) = test_output_on(Box::new(dev.clone()), EqParams::default());
+        out.rate = Some(192_000);
+        out.cur = Some(Cursor { chunk: chunk(ramp(0, 4096), false, false), offset: 0 });
+        out.fill().unwrap();
+        assert!(out.cur.is_none(), "the whole chunk went in at once");
+        // The next chunk is not decoded yet; the device has played a little.
+        dev.0.lock().unwrap().1 = 3000;
+        out.idle();
+        assert_eq!(dev.0.lock().unwrap().0.len(), 4096 * 2, "nothing written ahead of the next chunk");
+        assert!(out.late.is_none(), "the device still has audio: nothing is late yet");
+        tx.send(Msg::Audio(chunk(ramp(4096, 4096), false, false))).unwrap();
+        assert!(out.next_chunk(false));
+        out.fill().unwrap();
+        let got = dev.0.lock().unwrap().0.clone();
+        assert!(got == ramp(0, got.len() / 2), "the two chunks back to back; first zero at frame {:?}", got.iter().position(|&s| s == 0.0).map(|i| i / 2));
+    }
+
+    /// Run low while waiting: fed just enough silence to keep going (the device would
+    /// glitch or stop), not the whole buffer, and said late.
+    #[test]
+    fn a_push_device_running_low_is_fed_enough_silence_and_said_late() {
+        let dev = BufDev(Arc::new(Mutex::new((Vec::new(), 1000))));
+        let (mut out, _tx) = test_output_on(Box::new(dev.clone()), EqParams::default());
+        out.rate = Some(192_000);
+        out.idle();
+        let low = low_water(PERIOD_FRAMES, 192_000);
+        let d = dev.0.lock().unwrap().clone();
+        assert_eq!(d.1, 2 * low, "topped up to two low marks");
+        assert!(d.1 < BUF_FRAMES);
+        assert!(d.0.iter().all(|&s| s == 0.0));
+        assert!(out.late.is_some());
+    }
+
+    /// Waiting for a growing file's bytes is meant: the buffer is filled with silence as
+    /// before.
+    #[test]
+    fn a_push_device_waiting_for_a_growing_file_is_filled_with_silence() {
+        let dev = BufDev(Arc::new(Mutex::new((Vec::new(), 4096))));
+        let (mut out, _tx) = test_output_on(Box::new(dev.clone()), EqParams::default());
+        out.rate = Some(192_000);
+        *out.shared.starved.lock().unwrap() = Some((1, 1));
+        out.idle();
+        assert_eq!(dev.0.lock().unwrap().1, BUF_FRAMES);
+        assert!(out.late.is_none(), "a meant wait is not late");
     }
 
     /// `frames` of audio that is nowhere zero, numbered from `from`.
