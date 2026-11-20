@@ -77,7 +77,8 @@ one. Terms are ANDed. Negation uses the rules' own opposites, so a query saved a
 playlist stays editable in the editor: "contains" and "does not contain", "is at least 4" and
 "is at most 3", "in the last" and "not in the last", a range and "before or after it". Numbers
 are whole, so `>10` is "at least 11" exactly. A track missing the value (no year) matches neither
-`year:<2000` nor `-year:<2000`, as in the editor; never played is the opposite of any last-played
+`year:<2000` nor `-year:<2000`, and neither `year:1994` nor `-year:1994` (read as "at most 1993
+or at least 1995", since the editor's "is not" would take it in); never played is the opposite of any last-played
 date. `-is:lossless` is lossy (a known lossy codec), as the editor's "Lossless: no" is.
 
 **What is not understood** is searched as text, never refused: an unknown field (`re:stacks`),

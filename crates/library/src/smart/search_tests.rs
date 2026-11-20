@@ -163,11 +163,14 @@ fn negation_flips_to_the_rules_own_opposites() {
     assert_eq!(one("-is:remote"), cond(Field::Remote, Op::No, Value::None));
     assert_eq!(one("-label:=ECM"), cond(Field::Label, Op::IsNot, Value::Text("ECM".into())));
     assert_eq!(one("-plays:>=4"), cond(Field::Plays, Op::AtMost, num(3.0)));
-    assert_eq!(one("-plays:0"), cond(Field::Plays, Op::IsNot, num(0.0)));
+    // Not 0 plays: at least one (nothing is below 0).
+    assert_eq!(one("-plays:0"), cond(Field::Plays, Op::AtLeast, num(1.0)));
     assert_eq!(one("-added:<30d"), cond(Field::Added, Op::NotInLast, Value::Ago(30, Unit::Days)));
     let any = |nodes: Vec<Node>| Atom::Rule(Node::Group(Group { all: false, nodes }));
     let c = |f: Field, op: Op, v: Value| Node::Cond(Cond::new(f, op, v));
     assert_eq!(one("-year:1990..1999"), any(vec![c(Field::Year, Op::AtMost, num(1989.0)), c(Field::Year, Op::AtLeast, num(2000.0))]));
+    // One year the same way: before it or after it (no year is neither), not "is not".
+    assert_eq!(one("-year:1994"), any(vec![c(Field::Year, Op::AtMost, num(1993.0)), c(Field::Year, Op::AtLeast, num(1995.0))]));
     // Nothing is below 0 plays: only the upper side is left.
     assert_eq!(one("-plays:0..3"), cond(Field::Plays, Op::AtLeast, num(4.0)));
     // Never played is not last played before 2024.
@@ -329,6 +332,9 @@ fn queries_select_what_they_say_on_the_fixture() {
     assert_eq!(set(ids(&conn, "length:<3:00")), want(&|t| (t.duration as i64) < 180));
     assert_eq!(set(ids(&conn, "year:2000..2015")), want(&|t| year(t).is_some_and(|y| (2000..=2015).contains(&y))));
     assert_eq!(set(ids(&conn, "-year:2000..2015")), want(&|t| year(t).is_some_and(|y| !(2000..=2015).contains(&y))), "no year matches neither");
+    let y0 = lib.tracks.iter().find_map(year).unwrap();
+    assert!(lib.tracks.iter().any(|t| year(t).is_none()));
+    assert_eq!(set(ids(&conn, &format!("-year:{y0}"))), want(&|t| year(t).is_some_and(|y| y != y0)), "no year matches neither, one year as a range");
     assert_eq!(set(ids(&conn, "is:remote")), want(&|t| t.path.starts_with("navidrome:")));
     assert_eq!(set(ids(&conn, "is:local")), want(&|t| !t.path.starts_with("navidrome:")));
     assert_eq!(set(ids(&conn, "-is:remote")), set(ids(&conn, "is:local")));

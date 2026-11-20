@@ -190,7 +190,9 @@ fn negate_cond(c: &Cond) -> Option<Node> {
         (Kind::Bool, Op::No, _) => flipped(Op::Yes),
         (Kind::Playlist, Op::In, _) => flipped(Op::NotIn),
         (Kind::Playlist, Op::NotIn, _) => flipped(Op::In),
-        (Kind::Number, Op::Is, _) => flipped(Op::IsNot),
+        // Below it or above it, so that a missing value matches neither (the editor's "is not"
+        // would take it in).
+        (Kind::Number, Op::Is, Value::Num(v)) => either(vec![ok(with(Op::AtMost, Value::Num(v - 1.0))), ok(with(Op::AtLeast, Value::Num(v + 1.0)))]),
         (Kind::Number, Op::IsNot, _) => flipped(Op::Is),
         (Kind::Number, Op::AtLeast, Value::Num(v)) => either(vec![ok(with(Op::AtMost, Value::Num(v - 1.0)))]),
         (Kind::Number, Op::AtMost, Value::Num(v)) => either(vec![ok(with(Op::AtLeast, Value::Num(v + 1.0)))]),
