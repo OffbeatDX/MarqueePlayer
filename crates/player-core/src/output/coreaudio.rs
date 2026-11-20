@@ -142,8 +142,24 @@ fn get<T: Copy>(object: AudioObjectID, selector: u32, scope: u32) -> Option<T> {
     (s == 0 && size as usize == size_of::<T>()).then(|| unsafe { value.assume_init() })
 }
 
-/// A variable-size property, as bytes (8-aligned, for the structures read out of it).
-fn get_bytes(object: AudioObjectID, selector: u32, scope: u32) -> Option<Vec<u64>> {
+/// A variable-size property's bytes, held 8-aligned for the structures read out of it.
+struct PropertyBytes {
+    buf: Vec<u64>,
+    /// The bytes Core Audio returned: the buffer is rounded up to whole u64s, and the
+    /// rounding is not part of the property.
+    len: usize,
+}
+
+impl PropertyBytes {
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: u64s viewed as their bytes, the same memory, every bit pattern valid;
+        // `len` is at most the buffer's size in bytes.
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast::<u8>(), self.len.min(self.buf.len() * 8)) }
+    }
+}
+
+/// A variable-size property, as bytes.
+fn get_bytes(object: AudioObjectID, selector: u32, scope: u32) -> Option<PropertyBytes> {
     let addr = address(selector, scope);
     let mut size = 0u32;
     // SAFETY: valid address and out pointer.
@@ -167,7 +183,7 @@ fn get_bytes(object: AudioObjectID, selector: u32, scope: u32) -> Option<Vec<u64
         return None;
     }
     buf.truncate((size as usize).div_ceil(8));
-    Some(buf)
+    Some(PropertyBytes { buf, len: size as usize })
 }
 
 /// A string property (a CFString the caller owns).
@@ -181,19 +197,14 @@ fn get_string(object: AudioObjectID, selector: u32) -> Option<String> {
 /// Every device the system knows.
 fn all_devices() -> Vec<AudioObjectID> {
     let Some(buf) = get_bytes(SYSTEM, kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal) else { return Vec::new() };
-    let bytes: &[u8] = as_bytes(&buf);
+    let bytes: &[u8] = buf.bytes();
     bytes.as_chunks::<4>().0.iter().map(|b| AudioObjectID::from_ne_bytes(*b)).collect()
-}
-
-fn as_bytes(buf: &[u64]) -> &[u8] {
-    // SAFETY: u64 to its bytes, the same memory, every bit pattern valid.
-    unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.len() * 8) }
 }
 
 /// The device's output channels, from its output stream configuration (an AudioBufferList).
 fn output_channels(device: AudioObjectID) -> u32 {
     let Some(buf) = get_bytes(device, kAudioDevicePropertyStreamConfiguration, kAudioObjectPropertyScopeOutput) else { return 0 };
-    let bytes = as_bytes(&buf);
+    let bytes = buf.bytes();
     if bytes.len() < 4 {
         return 0;
     }
@@ -424,7 +435,7 @@ impl CoreAudioDevice {
         let (latency, safety, buffer) = (part(kAudioDevicePropertyLatency), part(kAudioDevicePropertySafetyOffset), part(kAudioDevicePropertyBufferFrameSize));
         let mut stream = 0;
         if let Some(buf) = get_bytes(device, kAudioDevicePropertyStreams, out)
-            && let Some(first) = as_bytes(&buf).as_chunks::<4>().0.first()
+            && let Some(first) = buf.bytes().as_chunks::<4>().0.first()
         {
             let id = AudioObjectID::from_ne_bytes(*first);
             stream = get::<u32>(id, kAudioStreamPropertyLatency, kAudioObjectPropertyScopeGlobal).unwrap_or(0);
