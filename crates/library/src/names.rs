@@ -12,8 +12,10 @@
 //!   several data items) needs no splitting: each value is taken, and then split the same
 //!   way in case it joins several itself.
 //! - **Featured artists** (`featured`, `credits`): "A feat. B", "A ft. B", "A featuring
-//!   B", "A (feat. B)" credit A, and B as featured. In a title, only a bracketed credit
-//!   counts ("Song (feat. B)", "Song [ft. B]"): a bare "feat." in a title is left alone.
+//!   B", "A (feat. B)" credit A, and B as featured; also with no space after the dot ("A
+//!   feat.B") and with full-width spaces and brackets ("A（feat.B）"). In a title, only a
+//!   bracketed credit counts ("Song (feat. B)", "Song [ft. B]"): a bare "feat." in a title
+//!   is left alone.
 //! - **File names** (`from_file_name`): "01 - Title", "01. Title", "01_Title", "01 Title"
 //!   (with a leading zero), "1-03 Title" (disc 1, track 3) give a number and a title when
 //!   the tags do not.
@@ -77,33 +79,51 @@ pub fn split_genres(s: &str) -> Vec<&str> {
 }
 
 /// The names on either side of featuring markers in one artist credit: "A feat. B" and
-/// "A (ft. B)" give "A", "B". Empty when there is no marker. A marker is a whole word
-/// (after a space or "(" or "[", before a space), in any case.
+/// "A (ft. B)" give "A", "B". Empty when there is no marker. A marker is a whole word, in
+/// any case: after a space (also a full-width one) or an opening bracket (also a full-width
+/// one: "（", "［", "【", "〔"); "featuring" before a space, "feat." and "ft." before anything
+/// ("40mP feat.シャノ").
 pub fn featured(artist: &str) -> Vec<&str> {
     const MARKERS: [&[u8]; 3] = [b"feat.", b"ft.", b"featuring"];
     let b = artist.as_bytes();
     let mut parts = Vec::new();
-    let (mut from, mut i) = (0, 1);
+    let mut from = 0;
+    let mut prev: Option<char> = None;
+    let mut i = 0;
     while i < b.len() {
-        let hit = matches!(b[i - 1], b' ' | b'(' | b'[')
-            .then(|| MARKERS.iter().find(|m| b.get(i..i + m.len()).is_some_and(|w| w.eq_ignore_ascii_case(m)) && b.get(i + m.len()) == Some(&b' ')))
+        let after = |m: &[u8]| match b.get(i + m.len()) {
+            None => false,
+            Some(&next) => m.ends_with(b".") || next == b' ' || artist[i + m.len()..].starts_with(char::is_whitespace),
+        };
+        let hit = prev
+            .is_some_and(|c| c.is_whitespace() || OPENING.contains(&c))
+            .then(|| MARKERS.iter().find(|m| b.get(i..i + m.len()).is_some_and(|w| w.eq_ignore_ascii_case(m)) && after(m)))
             .flatten();
         match hit {
-            // ASCII bytes never fall inside a multi-byte character: `i` is a boundary.
+            // The markers are ASCII: they start and end on character boundaries.
             Some(m) => {
                 parts.push(&artist[from..i]);
                 i += m.len();
                 from = i;
+                prev = Some('.');
             }
-            None => i += 1,
+            None => {
+                let c = artist[i..].chars().next().unwrap_or(' ');
+                prev = Some(c);
+                i += c.len_utf8();
+            }
         }
     }
     if parts.is_empty() {
         return parts;
     }
     parts.push(&artist[from..]);
-    parts.into_iter().map(|p| p.trim_matches(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']'))).filter(|p| !p.is_empty()).collect()
+    parts.into_iter().map(|p| p.trim_matches(|c: char| c.is_whitespace() || OPENING.contains(&c) || CLOSING.contains(&c))).filter(|p| !p.is_empty()).collect()
 }
+
+/// Brackets around a featured credit, ASCII and full-width.
+const OPENING: [char; 6] = ['(', '[', '（', '［', '【', '〔'];
+const CLOSING: [char; 6] = [')', ']', '）', '］', '】', '〕'];
 
 /// One credited artist, as the scanner keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,13 +172,13 @@ pub fn push_credit(out: &mut Vec<Credit>, c: Credit) {
 pub fn title_featured(title: &str) -> Vec<String> {
     let mut out = Vec::new();
     let lower = title.to_ascii_lowercase();
-    for (open, close) in [('(', ')'), ('[', ']')] {
+    for (open, close) in OPENING.into_iter().zip(CLOSING) {
         let mut from = 0;
         while let Some(i) = lower[from..].find(open).map(|i| i + from) {
             let Some(j) = lower[i..].find(close).map(|j| j + i) else { break };
-            let inner = &title[i + 1..j];
-            let li = &lower[i + 1..j];
-            for m in ["feat. ", "ft. ", "featuring "] {
+            let inner = &title[i + open.len_utf8()..j];
+            let li = &lower[i + open.len_utf8()..j];
+            for m in ["feat.", "ft.", "featuring "] {
                 if let Some(rest) = li.strip_prefix(m) {
                     let name = &inner[inner.len() - rest.len()..];
                     for n in split_artists(name) {
@@ -167,7 +187,7 @@ pub fn title_featured(title: &str) -> Vec<String> {
                     break;
                 }
             }
-            from = j + 1;
+            from = j + close.len_utf8();
         }
     }
     out
@@ -380,6 +400,16 @@ mod tests {
         assert_eq!(names("Earth, Wind & Fire"), vec![("Earth, Wind & Fire".into(), false)]);
         assert_eq!(names("A;B feat. C; a"), vec![("A".into(), false), ("B".into(), false), ("C".into(), true)], "repeats by norm dropped");
         assert_eq!(names("  "), vec![]);
+        // No space after the dot, full-width spaces and brackets.
+        assert_eq!(names("40mP feat.シャノ"), vec![("40mP".into(), false), ("シャノ".into(), true)]);
+        assert_eq!(names("40mP ft.シャノ"), vec![("40mP".into(), false), ("シャノ".into(), true)]);
+        assert_eq!(names("40mP\u{3000}feat.\u{3000}シャノ"), vec![("40mP".into(), false), ("シャノ".into(), true)]);
+        assert_eq!(names("40mP（feat.シャノ）"), vec![("40mP".into(), false), ("シャノ".into(), true)]);
+        assert_eq!(names("40mP【featuring シャノ】"), vec![("40mP".into(), false), ("シャノ".into(), true)]);
+        assert_eq!(names("1640mP（164×40mP）"), vec![("1640mP（164×40mP）".into(), false)], "a unit's members are its name");
+        assert_eq!(names("A featuringB"), vec![("A featuringB".into(), false)], "\"featuring\" wants a space");
+        assert_eq!(names("Soft.Cell feat."), vec![("Soft.Cell feat.".into(), false)], "nothing after the marker");
+        assert_eq!(names("Rock ft.X"), vec![("Rock".into(), false), ("X".into(), true)]);
     }
 
     #[test]
@@ -390,6 +420,8 @@ mod tests {
         assert_eq!(title_featured("Dusk feat. Kenji Arai"), Vec::<String>::new(), "not bracketed");
         assert_eq!(title_featured("Feat. of Clay"), Vec::<String>::new());
         assert_eq!(title_featured("(Featuring)"), Vec::<String>::new());
+        assert_eq!(title_featured("曲（feat.シャノ）"), vec!["シャノ"]);
+        assert_eq!(title_featured("Song (ft.X)"), vec!["X"]);
     }
 
     #[test]
