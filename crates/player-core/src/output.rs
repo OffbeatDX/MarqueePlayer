@@ -866,11 +866,12 @@ impl Output {
 
     /// The outgoing audio alone, into `scratch`: as it is while the new audio is not here
     /// yet, faded out over its last FADE_MS when it is about to run out (or the new audio
-    /// is at another rate). Returns the frames written and whether any is to be limited by
-    /// this thread.
-    fn write_outgoing_alone(&mut self, want: usize) -> (usize, bool) {
+    /// is at another rate). Returns the frames written, whether any is to be limited by
+    /// this thread, and whether any chunk had limiting enabled.
+    fn write_outgoing_alone(&mut self, want: usize) -> (usize, bool, bool) {
         let mut n = 0;
         let mut unlimited = false;
+        let mut limit_on = false;
         while n < want {
             let left = self.outgoing_frames();
             let Some(o) = self.outgoing.as_mut() else { break };
@@ -887,6 +888,7 @@ impl Output {
             };
             let Some((f, limit, limited)) = self.pop_outgoing() else { break };
             unlimited |= limit && !limited;
+            limit_on |= limit;
             self.scratch.push(f[0] * g);
             self.scratch.push(f[1] * g);
             n += 1;
@@ -900,7 +902,7 @@ impl Output {
                 self.awaiting = Some(Instant::now() + CUT_HOLD);
             }
         }
-        (n, unlimited)
+        (n, unlimited, limit_on)
     }
 
     /// Take a new equalizer setting, if there is one and the handle is not holding it.
@@ -1070,10 +1072,12 @@ impl Output {
         // Whether anything in this block is to be limited here: peaks to limit that the
         // decode thread has not, or a mix of two tracks.
         let mut limit_here = false;
+        let mut limit_on = false;
         let mut mixed = false;
         if self.outgoing_alone() {
-            let (_, unlimited) = self.write_outgoing_alone(want);
+            let (_, unlimited, out_limit) = self.write_outgoing_alone(want);
             limit_here |= unlimited;
+            limit_on |= out_limit;
             want = 0;
         }
         while want > 0 {
@@ -1090,6 +1094,7 @@ impl Output {
             let n = (frames - cur.offset).min(want);
             let g = cur.chunk.gain;
             limit_here |= cur.chunk.limit && !cur.chunk.limited;
+            limit_on |= cur.chunk.limit;
             let src = &cur.chunk.samples[cur.offset * 2..(cur.offset + n) * 2];
             self.scratch.extend(src.iter().map(|s| s * g));
             cur.offset += n;
@@ -1134,6 +1139,7 @@ impl Output {
                 f[0] = f[0] * wi + old[0] * wo;
                 f[1] = f[1] * wi + old[1] * wo;
                 limit_here |= limit;
+                limit_on |= limit;
                 pos += 1;
                 i += 1;
             }
@@ -1152,7 +1158,6 @@ impl Output {
         if equalized {
             self.eq.process(&mut self.scratch);
         }
-        let limit_on = self.cur.as_ref().is_none_or(|c| c.chunk.limit);
         if (limit_here || ((equalized || mixed) && limit_on)) || !self.limiter.is_idle() {
             self.limiter.process(&mut self.scratch, 1.0, rate);
         }
@@ -1409,5 +1414,194 @@ impl Output {
             st.position = written.saturating_sub(queued) as f64 / rate;
             st.duration = cur.chunk.duration.map(|d| d as f64 / rate);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+
+    use crate::engine::{EqShared, SeekTrace, Status};
+    use crate::eq::{EqParams, Preamp};
+    use crate::limiter::CEILING;
+
+    #[derive(Clone, Default)]
+    struct Sink(Arc<Mutex<Vec<f32>>>);
+
+    impl Device for Sink {
+        fn open(&mut self, _rate: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _timeout: Duration) {}
+        fn available(&mut self) -> Result<usize, String> {
+            Ok(480)
+        }
+        fn queued(&mut self) -> usize {
+            0
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), String> {
+            self.0.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        }
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&mut self) {}
+        fn flush(&mut self) {}
+        fn realtime(&self) -> bool {
+            false
+        }
+    }
+
+    fn test_output(eq_params: EqParams) -> (Output, Sink, Sender<Msg>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
+        let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
+        let (cmd_tx, _cmd_rx) = crossbeam_channel::unbounded();
+        let shared = Arc::new(Shared {
+            generation: AtomicU64::new(1),
+            stopped: AtomicU64::new(0),
+            paused: AtomicBool::new(false),
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            status: Mutex::new(Status::default()),
+            shutdown: AtomicBool::new(false),
+            seek_trace: Mutex::new(SeekTrace::default()),
+            output: Mutex::new((0, OutputConfig::default())),
+            output_info: Mutex::new(None),
+            output_health: Mutex::new(None),
+            wake: wake_tx,
+            spectrum: crate::spectrum::Tap::new(),
+            streams: Mutex::new(Vec::new()),
+            eq: EqShared { seq: AtomicU64::new(1), params: Mutex::new(eq_params), enabled: AtomicBool::new(eq_params.enabled) },
+            soft_gen: AtomicU64::new(u64::MAX),
+            soft_secs: AtomicU32::new(0),
+            soft_rate: AtomicU32::new(0),
+            starved: Mutex::new(None),
+            devices: AtomicU64::new(0),
+        });
+        let sink = Sink::default();
+        let mut out = Output {
+            dev: Box::new(sink.clone()),
+            rx,
+            wake: wake_rx,
+            last_volume: 1.0,
+            shared,
+            events: ev_tx,
+            rate: Some(48_000),
+            running: true,
+            seen_gen: 1,
+            cur: None,
+            last_token: None,
+            ending: None,
+            scratch: Vec::new(),
+            fades: false,
+            fade: None,
+            fade_in_next: false,
+            new_generation: false,
+            awaiting: None,
+            write_now: false,
+            history: VecDeque::new(),
+            output_seq: 0,
+            devices_seen: 0,
+            last_info: None,
+            latency_frames: 0,
+            eq: Equalizer::settled(&eq_params, 48_000),
+            eq_seq: 1,
+            limiter: Limiter::with_capacity(32_768),
+            outgoing: None,
+            out_chunks: VecDeque::new(),
+            last_done: None,
+            failing: None,
+            cmd: cmd_tx,
+            buffering: None,
+            health: HealthLog::default(),
+            late: None,
+        };
+        out.poll_eq();
+        (out, sink, tx)
+    }
+
+    fn chunk(samples: Vec<f32>, limit: bool, limited: bool) -> Chunk {
+        Chunk {
+            generation: 1,
+            token: 1,
+            rate: 48_000,
+            start: 0,
+            duration: None,
+            samples,
+            gain: 1.0,
+            limit,
+            limited,
+            converted_from: None,
+            mix: false,
+        }
+    }
+
+    #[test]
+    fn limiter_stays_off_at_a_chunk_boundary_when_limiting_is_off() {
+        // Equalizer boosting by +6 dB (manual preamp, so samples at 0.8 become ~1.6).
+        let eq = EqParams::new(true, &[], Preamp::Manual(6.0));
+        let (mut out, sink, _tx) = test_output(eq);
+        // Exactly one write's worth of frames, so the copy loop exhausts `cur` and leaves it `None`.
+        let frames = 480;
+        let samples = vec![0.8f32; frames * 2];
+        let mut expected = samples.clone();
+        Equalizer::settled(&eq, 48_000).process(&mut expected);
+        assert!(expected.iter().all(|&s| s > 1.5), "preamp pushes samples well above full scale");
+
+        out.cur = Some(Cursor { chunk: chunk(samples, false, false), offset: 0 });
+        let written = out.write_frames(frames).unwrap();
+        assert_eq!(written, frames);
+        assert!(out.cur.is_none(), "chunk boundary: cur was used up");
+        let got = sink.0.lock().unwrap().clone();
+        assert_eq!(got, expected, "with limiting off, the limiter must not switch on at a chunk boundary");
+    }
+
+    #[test]
+    fn limiter_release_tail_finishes_when_limiting_turns_off() {
+        let (mut out, sink, _tx) = test_output(EqParams::default());
+        // First block: limiting on, with a peak at the very end so the limiter is mid-release.
+        let mut first = vec![0.5f32; 480 * 2];
+        first[479 * 2] = 2.0;
+        first[479 * 2 + 1] = 2.0;
+        out.cur = Some(Cursor { chunk: chunk(first, true, false), offset: 0 });
+        assert_eq!(out.write_frames(480).unwrap(), 480);
+        assert!(!out.limiter.is_idle(), "limiter is recovering from the peak");
+
+        // Second block: limiting turned off, steady 0.5 samples; release tail must continue smoothly.
+        sink.0.lock().unwrap().clear();
+        let second = vec![0.5f32; 19_200 * 2];
+        out.cur = Some(Cursor { chunk: chunk(second, false, false), offset: 0 });
+        assert_eq!(out.write_frames(19_200).unwrap(), 19_200);
+        let got = sink.0.lock().unwrap().clone();
+        assert!(got[0] < 0.5, "release tail continues into the next block rather than stepping to unity");
+        assert_eq!(*got.last().unwrap(), 0.5, "recovers to unity");
+        assert!(out.limiter.is_idle());
+    }
+
+    #[test]
+    fn outgoing_alone_respects_chunk_limit_flag_with_eq() {
+        let eq = EqParams::new(true, &[], Preamp::Manual(6.0));
+        // Outgoing with limiting off: EQ boost passes through unlimited.
+        let (mut out, sink, _tx) = test_output(eq);
+        let samples = vec![0.8f32; 480 * 2];
+        out.outgoing = Some(Outgoing { generation: 1, token: 1, rate: 48_000, want: 4800, mix: None, ending: None });
+        out.out_chunks.push_back(Cursor { chunk: chunk(vec![0.8f32; 4800 * 2], false, false), offset: 0 });
+        assert_eq!(out.write_frames(480).unwrap(), 480);
+        let got = sink.0.lock().unwrap().clone();
+        let mut expected = samples.clone();
+        Equalizer::settled(&eq, 48_000).process(&mut expected);
+        assert_eq!(got, expected, "outgoing alone with limiting off stays unlimited");
+
+        // Outgoing with limiting on (even if already limited by decode thread before EQ): EQ boost is limited.
+        let (mut out, sink, _tx) = test_output(eq);
+        out.outgoing = Some(Outgoing { generation: 1, token: 1, rate: 48_000, want: 4800, mix: None, ending: None });
+        out.out_chunks.push_back(Cursor { chunk: chunk(vec![0.8f32; 4800 * 2], true, true), offset: 0 });
+        assert_eq!(out.write_frames(480).unwrap(), 480);
+        let got = sink.0.lock().unwrap().clone();
+        let peak = got.iter().fold(0f32, |m, &s| m.max(s.abs()));
+        assert!(peak <= CEILING, "outgoing alone with limiting on is limited after EQ: {peak}");
     }
 }
