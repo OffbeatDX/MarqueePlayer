@@ -150,7 +150,7 @@ jobs:
     outputs:
       version: ${{ steps.built.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -173,7 +173,7 @@ jobs:
             choco install innosetup --no-progress -y
           fi
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
@@ -200,14 +200,14 @@ jobs:
           echo "Built Marquee Player $ver"
 
       - name: Upload the portable zip
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-portable.zip
           archive: false
           if-no-files-found: error
 
       - name: Upload the installer
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-setup.exe
           archive: false
@@ -215,7 +215,7 @@ jobs:
 
       # The exe and its PDB, to resolve a crash address from a user's log; never shipped.
       - name: Upload the debug symbols
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: MarqueePlayer-${{ steps.built.outputs.version }}-windows-symbols
           path: |
@@ -237,7 +237,7 @@ jobs:
       # ~/.cache/mp-release-target, for WSL's sake).
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -266,7 +266,7 @@ jobs:
       # PipeWire 0.3.65's library and headers, built once into ~/.local/share/mp-build
       # (where the release looks), for building only.
       - name: Cache the PipeWire SDK
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.local/share/mp-build/pipewire-0.3.65
           key: pipewire-sdk-ubuntu-22.04-${{ hashFiles('packaging/linux/pipewire-sdk.sh') }}
@@ -275,7 +275,7 @@ jobs:
       - name: PipeWire SDK
         run: packaging/linux/pipewire-sdk.sh
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
@@ -302,14 +302,14 @@ jobs:
 
       # As is, not zipped (downloads lose the executable bit: chmod +x it).
       - name: Upload the AppImage
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-x86_64.AppImage
           archive: false
           if-no-files-found: error
 
       - name: Upload the debug symbols
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: MarqueePlayer-${{ steps.built.outputs.version }}-linux-symbols
           path: dist/symbols/${{ steps.built.outputs.version }}/linux/
@@ -325,7 +325,7 @@ jobs:
     outputs:
       version: ${{ steps.built.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -347,7 +347,7 @@ jobs:
           cmake --version | head -n 1
           xcode-select -p
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref_name == github.event.repository.default_branch }}
 
@@ -373,7 +373,7 @@ jobs:
           echo "Built Marquee Player $ver"
 
       - name: Upload the disk image
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/MarqueePlayer-${{ steps.built.outputs.version }}-macos-arm64.dmg
           archive: false
@@ -381,7 +381,7 @@ jobs:
 
       # The unstripped binary and its .dSYM, to symbolicate a crash report; never shipped.
       - name: Upload the debug symbols
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: MarqueePlayer-${{ steps.built.outputs.version }}-macos-symbols
           path: dist/symbols/${{ steps.built.outputs.version }}/macos/
@@ -409,18 +409,18 @@ jobs:
         run: echo "::warning::The MARQUEE_* signing secrets are not configured, so this release has no Android APK."
 
       - if: ${{ env.HAS_KEY == 'true' }}
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - if: ${{ env.HAS_KEY == 'true' }}
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: "17"
 
       - if: ${{ env.HAS_KEY == 'true' }}
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@0723195856401067f7a2779048b490ace7a47d7c # v5
 
       # The tag's number, or the one given by hand; without one, today's (UTC) .1, as the
       # desktop builds number themselves.
@@ -460,7 +460,7 @@ jobs:
 
       - name: Upload the APK
         if: ${{ env.HAS_KEY == 'true' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           path: dist/MarqueePlayer-${{ steps.version.outputs.version }}-android.apk
           archive: false
@@ -526,30 +526,30 @@ jobs:
     steps:
       # As it was uploaded: the action would otherwise unpack a zip it is handed.
       - name: Download the portable zip
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: MarqueePlayer-${{ needs.same-number.outputs.version }}-portable.zip
           path: packages
           skip-decompress: true
       - name: Download the installer
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: MarqueePlayer-${{ needs.same-number.outputs.version }}-setup.exe
           path: packages
       - name: Download the AppImage
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: MarqueePlayer-${{ needs.same-number.outputs.version }}-x86_64.AppImage
           path: packages
       - name: Download the disk image
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: MarqueePlayer-${{ needs.same-number.outputs.version }}-macos-arm64.dmg
           path: packages
 
       - name: Download the Android APK
         if: needs.android.outputs.apk == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: MarqueePlayer-${{ needs.android.outputs.version }}-android.apk
           path: packages

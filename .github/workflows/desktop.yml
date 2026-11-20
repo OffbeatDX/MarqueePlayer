@@ -89,7 +89,7 @@ jobs:
     timeout-minutes: 120
     steps:
       # The whole history, so that the whitespace step finds the commit it starts from.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -147,7 +147,7 @@ jobs:
       # Dependencies (Skia's download and Slint's git checkout among them) and their build
       # outputs; saved only by runs started by hand on a branch (a tag's cache could be read by
       # no later run).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/heads/') }}
 
