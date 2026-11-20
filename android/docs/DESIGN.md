@@ -194,6 +194,10 @@ The README describes the result.
   that no screen can cancel (`Cleanup` in `:core`); a new sign-in waits for it. The outbox keeps a
   hash of the server address and user it was filled for, refuses entries while signed out or for an
   account no longer signed in, and drops another account's entries instead of sending them.
+- **The app's own files** (pins, outbox, favourites, saved queue, saved answers) are replaced whole
+  through `SafeFile` (`:core`): a temp file synced to disk, then one atomic rename; a temp file left by
+  a failed rename is read while the file is missing. A pins file that is there but damaged is kept as
+  `pins.json.bad`, and nothing stored is deleted for not being pinned in that run (songs or covers).
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

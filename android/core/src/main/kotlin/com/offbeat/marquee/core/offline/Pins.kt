@@ -83,8 +83,37 @@ data class PinSet(val pins: List<Pin> = emptyList()) {
     companion object {
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
-        fun decode(text: String?): PinSet =
-            text?.let { runCatching { json.decodeFromString(serializer(), it) }.getOrNull() } ?: PinSet()
+        fun decode(text: String?): PinSet = text?.let(::decodeOrNull) ?: PinSet()
+
+        /** The pins in [text], or null when it is not a pins file (damaged, cut short). */
+        fun decodeOrNull(text: String): PinSet? = runCatching { json.decodeFromString(serializer(), text) }.getOrNull()
+
+        /**
+         * Reads the pins file. No file is no pins. A file that is there but can't be read or decoded
+         * is kept aside as `pins.json.bad` and the pins come back empty and *untrusted*: nothing may be
+         * deleted for not being pinned in that run, or one damaged file would delete every download.
+         */
+        fun load(file: java.io.File, log: (String) -> Unit = {}): PinsLoad {
+            val text = try {
+                com.offbeat.marquee.core.library.SafeFile.read(file)
+            } catch (e: java.io.IOException) {
+                log("pins: ${file.name} can't be read (${e.javaClass.simpleName})")
+                setAside(file, log)
+                return PinsLoad(PinSet(), trusted = false)
+            } ?: return PinsLoad(PinSet(), trusted = true)
+            val pins = decodeOrNull(text)
+            if (pins == null) {
+                log("pins: ${file.name} is damaged (${text.length} chars)")
+                setAside(file, log)
+                return PinsLoad(PinSet(), trusted = false)
+            }
+            return PinsLoad(pins, trusted = true)
+        }
+
+        private fun setAside(file: java.io.File, log: (String) -> Unit) {
+            val bad = com.offbeat.marquee.core.library.SafeFile.setAside(file)
+            log("pins: ${if (bad != null) "kept aside as ${bad.name}" else "could not be kept aside"}; no download is deleted this run")
+        }
     }
 }
 
@@ -111,3 +140,6 @@ data class Reconcile(val fetch: List<String>, val delete: Set<String>) {
             Reconcile(wanted.filter { it !in complete }.distinct(), stored - wanted.toSet())
     }
 }
+
+/** The pins as read at start; [trusted] is false when the file was there but damaged ([PinSet.load]). */
+data class PinsLoad(val pins: PinSet, val trusted: Boolean)

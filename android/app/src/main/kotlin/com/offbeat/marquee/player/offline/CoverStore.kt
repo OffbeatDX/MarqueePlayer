@@ -64,12 +64,13 @@ object CoverStore {
         withContext(Dispatchers.IO) {
             val d = dir ?: return@withContext 0
             val plan = PinnedCovers.plan(PinnedCovers.wanted(pins), stored())
-            for (f in plan.delete) {
+            // A damaged pins file: nothing is deleted for not being pinned this run.
+            for (f in if (Downloads.pinsTrusted) plan.delete else emptyList()) {
                 File(d, PinnedCovers.fileName(f)).delete()
                 remove(f)
             }
             val todo = plan.fetch.filter { it !in refused }
-            if (plan.delete.isNotEmpty()) AppLog.i(TAG, "deleted ${plan.delete.size} covers nothing pins")
+            if (plan.delete.isNotEmpty() && Downloads.pinsTrusted) AppLog.i(TAG, "deleted ${plan.delete.size} covers nothing pins")
             if (!fetch || todo.isEmpty() || !NetworkMonitor.online) return@withContext todo.size
             val client = AppSession.current ?: return@withContext todo.size
             d.mkdirs()

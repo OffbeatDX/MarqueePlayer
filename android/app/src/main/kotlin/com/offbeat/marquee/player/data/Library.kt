@@ -7,6 +7,7 @@ import com.offbeat.marquee.core.library.AlbumPaging
 import com.offbeat.marquee.core.library.AlbumSort
 import com.offbeat.marquee.core.library.CountSearch
 import com.offbeat.marquee.core.library.DiskStore
+import com.offbeat.marquee.core.library.SafeFile
 import com.offbeat.marquee.core.library.ItemKind
 import com.offbeat.marquee.core.library.ShelfId
 import com.offbeat.marquee.core.library.Shelves
@@ -513,13 +514,7 @@ internal class FavouritesWriter {
     fun write(file: File, text: String, seq: Long = nextSeq()): Boolean {
         if (seq <= lastSeq) return false
         lastSeq = seq
-        file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(text)
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            if (!tmp.renameTo(file)) tmp.delete()
-        }
+        SafeFile.write(file, text)
         return true
     }
 
@@ -528,8 +523,7 @@ internal class FavouritesWriter {
     fun clear(file: File, seq: Long = nextSeq()): Boolean {
         if (seq <= lastSeq) return false
         lastSeq = seq
-        File(file.parentFile, file.name + ".tmp").delete()
-        file.delete()
+        SafeFile.delete(file)
         return true
     }
 }

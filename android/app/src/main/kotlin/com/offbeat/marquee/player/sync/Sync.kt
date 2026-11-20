@@ -10,6 +10,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.offbeat.marquee.core.library.SafeFile
 import com.offbeat.marquee.core.subsonic.SubsonicClient
 import com.offbeat.marquee.core.sync.FlushResult
 import com.offbeat.marquee.core.sync.Outbox
@@ -57,14 +58,9 @@ object Sync {
         val file = File(app.filesDir, "outbox.json")
         outbox = Outbox(
             file = object : TextFile {
-                override fun read(): String? = if (file.isFile) runCatching { file.readText() }.getOrNull() else null
+                override fun read(): String? = SafeFile.readOrNull(file)
                 override fun write(text: String) {
-                    val tmp = File(file.parentFile, file.name + ".tmp")
-                    tmp.writeText(text)
-                    if (!tmp.renameTo(file)) {
-                        file.delete()
-                        tmp.renameTo(file)
-                    }
+                    runCatching { SafeFile.write(file, text) }.onFailure { AppLog.w(TAG, "outbox: not saved (${it.javaClass.simpleName})") }
                 }
             },
             clock = System::currentTimeMillis,

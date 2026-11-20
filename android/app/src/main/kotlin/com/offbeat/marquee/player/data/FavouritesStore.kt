@@ -1,6 +1,7 @@
 package com.offbeat.marquee.player.data
 
 import com.offbeat.marquee.core.library.Overrides
+import com.offbeat.marquee.core.library.SafeFile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +55,7 @@ internal class FavouritesStore(private val file: () -> File, private val scope: 
         val startEpoch = synchronized(lock) { epoch }
         return scope.launch {
             val f = file()
-            val loaded = if (f.isFile) runCatching { json.decodeFromString(serializer, f.readText()) }.getOrNull() else null
+            val loaded = SafeFile.readOrNull(f)?.let { runCatching { json.decodeFromString(serializer, it) }.getOrNull() }
             if (loaded.isNullOrEmpty()) return@launch
             val snap: Map<String, Boolean>
             val seq: Long

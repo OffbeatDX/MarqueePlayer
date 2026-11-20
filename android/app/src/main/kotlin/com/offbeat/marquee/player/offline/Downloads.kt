@@ -10,6 +10,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.offbeat.marquee.core.library.SafeFile
 import com.offbeat.marquee.core.offline.ListDiff
 import com.offbeat.marquee.core.offline.Pin
 import com.offbeat.marquee.core.offline.PinChange
@@ -118,6 +119,14 @@ object Downloads {
     private val failed: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private fun pinsFile() = File(app.filesDir, "downloads/pins.json")
+
+    /**
+     * False for the rest of the run when the pins file was there but damaged ([PinSet.load]): what
+     * is stored is then never deleted for not being pinned (reconcile, the covers), only by the
+     * user's own removals.
+     */
+    @Volatile var pinsTrusted = true
+        private set
     private fun prefs() = app.getSharedPreferences("downloads", Context.MODE_PRIVATE)
 
     @Synchronized
@@ -127,7 +136,9 @@ object Downloads {
         app = context.applicationContext
         _quality.value = StreamQuality.fromId(prefs().getString("quality", null), StreamQuality.ORIGINAL)
         _wifiOnly.value = prefs().getBoolean("wifi_only", true)
-        _pins.value = PinSet.decode(pinsFile().takeIf { it.isFile }?.readText())
+        val loaded = PinSet.load(pinsFile()) { AppLog.w(TAG, it) }
+        pinsTrusted = loaded.trusted
+        _pins.value = loaded.pins
         CoverStore.init(app)
         scope.launch {
             reconcile()
@@ -344,16 +355,7 @@ object Downloads {
     private suspend fun mutate(block: (PinSet) -> PinChange): PinChange = mutex.withLock {
         val change = block(_pins.value)
         _pins.value = change.pins
-        withContext(Dispatchers.IO) {
-            val f = pinsFile()
-            f.parentFile?.mkdirs()
-            val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(change.pins.encode())
-            if (!tmp.renameTo(f)) {
-                f.delete()
-                tmp.renameTo(f)
-            }
-        }
+        withContext(Dispatchers.IO) { SafeFile.write(pinsFile(), change.pins.encode()) }
         change
     }
 
@@ -379,7 +381,9 @@ object Downloads {
             MediaStores.dropErrorReplies(d, "downloads")
         }
         val r = Reconcile.of(_pins.value.wanted(), MediaStores.songIds(d), emptySet())
-        if (r.delete.isNotEmpty()) {
+        if (r.delete.isNotEmpty() && !pinsTrusted) {
+            AppLog.w(TAG, "${r.delete.size} stored songs not pinned kept: the pins file was damaged")
+        } else if (r.delete.isNotEmpty()) {
             r.delete.forEach { MediaStores.removeSong(d, it) }
             AppLog.i(TAG, "deleted ${r.delete.size} songs nothing pins")
         }

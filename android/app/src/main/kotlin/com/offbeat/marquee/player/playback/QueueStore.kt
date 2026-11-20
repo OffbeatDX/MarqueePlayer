@@ -1,6 +1,7 @@
 package com.offbeat.marquee.player.playback
 
 import android.content.Context
+import com.offbeat.marquee.core.library.SafeFile
 import com.offbeat.marquee.core.playback.SavedQueue
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -20,7 +21,7 @@ class QueueStore(private val file: File) {
     fun nextSeq(): Long = seqGen.incrementAndGet()
 
     @Synchronized
-    fun load(): SavedQueue? = if (file.isFile) runCatching { SavedQueue.decode(file.readText()) }.getOrNull() else null
+    fun load(): SavedQueue? = SafeFile.readOrNull(file)?.let { runCatching { SavedQueue.decode(it) }.getOrNull() }
 
     /**
      * Writes [queue] atomically when [seq] is newer than the last write or clear; skips older
@@ -30,13 +31,7 @@ class QueueStore(private val file: File) {
     fun save(queue: SavedQueue, seq: Long = nextSeq()): Boolean {
         if (seq <= lastSeq) return false
         lastSeq = seq
-        file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, "${file.name}.tmp")
-        tmp.writeText(queue.encode())
-        if (!tmp.renameTo(file)) {
-            file.delete()
-            if (!tmp.renameTo(file)) tmp.delete()
-        }
+        SafeFile.write(file, queue.encode())
         return true
     }
 
@@ -48,7 +43,7 @@ class QueueStore(private val file: File) {
     fun clear(seq: Long = nextSeq()): Boolean {
         if (seq <= lastSeq) return false
         lastSeq = seq
-        file.delete()
+        SafeFile.delete(file)
         return true
     }
 }

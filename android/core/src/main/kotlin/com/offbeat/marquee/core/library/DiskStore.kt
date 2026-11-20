@@ -32,12 +32,7 @@ class DiskStore(private val dir: File, private val maxEntries: Int) {
         try {
             dir.mkdirs()
             val f = fileFor(key)
-            val tmp = File(dir, f.name + ".tmp")
-            tmp.writeText(text)
-            if (!tmp.renameTo(f)) {
-                f.delete()
-                if (!tmp.renameTo(f)) tmp.delete()
-            }
+            SafeFile.write(f, text)
             f.setLastModified(System.currentTimeMillis())
             trim()
         } catch (e: IOException) {
