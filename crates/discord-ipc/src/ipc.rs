@@ -5,7 +5,7 @@
 //! profile shows. Closing the pipe clears it too.
 
 use std::io::{self, Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -23,6 +23,10 @@ const FIELD_MAX: usize = 128;
 /// How long Discord may take over a frame, to answer one or to take one: past it the read or
 /// write fails, and the pipe is closed and looked for again, as when it breaks.
 pub const TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Frames other than an answer (pings, opcodes not known) taken while waiting for one, at
+/// most: past them, or past `TIMEOUT` in all, the wait gives up as a read that timed out does.
+const MAX_ASIDES: usize = 16;
 
 /// Discord's close code for an application ID it does not know.
 const INVALID_CLIENT_ID: i64 = 4000;
@@ -162,9 +166,15 @@ impl Session {
     }
 }
 
-/// Discord's next answer, with its pings answered on the way.
+/// Discord's next answer, with its pings answered on the way. Each read gives up after
+/// `TIMEOUT`, and so does the wait as a whole (or after `MAX_ASIDES` frames that are no
+/// answer): something sending pings, or frames not known, without end is not waited on for ever.
 fn answer(pipe: &mut dyn Pipe) -> Result<Value, Error> {
-    loop {
+    let since = Instant::now();
+    for _ in 0..=MAX_ASIDES {
+        if since.elapsed() > TIMEOUT {
+            break;
+        }
         let (op, v) = read_frame(pipe)?;
         match op {
             FRAME => return Ok(v),
@@ -174,6 +184,7 @@ fn answer(pipe: &mut dyn Pipe) -> Result<Value, Error> {
             _ => {}
         }
     }
+    Err(Error::Io(io::Error::new(io::ErrorKind::TimedOut, "no answer from Discord among the frames it sent")))
 }
 
 /// The Discord app's pipe on this machine: the first of its ten that opens.
@@ -332,6 +343,39 @@ mod tests {
         let v = activity_json(&Activity { state: String::new(), end_ms: 0, ..a });
         assert!(v.get("state").is_none());
         assert!(v["timestamps"].get("end").is_none());
+    }
+
+    /// A pipe that sends pings, and frames not known, without end: the wait for an answer gives
+    /// up after a few, as a read that timed out does, instead of looping for ever.
+    #[test]
+    fn endless_pings_are_not_waited_on_for_ever() {
+        struct Pings {
+            frames: std::io::Cursor<Vec<u8>>,
+            n: usize,
+        }
+        impl Read for Pings {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.frames.position() as usize == self.frames.get_ref().len() {
+                    self.n += 1;
+                    let mut c = std::io::Cursor::new(Vec::new());
+                    write_frame(&mut c, if self.n % 2 == 0 { PING } else { 9 }, &json!({ "n": self.n })).unwrap();
+                    self.frames = std::io::Cursor::new(c.into_inner());
+                }
+                self.frames.read(buf)
+            }
+        }
+        impl Write for Pings {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut pipe = Pings { frames: std::io::Cursor::new(Vec::new()), n: 0 };
+        let e = answer(&mut pipe).unwrap_err();
+        assert!(matches!(&e, Error::Io(e) if e.kind() == io::ErrorKind::TimedOut), "{e:?}");
+        assert!(pipe.n <= MAX_ASIDES + 1, "{} frames read", pipe.n);
     }
 
     /// A pipe of this test's own (never Discord's), whose other end reads the handshake, answers
