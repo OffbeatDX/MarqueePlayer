@@ -11,7 +11,6 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.offbeat.marquee.core.subsonic.SubsonicClient
-import com.offbeat.marquee.core.subsonic.SubsonicError
 import com.offbeat.marquee.core.sync.FlushResult
 import com.offbeat.marquee.core.sync.Outbox
 import com.offbeat.marquee.core.sync.OutboxSender
@@ -150,6 +149,3 @@ class OutboxWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         }
     }
 }
-
-/** Whether an error means "the network", for deciding to queue rather than give up. */
-fun SubsonicError.isNetwork(): Boolean = this is SubsonicError.Network

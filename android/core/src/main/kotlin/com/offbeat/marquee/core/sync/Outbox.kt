@@ -71,6 +71,52 @@ sealed interface FlushResult {
 }
 
 /**
+ * Whether this failure may clear up by itself, so the write should wait in the outbox and be tried
+ * again later: the network, a sign-in the server refused (the password may be fixed), an address
+ * that answered with something other than Subsonic (a captive portal), an unusable address, or
+ * server trouble without a Subsonic refusal (a bare HTTP error such as 5xx, 408 or 429, or Subsonic
+ * code 0). What the server explicitly refuses (a non-zero Subsonic code) and what a read-only build
+ * blocks are not transient: sending again would not help. The outbox and every direct write use this
+ * one rule, so "queue it" and "the server said no" mean the same thing everywhere.
+ */
+fun SubsonicError.isTransient(): Boolean = when (this) {
+    is SubsonicError.Network, is SubsonicError.AuthFailed, is SubsonicError.NotSubsonic, is SubsonicError.InvalidUrl -> true
+    is SubsonicError.Server -> code == null || code == 0
+    is SubsonicError.RefusedReadOnly -> false
+}
+
+/** How a write tried directly went: see [sendOrQueue]. */
+sealed interface DirectWrite {
+    data object Sent : DirectWrite
+    /** Offline ([error] null) or a transient failure: it waits in the outbox. */
+    data class Queued(val error: SubsonicError?) : DirectWrite
+    /** The server refused it, or a read-only build blocked it: nothing was queued. */
+    data class Refused(val error: SubsonicError) : DirectWrite
+}
+
+/**
+ * Sends a write now when [online]; offline, or on a transient failure ([isTransient]), hands it to
+ * [queue] instead, so it goes out later with the outbox.
+ */
+suspend fun sendOrQueue(online: Boolean, send: suspend () -> Unit, queue: () -> Unit): DirectWrite {
+    if (!online) {
+        queue()
+        return DirectWrite.Queued(null)
+    }
+    return try {
+        send()
+        DirectWrite.Sent
+    } catch (e: SubsonicError) {
+        if (e.isTransient()) {
+            queue()
+            DirectWrite.Queued(e)
+        } else {
+            DirectWrite.Refused(e)
+        }
+    }
+}
+
+/**
  * Writes that wait for the network, kept on disk: scrobble submissions (with their play time) and
  * favourite changes made offline. [flush] sends them in order, scrobbles in batches; on a network,
  * sign-in, captive-portal or transient server error it stops and backs off ([Backoff.OUTBOX]),
@@ -188,32 +234,33 @@ class Outbox(
             log("outbox: $what sent")
             return Attempt.Sent
         } catch (e: SubsonicError) {
-            return when (e) {
-                is SubsonicError.RefusedReadOnly -> {
+            return when {
+                e is SubsonicError.RefusedReadOnly -> {
                     log("outbox: $what dropped: ${e.endpoint} refused (read-only build), not sent")
                     Attempt.Dropped
                 }
-                is SubsonicError.Network -> Attempt.Retry(backOff(what, "network"))
-                is SubsonicError.AuthFailed -> Attempt.Retry(backOff(what, "sign-in refused"))
-                is SubsonicError.NotSubsonic -> Attempt.Retry(backOff(what, "unexpected response"))
-                is SubsonicError.InvalidUrl -> Attempt.Retry(backOff(what, "invalid address"))
-                is SubsonicError.Server -> {
-                    val code = e.code
-                    if (code == null || code == 0) {
-                        val why = when {
-                            code == 0 -> "server error 0"
-                            e.httpStatus != null -> "HTTP ${e.httpStatus}"
-                            else -> "server error"
-                        }
-                        Attempt.Retry(backOff(what, why))
-                    } else {
-                        // Explicit Subsonic refusal (e.g. 70 not found, 10/20/30 version/parameter, 50 unauthorized): sending again won't help.
-                        if (logRefusal) log("outbox: $what dropped: the server refused it (code $code)")
-                        Attempt.Refused(code)
-                    }
+                e.isTransient() -> Attempt.Retry(backOff(what, retryReason(e)))
+                else -> {
+                    // Explicit Subsonic refusal (e.g. 70 not found, 10/20/30 version/parameter, 50 unauthorized): sending again won't help.
+                    val code = (e as? SubsonicError.Server)?.code ?: -1
+                    if (logRefusal) log("outbox: $what dropped: the server refused it (code $code)")
+                    Attempt.Refused(code)
                 }
             }
         }
+    }
+
+    private fun retryReason(e: SubsonicError): String = when (e) {
+        is SubsonicError.Network -> "network"
+        is SubsonicError.AuthFailed -> "sign-in refused"
+        is SubsonicError.NotSubsonic -> "unexpected response"
+        is SubsonicError.InvalidUrl -> "invalid address"
+        is SubsonicError.Server -> when {
+            e.code == 0 -> "server error 0"
+            e.httpStatus != null -> "HTTP ${e.httpStatus}"
+            else -> "server error"
+        }
+        is SubsonicError.RefusedReadOnly -> "read-only"
     }
 
     private fun backOff(what: String, why: String): FlushResult.Retry {

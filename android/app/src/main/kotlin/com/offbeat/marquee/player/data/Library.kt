@@ -22,6 +22,8 @@ import com.offbeat.marquee.core.subsonic.Song
 import com.offbeat.marquee.core.subsonic.Starred
 import com.offbeat.marquee.core.subsonic.SubsonicClient
 import com.offbeat.marquee.core.subsonic.SubsonicError
+import com.offbeat.marquee.core.sync.DirectWrite
+import com.offbeat.marquee.core.sync.sendOrQueue
 import com.offbeat.marquee.player.session.AppSession
 import com.offbeat.marquee.player.net.NetworkMonitor
 import com.offbeat.marquee.player.offline.Downloads
@@ -410,29 +412,31 @@ object Library {
         val ticket = favouriteOverrides.set(item.id, favourite)
         publishFavourites()
         val kind = item.kind.name.lowercase()
-        if (!NetworkMonitor.online) {
-            Sync.queueStar(kind, item.id, favourite)
-            AppLog.i(TAG, "$what: offline, queued")
-            return true
-        }
-        return try {
-            starCall(c, item, favourite)
-            AppLog.i(TAG, "$what: done")
-            // Keep the saved album page in step, so it opens with the right heart next time.
-            if (item.kind == ItemKind.Album) {
-                read(albums, item.id, Album.serializer())?.let { write(albums, item.id, Album.serializer(), it.copy(starred = if (favourite) "now" else null)) }
+        val outcome = sendOrQueue(
+            online = NetworkMonitor.online,
+            send = { starCall(c, item, favourite) },
+            queue = { Sync.queueStar(kind, item.id, favourite) },
+        )
+        return when (outcome) {
+            DirectWrite.Sent -> {
+                AppLog.i(TAG, "$what: done")
+                // Keep the saved album page in step, so it opens with the right heart next time.
+                if (item.kind == ItemKind.Album) {
+                    read(albums, item.id, Album.serializer())?.let { write(albums, item.id, Album.serializer(), it.copy(starred = if (favourite) "now" else null)) }
+                }
+                true
             }
-            true
-        } catch (e: SubsonicError.Network) {
-            Sync.queueStar(kind, item.id, favourite)
-            AppLog.i(TAG, "$what: network failed, queued")
-            true
-        } catch (e: SubsonicError) {
-            AppLog.w(TAG, "$what not changed: ${e.javaClass.simpleName}")
-            favouriteOverrides.rollback(ticket)
-            publishFavourites()
-            if (report) post("Couldn't save that. Check the connection.")
-            false
+            is DirectWrite.Queued -> {
+                AppLog.i(TAG, "$what: ${outcome.error?.let { "not sent (${it.javaClass.simpleName})" } ?: "offline"}, queued")
+                true
+            }
+            is DirectWrite.Refused -> {
+                AppLog.w(TAG, "$what not changed: ${outcome.error.javaClass.simpleName}")
+                favouriteOverrides.rollback(ticket)
+                publishFavourites()
+                if (report) post("Couldn't save that. Check the connection.")
+                false
+            }
         }
     }
 
