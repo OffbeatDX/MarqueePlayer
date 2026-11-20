@@ -94,17 +94,37 @@ fn set_interval(interval: Option<Duration>) {
 /// Pick the rate for what is going on now (see the module doc).
 fn reschedule() {
     let settling = FAST_UNTIL.with(|f| f.get().is_some_and(|t| Instant::now() < t));
-    let (playing, visible) = state::with(|st| {
+    let (playing, shown) = state::with(|st| {
         let playing = st.player.status().state == PlayState::Playing;
-        let visible = st.app.upgrade().is_some_and(|a| a.window().is_visible());
-        (playing, visible)
+        // Minimized to the taskbar is still "visible" to the toolkit, but nothing shows.
+        let shown = st.app.upgrade().is_some_and(|a| a.window().is_visible() && !a.window().is_minimized());
+        (playing, shown)
     })
     .unwrap_or((false, false));
-    let interval = match (settling, playing, visible) {
+    set_interval(rate(settling, playing, shown));
+}
+
+/// How often to tick (the module doc's table); `None`: not at all. Counting the listening time
+/// goes by the wall clock between reports, not by the ticks, so a slower rate counts the same.
+fn rate(settling: bool, playing: bool, shown: bool) -> Option<Duration> {
+    match (settling, playing, shown) {
         (true, _, _) | (false, true, true) => Some(FAST),
         (false, true, false) => Some(HIDDEN),
         (false, false, true) => Some(SLOW),
         (false, false, false) => None,
-    };
-    set_interval(interval);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_not_shown_ticks_slowly() {
+        assert_eq!(rate(false, true, true), Some(FAST));
+        assert_eq!(rate(false, true, false), Some(HIDDEN));
+        assert_eq!(rate(false, false, true), Some(SLOW));
+        assert_eq!(rate(false, false, false), None);
+        assert_eq!(rate(true, false, false), Some(FAST));
+    }
 }
