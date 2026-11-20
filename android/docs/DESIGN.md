@@ -110,7 +110,8 @@ appearances.
 **Search.** A field at the top that takes focus when the tab is tapped. `search3`,
 debounced. Results are grouped into Artists, Albums and Songs. Recent searches are kept.
 **Long press** on any album, track, artist or playlist opens one action sheet: Play next,
-Add to queue, Go to album or artist, Favourite, Rate, Download, Add to playlist.
+Add to queue, Go to album or artist, Favourite, Download, Add to playlist. There are no star
+ratings: the server's `userRating` is not read and `setRating` is never called.
 
 **Settings** (one short list): Account (server, user, sign out) · Streaming quality (Wi-Fi,
 mobile) · Downloads (quality, Wi-Fi only, space used, remove all) · Cache (cap 1/2/4/8 GB,
@@ -154,7 +155,7 @@ android/
   `getSimilarSongs2`, `getAlbumList2`, `getRandomSongs`, `getSongsByGenre`, `getStarred2`,
   `getGenres`, `search3`, `getPlaylists`, `getPlaylist`, `getPlayQueue`, `getLyricsBySongId`,
   `getCoverArt`, `stream`, `download`, `getScanStatus`, `getUser`). Everything else is
-  refused locally and never sent, including scrobble, star/unstar, setRating, playlist
+  refused locally and never sent, including scrobble, star/unstar, playlist
   edits, savePlayQueue and playbackReport. A test proves the refusal.
 - A test server's credentials live only in `~/.marquee-android/test-server.properties`
   (`url`, `user`, `salt`, `token`, `readOnly=true`). Never copy them into the repo, logs,
@@ -190,7 +191,7 @@ The README describes the result.
   `~/.marquee-android/`; the version is the desktop app's release number, in `version.properties`
   or given with `-Pmarquee.version` (the `versionCode` follows from it), and Gradle alone builds, tests and scans
   (`build.ps1` only adds the JDK, the SDK, the key and adb on Windows). The release build has
-  normal read-write behaviour (scrobbles, favourites, ratings, playlist edits). The read-only UI
+  normal read-write behaviour (scrobbles, favourites, playlist edits). The read-only UI
   and messages are gated on the build-time `BuildConfig.READ_ONLY`, so R8 removes them from the
   release along with the test-config reader, the LRCLIB stand-in and the read-only guard. The
   release stays https-only (no `http://` option), and test builds never show the server's

@@ -149,7 +149,7 @@ private fun AccountSection(session: SessionState.SignedIn, server: String?, onSi
         } else {
             SettingRow(
                 name = server?.let { "Signed in to $it" } ?: "Signed in",
-                hint = if (session.readOnly) "Read-only: nothing is written to the server" else "Favourites, ratings and plays go to your server",
+                hint = if (session.readOnly) "Read-only: nothing is written to the server" else "Favourites and plays go to your server",
             )
         }
         RowDivider()
@@ -182,7 +182,7 @@ private fun ReleaseAccountRow(server: String?) {
     val client by AppSession.client.collectAsStateWithLifecycle()
     val creds = client?.credentials
     if (creds == null) {
-        SettingRow(name = server?.let { "Signed in to $it" } ?: "Signed in", hint = "Favourites, ratings and plays go to your server")
+        SettingRow(name = server?.let { "Signed in to $it" } ?: "Signed in", hint = "Favourites and plays go to your server")
         return
     }
     SettingRow(name = "Signed in as ${creds.user}", hint = accountSummary(creds.url, server))

@@ -6,16 +6,12 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -34,8 +30,6 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlaylistPlay
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.Shuffle
-import androidx.compose.material.icons.rounded.Star
-import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -217,7 +211,6 @@ fun ActionSheet(
     val palette = Palette.current
     val item = request.item
     val favourites by Library.favourites.collectAsStateWithLifecycle()
-    val ratings by Library.ratings.collectAsStateWithLifecycle()
     var picking by remember(request) { mutableStateOf(false) }
     val (hasAlbum, hasArtist) = when (item) {
         is Item.OfSong -> (item.song.albumId != null) to (item.song.artistId != null)
@@ -239,12 +232,6 @@ fun ActionSheet(
         is Item.OfPlaylist -> null
     }
     val favourite = Library.isFavourite(item.id, starred, favourites)
-    val userRating = when (item) {
-        is Item.OfSong -> item.song.userRating
-        is Item.OfAlbum -> item.album.userRating
-        else -> null
-    }
-    val rating = Library.rating(item.id, userRating, ratings)
     val pins by Downloads.pins.collectAsStateWithLifecycle()
     val pin = pinKey(item)?.let { pins[it] }
     val pinned = pin != null
@@ -298,7 +285,6 @@ fun ActionSheet(
                     Library.setFavourite(item, !favourite)
                 }
             }
-            ItemAction.Rate -> Unit // the stars do it
             ItemAction.AddToPlaylist -> {
                 picking = true
                 return
@@ -331,18 +317,12 @@ fun ActionSheet(
                 Header(item)
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     for (action in actions) {
-                        when (action) {
-                            ItemAction.Rate -> RateRow(rating) { n ->
-                                scope.launch { Library.setRating(item, ItemActions.nextRating(rating, n)) }
-                                onDismiss()
-                            }
-                            else -> ActionRow(
-                                icon = iconOf(action, favourite),
-                                label = if (action == ItemAction.Download && pinned) "Remove download" else labelOf(action, favourite),
-                                note = if (action == ItemAction.Download && pinned) pinNote else null,
-                                onClick = { run(action) },
-                            )
-                        }
+                        ActionRow(
+                            icon = iconOf(action, favourite),
+                            label = if (action == ItemAction.Download && pinned) "Remove download" else labelOf(action, favourite),
+                            note = if (action == ItemAction.Download && pinned) pinNote else null,
+                            onClick = { run(action) },
+                        )
                     }
                 }
             }
@@ -371,7 +351,6 @@ private fun iconOf(action: ItemAction, favourite: Boolean): ImageVector = when (
     ItemAction.GoToAlbum -> Icons.Rounded.Album
     ItemAction.GoToArtist -> Icons.Rounded.Person
     ItemAction.Favourite -> if (favourite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder
-    ItemAction.Rate -> Icons.Rounded.Star
     ItemAction.AddToPlaylist -> Icons.AutoMirrored.Rounded.PlaylistAdd
     ItemAction.Download -> Icons.Rounded.DownloadForOffline
     ItemAction.RemoveFromQueue -> Icons.Rounded.RemoveCircleOutline
@@ -416,42 +395,6 @@ private fun ActionRow(icon: ImageVector, label: String, note: String?, onClick: 
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyLarge, color = palette.text)
             if (note != null) Text(note, style = MaterialTheme.typography.bodySmall, color = palette.textFaint)
-        }
-    }
-}
-
-/**
- * Five stars: tapping one rates, tapping the current one clears the rating. The label keeps its
- * width (it never wraps); the stars sit at the end of the row, and when the font is so large that
- * both do not fit on one line, the stars go on the next one.
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun RateRow(rating: Int, onRate: (Int) -> Unit) {
-    val palette = Palette.current
-    FlowRow(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(start = 20.dp, end = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Row(Modifier.align(Alignment.CenterVertically).heightIn(min = 52.dp).padding(end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Star, contentDescription = null, tint = palette.textDim)
-            Spacer(Modifier.width(18.dp))
-            Text("Rate", style = MaterialTheme.typography.bodyLarge, color = palette.text, maxLines = 1, softWrap = false)
-        }
-        Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.CenterVertically) {
-            for (n in 1..5) {
-                val lit = n <= rating
-                IconButton(
-                    onClick = { onRate(n) },
-                    modifier = Modifier.size(48.dp).semantics {
-                        contentDescription = if (n == rating) "$n stars, tap to clear" else if (n == 1) "1 star" else "$n stars"
-                        selected = n == rating
-                    },
-                ) {
-                    Icon(if (lit) Icons.Rounded.Star else Icons.Rounded.StarBorder, contentDescription = null, tint = if (lit) palette.accent else palette.textFaint)
-                }
-            }
         }
     }
 }

@@ -11,7 +11,6 @@ enum class ItemAction(val label: String) {
     GoToAlbum("Go to album"),
     GoToArtist("Go to artist"),
     Favourite("Favourite"),
-    Rate("Rate"),
     AddToPlaylist("Add to playlist"),
     Download("Download"),
     RemoveFromQueue("Remove from queue"),
@@ -30,8 +29,8 @@ data class ActionPlace(
 object ItemActions {
     /**
      * The actions for an item. Download (or remove the download) for albums, playlists and single
-     * songs. Favourite and Rate exist for songs, albums and artists (Subsonic
-     * has neither for playlists); Add to playlist for songs and albums.
+     * songs. Favourite exists for songs, albums and artists (Subsonic has
+     * none for playlists); Add to playlist for songs and albums.
      */
     fun applicable(
         kind: ItemKind,
@@ -59,10 +58,7 @@ object ItemActions {
             ItemKind.Playlist -> false
         }
         if (goArtist) add(ItemAction.GoToArtist)
-        if (kind != ItemKind.Playlist) {
-            add(ItemAction.Favourite)
-            add(ItemAction.Rate)
-        }
+        if (kind != ItemKind.Playlist) add(ItemAction.Favourite)
         if (kind == ItemKind.Song || kind == ItemKind.Album) add(ItemAction.AddToPlaylist)
         if (kind != ItemKind.Artist) add(ItemAction.Download)
         if (place.inQueue && !place.isCurrent) add(ItemAction.RemoveFromQueue)
@@ -71,17 +67,13 @@ object ItemActions {
     /** The endpoint an action writes to (refused in read-only builds); null when it only plays or navigates. */
     fun endpointOf(action: ItemAction, favourite: Boolean): String? = when (action) {
         ItemAction.Favourite -> if (favourite) "unstar" else "star"
-        ItemAction.Rate -> "setRating"
         ItemAction.AddToPlaylist -> "updatePlaylist"
         else -> null
     }
-
-    /** Tapping the star already shown clears the rating; any other star sets it. */
-    fun nextRating(current: Int, tapped: Int): Int = if (tapped == current) 0 else tapped.coerceIn(0, 5)
 }
 
 /**
- * Values shown ahead of the server (favourites, ratings): set at once, then kept or rolled back
+ * Values shown ahead of the server (favourites): set at once, then kept or rolled back
  * when the write answers. A rollback undoes only its own change, never a newer one made meanwhile.
  */
 class Overrides<V : Any> {

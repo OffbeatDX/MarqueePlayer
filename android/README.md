@@ -237,7 +237,7 @@ unless they share it; there is no telemetry.
 
 Test builds never write to a server: debug and benchmark builds are **read-only**. Only the read
 endpoints listed in [docs/DESIGN.md](docs/DESIGN.md#testing-rules) can be called; scrobbles,
-favourites, ratings and playlist edits are refused on the phone before anything is sent, and LRCLIB
+favourites and playlist edits are refused on the phone before anything is sent, and LRCLIB
 is off (a local stand-in on 127.0.0.1 can be pushed instead). The release build has none of this: the read-only code paths, the test-config reader, the
 LRCLIB stand-in, the Auto test harness and the loopback network rule are compiled out of it.
 

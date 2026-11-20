@@ -230,7 +230,7 @@ class LibraryTest {
         assertEquals(
             listOf(
                 ItemAction.PlayNext, ItemAction.AddToQueue, ItemAction.GoToAlbum, ItemAction.GoToArtist,
-                ItemAction.Favourite, ItemAction.Rate, ItemAction.AddToPlaylist, ItemAction.Download,
+                ItemAction.Favourite, ItemAction.AddToPlaylist, ItemAction.Download,
             ),
             a,
         )
@@ -249,7 +249,7 @@ class LibraryTest {
         assertFalse(ItemAction.GoToAlbum in ItemActions.applicable(ItemKind.Album, true, true, ActionPlace(onOwnPage = true)))
 
         val artist = ItemActions.applicable(ItemKind.Artist, hasArtist = true)
-        assertTrue(ItemAction.Shuffle in artist && ItemAction.Favourite in artist && ItemAction.Rate in artist)
+        assertTrue(ItemAction.Shuffle in artist && ItemAction.Favourite in artist)
         assertFalse(ItemAction.AddToPlaylist in artist || ItemAction.Download in artist || ItemAction.GoToAlbum in artist)
 
         val playlist = ItemActions.applicable(ItemKind.Playlist)
@@ -267,14 +267,11 @@ class LibraryTest {
     }
 
     @Test
-    fun writesAndRatings() {
+    fun writeEndpoints() {
         assertEquals("star", ItemActions.endpointOf(ItemAction.Favourite, favourite = false))
         assertEquals("unstar", ItemActions.endpointOf(ItemAction.Favourite, favourite = true))
-        assertEquals("setRating", ItemActions.endpointOf(ItemAction.Rate, false))
         assertEquals("updatePlaylist", ItemActions.endpointOf(ItemAction.AddToPlaylist, false))
         assertNull(ItemActions.endpointOf(ItemAction.PlayNext, false))
-        assertEquals(4, ItemActions.nextRating(2, 4))
-        assertEquals(0, ItemActions.nextRating(4, 4))
     }
 
     @Test

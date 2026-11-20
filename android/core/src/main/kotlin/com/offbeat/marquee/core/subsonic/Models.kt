@@ -73,7 +73,6 @@ data class Song(
     val samplingRate: Int? = null,
     val channelCount: Int? = null,
     val starred: String? = null,
-    val userRating: Int? = null,
     val playCount: Long? = null,
     val replayGain: ReplayGain? = null,
 )
@@ -93,7 +92,6 @@ data class Album(
     val year: Int? = null,
     val genre: String? = null,
     val played: String? = null,
-    val userRating: Int? = null,
     val song: List<Song> = emptyList(),
 )
 

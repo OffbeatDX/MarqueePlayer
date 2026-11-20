@@ -124,19 +124,13 @@ class SubsonicClientTest {
         assertEquals("star", assertThrows<SubsonicError.RefusedReadOnly> { c.star(id = "1") }.endpoint)
         assertEquals("unstar", assertThrows<SubsonicError.RefusedReadOnly> { c.unstar(albumId = "1") }.endpoint)
         assertEquals("scrobble", assertThrows<SubsonicError.RefusedReadOnly> { c.scrobble("1") }.endpoint)
-        assertEquals("setRating", assertThrows<SubsonicError.RefusedReadOnly> { c.setRating("1", 4) }.endpoint)
         assertEquals("updatePlaylist", assertThrows<SubsonicError.RefusedReadOnly> { c.updatePlaylist("p", listOf("1")) }.endpoint)
         assertEquals(0, server.requestCount)
     }
 
     @Test
-    fun readWriteClientSendsRatingAndPlaylistAdditions() = runTest {
+    fun readWriteClientSendsPlaylistAdditions() = runTest {
         val c = client(readOnly = false)
-        server.enqueue(ok())
-        c.setRating("s1", 4)
-        val r = server.takeRequest()
-        assertEquals("/rest/setRating.view", r.requestUrl!!.encodedPath)
-        assertEquals("4", r.requestUrl!!.queryParameter("rating"))
         server.enqueue(ok())
         c.updatePlaylist("p1", listOf("a", "b"))
         val u = server.takeRequest().requestUrl!!
@@ -227,6 +221,17 @@ class SubsonicClientTest {
     }
 
     // ---- Parsing ----------------------------------------------------------------
+
+    /** The server still sends star ratings (`userRating`); the app no longer reads them, and the answer parses as before. */
+    @Test
+    fun ratingsFromTheServerAreIgnored() = runTest {
+        val c = client()
+        server.enqueue(ok(""","album":{"id":"a1","name":"LP","userRating":4,"starred":"2026-01-01T00:00:00Z","song":[{"id":"s1","title":"One","userRating":5}]}"""))
+        val album = c.getAlbum("a1")
+        assertEquals("LP", album.name)
+        assertEquals("s1", album.song.single().id)
+        assertEquals("2026-01-01T00:00:00Z", album.starred)
+    }
 
     @Test
     fun parsesScanStatusUserAlbumArtistsSearchPlaylists() = runTest {

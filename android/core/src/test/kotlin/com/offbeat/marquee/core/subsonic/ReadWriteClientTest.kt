@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * The release build's behaviour: a client that is not read-only sends every write (favourites,
- * scrobbles, ratings) to the server as Subsonic expects them. Test builds never do (see
+ * scrobbles, playlist additions) to the server as Subsonic expects them. Test builds never do (see
  * [SubsonicClientTest.refusedWritesNeverReachTheServer]); this keeps the normal path covered.
  */
 class ReadWriteClientTest {

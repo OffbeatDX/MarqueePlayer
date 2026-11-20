@@ -8,7 +8,6 @@ import com.offbeat.marquee.core.library.AlbumSort
 import com.offbeat.marquee.core.library.CountSearch
 import com.offbeat.marquee.core.library.DiskStore
 import com.offbeat.marquee.core.library.ItemKind
-import com.offbeat.marquee.core.library.Overrides
 import com.offbeat.marquee.core.library.ShelfId
 import com.offbeat.marquee.core.library.Shelves
 import com.offbeat.marquee.core.subsonic.Album
@@ -94,8 +93,8 @@ sealed interface Item {
  * (Home's shelves, the Library's lists and first pages, and the album, artist and playlist pages
  * opened before, least recently used out), so a screen shows them at once and then refreshes.
  *
- * Favourites and ratings changed here are shown at once ([favourites], [ratings]) and rolled back
- * if the server refuses them; read-only builds refuse them before anything changes.
+ * Favourites changed here are shown at once ([favourites]) and rolled back if the server refuses
+ * them; read-only builds refuse them before anything changes.
  */
 object Library {
     private const val TAG = "MarqueeLibrary"
@@ -339,7 +338,7 @@ object Library {
         if (BuildConfig.READ_ONLY) post("Read-only test build")
     }
 
-    // ---- Writes: favourites, ratings, playlist additions -------------------------------------
+    // ---- Writes: favourites, playlist additions -------------------------------------
 
     // Kept on disk, so the hearts (the notification's too) are right after a restart, offline
     // included. Read and written on one background thread of their own.
@@ -348,20 +347,12 @@ object Library {
         file = { File(app.filesDir, "favourites.json") },
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1)),
     )
-    private val ratingOverrides = Overrides<Int>()
-    private val _ratings = MutableStateFlow<Map<String, Int>>(emptyMap())
 
     /** Favourite states changed in this run, by id; anything else is as the server last said (`starred`). */
     val favourites: StateFlow<Map<String, Boolean>> = favouriteStates.state
 
-    /** Ratings changed in this run, by id. */
-    val ratings: StateFlow<Map<String, Int>> = _ratings.asStateFlow()
-
     fun isFavourite(id: String, starred: String?, overrides: Map<String, Boolean> = favouriteStates.state.value): Boolean =
         overrides[id] ?: (starred != null)
-
-    fun rating(id: String, userRating: Int?, overrides: Map<String, Int> = _ratings.value): Int =
-        overrides[id] ?: (userRating ?: 0)
 
     /**
      * A write to the server. In a read-only build nothing changes: the client refuses it locally
@@ -471,15 +462,6 @@ object Library {
         favouriteStates.setAll(changes)
     }
 
-    /** Rates a song, album or artist; 0 clears the rating. */
-    suspend fun setRating(item: Item, rating: Int): Boolean = writeThrough(
-        endpoint = "setRating",
-        what = "${item.kind.name.lowercase()} ${item.id} rating=$rating",
-        apply = { ratingOverrides.set(item.id, rating).also { _ratings.value = ratingOverrides.snapshot() } },
-        undo = { t -> ratingOverrides.rollback(t); _ratings.value = ratingOverrides.snapshot() },
-        call = { c -> c.setRating(item.id, rating) },
-    )
-
     /** Adds songs to the end of a playlist; its song count goes up at once. */
     suspend fun addToPlaylist(playlist: Playlist, songs: List<Song>): Boolean {
         if (songs.isEmpty()) return false
@@ -511,8 +493,6 @@ object Library {
         playlists.clear()
         lists.clear()
         favouriteStates.clear()
-        ratingOverrides.clear()
-        _ratings.value = emptyMap()
         _playlistsChanged.value = null
     }
 }

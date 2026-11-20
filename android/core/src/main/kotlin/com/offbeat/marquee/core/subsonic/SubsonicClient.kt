@@ -149,12 +149,6 @@ class SubsonicClient(
 
     // Writes. Refused in read-only mode; listed here so the refusal is tested on real call sites.
 
-    /** Rates a song, album or artist 1-5; 0 removes the rating. */
-    suspend fun setRating(id: String, rating: Int) {
-        require(rating in 0..5)
-        request("setRating", "id" to id, "rating" to rating.toString()) { }
-    }
-
     /** Adds songs to the end of a playlist the user owns. */
     suspend fun updatePlaylist(playlistId: String, songIdsToAdd: List<String>) {
         val params = buildList {
