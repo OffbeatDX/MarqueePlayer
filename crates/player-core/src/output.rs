@@ -286,6 +286,12 @@ pub trait Device {
     fn realtime(&self) -> bool {
         true
     }
+    /// The device plays silence itself when it runs short (a pull-driven device's callback
+    /// pads the cycle: Core Audio, PipeWire), so the output thread need not write any while
+    /// the decode thread is late, and must not: it would go in ahead of the audio that comes.
+    fn pads_underruns(&self) -> bool {
+        false
+    }
     /// Short fades on pause, resume, stop and seek (see the module doc). On for real
     /// devices; an offline capture records the decoded stream exactly unless it asks.
     fn fades(&self) -> bool {
@@ -1300,9 +1306,19 @@ impl Output {
         } else if self.running {
             // Underrun: keep the device fed with silence rather than stopping, so a slow
             // disk doesn't turn into a device restart.
-            if self.late.is_none() && self.starved().is_none() && self.ending.is_none() {
+            // A device that pads a short cycle itself (a ring) is not, unless the wait is meant
+            // (a growing file): it plays what it holds and the next chunk goes in right after
+            // it. Silence written there went in between two chunks the decode thread was only a
+            // moment late with (after a seek or a play, when its queue starts empty and the
+            // ring's depth is more than a chunk): a gap with hard edges, heard as a crackle.
+            let pads = self.dev.pads_underruns() && self.starved().is_none();
+            if self.late.is_none() && self.starved().is_none() && self.ending.is_none() && (!pads || self.dev.queued() == 0) {
                 self.late = Some(Instant::now());
                 log::warn!("output: nothing decoded to play in time; the device plays silence until it comes");
+            }
+            if pads {
+                self.dev.wait(Duration::from_millis(50));
+                return;
             }
             if let Ok(n) = self.dev.available() {
                 self.scratch.clear();
@@ -1456,6 +1472,12 @@ mod tests {
     }
 
     fn test_output(eq_params: EqParams) -> (Output, Sink, Sender<Msg>) {
+        let sink = Sink::default();
+        let (out, tx) = test_output_on(Box::new(sink.clone()), eq_params);
+        (out, sink, tx)
+    }
+
+    fn test_output_on(dev: Box<dyn Device>, eq_params: EqParams) -> (Output, Sender<Msg>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (wake_tx, wake_rx) = crossbeam_channel::bounded(1);
         let (ev_tx, _ev_rx) = crossbeam_channel::unbounded();
@@ -1481,9 +1503,8 @@ mod tests {
             starved: Mutex::new(None),
             devices: AtomicU64::new(0),
         });
-        let sink = Sink::default();
         let mut out = Output {
-            dev: Box::new(sink.clone()),
+            dev,
             rx,
             wake: wake_rx,
             last_volume: 1.0,
@@ -1520,7 +1541,7 @@ mod tests {
             late: None,
         };
         out.poll_eq();
-        (out, sink, tx)
+        (out, tx)
     }
 
     fn chunk(samples: Vec<f32>, limit: bool, limited: bool) -> Chunk {
@@ -1603,5 +1624,143 @@ mod tests {
         let got = sink.0.lock().unwrap().clone();
         let peak = got.iter().fold(0f32, |m, &s| m.max(s.abs()));
         assert!(peak <= CEILING, "outgoing alone with limiting on is limited after EQ: {peak}");
+    }
+
+    /// A pull-driven device as Core Audio's: the ring, kept filled to 100 ms or four
+    /// callbacks, its callback padding a short cycle with silence itself.
+    struct RingDev(Arc<ring::Ring>);
+
+    impl Device for RingDev {
+        fn open(&mut self, _rate: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _timeout: Duration) {}
+        fn available(&mut self) -> Result<usize, String> {
+            Ok(self.0.wanted(self.0.target(100, 4)) as usize)
+        }
+        fn queued(&mut self) -> usize {
+            (self.0.in_ring() + self.0.in_pipe()) as usize
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), String> {
+            if self.0.push(samples) { Ok(()) } else { Err("full".into()) }
+        }
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&mut self) {}
+        fn flush(&mut self) {}
+        fn pads_underruns(&self) -> bool {
+            true
+        }
+    }
+
+    /// A push device as WASAPI's: it must be fed, silence when there is nothing else.
+    #[derive(Clone, Default)]
+    struct PushDev(Arc<Mutex<Vec<f32>>>);
+
+    impl Device for PushDev {
+        fn open(&mut self, _rate: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, _timeout: Duration) {}
+        fn available(&mut self) -> Result<usize, String> {
+            Ok(480)
+        }
+        fn queued(&mut self) -> usize {
+            0
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), String> {
+            self.0.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        }
+        fn start(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop(&mut self) {}
+        fn flush(&mut self) {}
+    }
+
+    /// `frames` of audio that is nowhere zero, numbered from `from`.
+    fn ramp(from: usize, frames: usize) -> Vec<f32> {
+        (from..from + frames).flat_map(|i| [0.1 + (i % 1000) as f32 * 1e-4; 2]).collect()
+    }
+
+    /// Everything the ring holds, as its callback would take it.
+    fn drain_ring(r: &ring::Ring) -> Vec<f32> {
+        let mut got = Vec::new();
+        loop {
+            let mut block = [0f32; 1024];
+            let n = r.take(512, |i, a, b| {
+                block[i * 2] = a;
+                block[i * 2 + 1] = b;
+            });
+            if n == 0 {
+                return got;
+            }
+            got.extend_from_slice(&block[..n * 2]);
+        }
+    }
+
+    /// After a seek the decode thread's queue starts empty, and a chunk (4096 frames, 85 ms
+    /// at 48 kHz) is less than Core Audio's ring is kept filled to (100 ms): the first write
+    /// takes the whole chunk, and the output thread finds the next one not decoded yet. It
+    /// used to fill the ring up with silence then, so the next chunk came after a gap with
+    /// hard edges (a crackle on every seek, until the decode thread was ahead again). The
+    /// ring plays what it holds and pads a real underrun itself: the chunks follow each
+    /// other with nothing between them.
+    #[test]
+    fn a_ring_gets_no_silence_between_chunks_the_decode_thread_is_late_with() {
+        let ring = Arc::new(ring::Ring::new(48_000, 1 << 16));
+        let (mut out, tx) = test_output_on(Box::new(RingDev(ring.clone())), EqParams::default());
+        out.cur = Some(Cursor { chunk: chunk(ramp(0, 4096), false, false), offset: 0 });
+        out.fill().unwrap();
+        assert!(out.cur.is_none(), "the whole chunk went in at once");
+        assert_eq!(ring.in_ring(), 4096);
+        // The next chunk is not decoded yet.
+        out.idle();
+        assert_eq!(ring.in_ring(), 4096, "nothing written ahead of the next chunk");
+        assert!(out.late.is_none(), "the ring still has audio: nothing is late yet");
+        tx.send(Msg::Audio(chunk(ramp(4096, 4096), false, false))).unwrap();
+        assert!(out.next_chunk(false));
+        out.fill().unwrap();
+        let got = drain_ring(&ring);
+        let want = ramp(0, 4800);
+        assert_eq!(got.len(), want.len());
+        assert!(got == want, "the two chunks back to back; first zero at frame {:?}", got.iter().position(|&s| s == 0.0).map(|i| i / 2));
+    }
+
+    /// The ring ran dry while waiting: that is said (the callback pads it), still with
+    /// nothing written into the ring.
+    #[test]
+    fn a_ring_run_dry_is_said_late_with_no_silence_written() {
+        let ring = Arc::new(ring::Ring::new(48_000, 1 << 16));
+        let (mut out, _tx) = test_output_on(Box::new(RingDev(ring.clone())), EqParams::default());
+        out.idle();
+        assert_eq!(ring.in_ring(), 0);
+        assert!(out.late.is_some());
+    }
+
+    /// Waiting for a growing file's bytes is meant: the ring is fed silence as before (the
+    /// last frames faded out, what comes after fades in), so the wait is no underrun.
+    #[test]
+    fn a_ring_waiting_for_a_growing_file_is_fed_silence() {
+        let ring = Arc::new(ring::Ring::new(48_000, 1 << 16));
+        let (mut out, _tx) = test_output_on(Box::new(RingDev(ring.clone())), EqParams::default());
+        *out.shared.starved.lock().unwrap() = Some((1, 1));
+        out.idle();
+        assert_eq!(ring.in_ring(), 4800);
+        assert!(drain_ring(&ring).iter().all(|&s| s == 0.0));
+    }
+
+    /// A push device is still fed silence while the decode thread is late.
+    #[test]
+    fn a_push_device_is_still_fed_silence_while_the_decode_thread_is_late() {
+        let dev = PushDev::default();
+        let (mut out, _tx) = test_output_on(Box::new(dev.clone()), EqParams::default());
+        out.idle();
+        let got = dev.0.lock().unwrap().clone();
+        assert_eq!(got.len(), 480 * 2);
+        assert!(got.iter().all(|&s| s == 0.0));
+        assert!(out.late.is_some());
     }
 }

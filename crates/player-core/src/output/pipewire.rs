@@ -783,6 +783,10 @@ impl Device for PipeWireDevice {
         }
     }
 
+    fn pads_underruns(&self) -> bool {
+        true
+    }
+
     fn route_changed(&mut self) -> bool {
         let (Some(b), Some(info)) = (&self.backend, &self.info) else { return false };
         if b.lost.load(Ordering::Acquire) {
