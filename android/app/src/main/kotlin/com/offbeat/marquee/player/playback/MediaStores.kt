@@ -13,6 +13,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import com.offbeat.marquee.core.playback.CacheKeys
 import com.offbeat.marquee.core.playback.StreamQuality
 import com.offbeat.marquee.core.playback.StreamReply
+import com.offbeat.marquee.core.playback.Resume
 import com.offbeat.marquee.core.subsonic.SubsonicClient
 import com.offbeat.marquee.player.session.AppSession
 import okhttp3.Call
@@ -171,7 +172,7 @@ object StreamHttp {
     internal fun clientFor(c: SubsonicClient, short: Boolean = true): OkHttpClient {
         if (base !== c.httpClient || derived == null || derivedLong == null) {
             base = c.httpClient
-            val b = c.httpClient.newBuilder().addInterceptor(refuseErrorReplies)
+            val b = c.httpClient.newBuilder().addInterceptor(checkResume).addInterceptor(refuseErrorReplies)
             derivedLong = b.build()
             derived = b.readTimeout(READ_TIMEOUT_S, TimeUnit.SECONDS).build()
         }
@@ -190,6 +191,32 @@ object StreamHttp {
             val body = runCatching { response.peekBody(8 * 1024).string() }.getOrDefault("")
             response.close()
             throw ErrorReplyException(StreamReply.subsonicCode(body), type)
+        }
+        response
+    }
+
+    private val validators = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** The validator ([Resume.validatorOf]) the last answer for [url] gave, if any (memory only). */
+    fun validatorSeen(url: String): String? = validators[url]
+
+    /**
+     * Keeps every answer's validator by URL ([validatorSeen], for [Resumable]), and fails a resumed
+     * request (a range with `If-Range`) whose answer is of another file ([Resume.isChanged]) with
+     * [FileChangedException], before Media3 would skip into the new file and store its tail after the
+     * old part.
+     */
+    internal val checkResume = Interceptor { chain ->
+        val request = chain.request()
+        val response = chain.proceed(request)
+        val validator = Resume.validatorOf(response.header("ETag"), response.header("Last-Modified"))
+        if (response.isSuccessful && validator != null) {
+            if (validators.size > 64) validators.clear()
+            validators[request.url.toString()] = validator
+        }
+        if (Resume.isChanged(Resume.rangeStart(request.header("Range")), request.header("If-Range"), response.code, validator)) {
+            response.close()
+            throw FileChangedException()
         }
         response
     }

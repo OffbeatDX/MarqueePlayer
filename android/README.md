@@ -121,7 +121,8 @@ waiting to be sent belong to the account that made them: they are never sent for
 
 - Download (or long-press → Download) an album, a playlist or a song. Downloads are WorkManager
   work: they wait for Wi-Fi while "Wi-Fi only" is on, survive restarts, and resume a half-fetched
-  song where it stopped. A notification shows progress.
+  song where it stopped, as long as the server's file is still the same one (a song replaced on the
+  server since is fetched again from the start). A notification shows progress.
 - Downloaded songs live in their own store (`files/downloads/media`), apart from the size-capped
   cache (`cache/media`); the player reads downloads, then the cache, then the network. A song shared
   by several downloads is stored once and goes when the last one is removed.

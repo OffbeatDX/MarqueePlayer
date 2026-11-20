@@ -194,6 +194,13 @@ The README describes the result.
   that no screen can cancel (`Cleanup` in `:core`); a new sign-in waits for it. The outbox keeps a
   hash of the server address and user it was filled for, refuses entries while signed out or for an
   account no longer signed in, and drops another account's entries instead of sending them.
+- **Resuming a part**: the download worker and the prefetcher keep each answer's validator (strong
+  `ETag`, else `Last-Modified`) in the store's metadata for the song's key and send it as `If-Range`
+  when they go on from a part (`Resume` in `:core`, `Resumable` in the app). A whole-file 200 to that,
+  another validator, or a 416 (the file got shorter) drops the part and fetches the song from the
+  start, once; a part with no validator (stored by an older version) is fetched again. The download
+  worker reads the cache's copy only when it is whole. The player's own reads (never stored) still go
+  on with a plain range.
 - **The app's own files** (pins, outbox, favourites, saved queue, saved answers) are replaced whole
   through `SafeFile` (`:core`): a temp file synced to disk, then one atomic rename; a temp file left by
   a failed rename is read while the file is missing. A pins file that is there but damaged is kept as

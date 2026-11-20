@@ -26,6 +26,9 @@ import com.offbeat.marquee.player.net.NetworkMonitor
 import com.offbeat.marquee.player.playback.MediaStores
 import com.offbeat.marquee.player.playback.StreamHttp
 import com.offbeat.marquee.player.playback.ErrorReplyException
+import com.offbeat.marquee.player.playback.Resumable
+import androidx.media3.datasource.cache.SimpleCache
+import kotlinx.coroutines.NonCancellable
 import com.offbeat.marquee.core.playback.PlaybackRecovery
 import com.offbeat.marquee.player.session.AppSession
 import kotlinx.coroutines.CancellationException
@@ -72,11 +75,20 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
                 val id = Downloads.missing().firstOrNull() ?: break
                 val q = Downloads.downloadQualityFor(id)
                 val spec = DataSpec.Builder().setUri(client.streamUrl(id, q)).setKey(CacheKeys.song(id, q)).build()
+                val store = MediaStores.downloads(ctx)
                 Downloads.setActivity(Activity(running = true, songId = id))
                 notifyProgress(force = true)
                 val started = SystemClock.elapsedRealtime()
                 try {
-                    fetch(writerFactory, spec, id)
+                    try {
+                        fetch(writerFactory, store, spec, id)
+                    } catch (e: IOException) {
+                        if (isStopped || !Resumable.isStale(e)) throw e
+                        // Its first part is of a file the server has since replaced (or cut shorter): from the start, once.
+                        AppLog.i(TAG, "song $id: the file changed on the server since its first part was downloaded: fetched again")
+                        withContext(Dispatchers.IO) { Resumable.drop(store, spec.key!!) }
+                        fetch(writerFactory, store, spec, id)
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: IOException) {
@@ -122,8 +134,29 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
         }
     }
 
-    private suspend fun fetch(factory: CacheDataSource.Factory, spec: DataSpec, id: String) = coroutineScope {
+    /**
+     * Fetches [plain] into the downloads ([store]). A part already there is completed only from the
+     * same file ([Resumable]); the cache's copy is read for what it has only when it is whole (a part
+     * of it could be of another version of the file than the download's part).
+     */
+    private suspend fun fetch(factory: CacheDataSource.Factory, store: SimpleCache, plain: DataSpec, id: String) = coroutineScope {
+        val key = plain.key!!
+        val spec = withContext(Dispatchers.IO) {
+            val lru = MediaStores.cache(applicationContext)
+            val lruComplete = MediaStores.isComplete(lru, key)
+            if (!lruComplete && lru.getCachedBytes(key, 0, Long.MAX_VALUE) > 0) Resumable.drop(lru, key)
+            if (lruComplete && store.getCachedBytes(key, 0, Long.MAX_VALUE) > 0) {
+                // The cache has it whole: copied from there, consistent, instead of completing the part.
+                Resumable.drop(store, key)
+            }
+            Resumable.prepare(store, plain, "song $id")
+        }
+        var remembered = false
         val writer = CacheWriter(factory.createDataSourceForDownloading(), spec, null) { length, cached, _ ->
+            if (!remembered) {
+                remembered = true
+                Resumable.remember(store, spec)
+            }
             Downloads.setActivity(Activity(running = true, songId = id, bytes = cached, length = length))
             notifyProgress(force = false)
         }
@@ -132,6 +165,7 @@ class DownloadWorker(context: Context, params: WorkerParameters) : CoroutineWork
             runInterruptible(Dispatchers.IO) { writer.cache() }
         } finally {
             canceller.cancel()
+            withContext(NonCancellable + Dispatchers.IO) { Resumable.remember(store, spec) }
         }
     }
 

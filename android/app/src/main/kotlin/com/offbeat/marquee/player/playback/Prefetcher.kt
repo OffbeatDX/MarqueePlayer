@@ -4,7 +4,9 @@ import com.offbeat.marquee.player.diag.AppLog
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.cache.CacheWriter
+import androidx.media3.datasource.DataSpec
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -123,10 +125,34 @@ class Prefetcher(
         }
     }
 
-    private suspend fun fetch(id: String) = coroutineScope {
-        val spec = withContext(Dispatchers.IO) { source.dataSpecFor(id) }
-        val key = spec.key!!
-        val writer = CacheWriter(source.writerFactory.createDataSourceForDownloading(), spec, null, null)
+    /**
+     * Fetches the song whole into the cache. A part already there is completed only from the same
+     * file ([Resumable]); when the server's file changed since, the part goes and the song is fetched
+     * again from the start, once.
+     */
+    private suspend fun fetch(id: String) {
+        val plain = withContext(Dispatchers.IO) { source.dataSpecFor(id) }
+        try {
+            fetchOnce(id, plain)
+        } catch (e: IOException) {
+            currentCoroutineContext().ensureActive()
+            if (!Resumable.isStale(e)) throw e
+            AppLog.i(TAG, "song $id: the file changed on the server since its first part was cached: fetched again")
+            withContext(Dispatchers.IO) { Resumable.drop(source.cache, plain.key!!) }
+            fetchOnce(id, plain)
+        }
+    }
+
+    private suspend fun fetchOnce(id: String, plain: DataSpec) = coroutineScope {
+        val key = plain.key!!
+        val spec = withContext(Dispatchers.IO) { Resumable.prepare(source.cache, plain, "song $id") }
+        var remembered = false
+        val writer = CacheWriter(source.writerFactory.createDataSourceForDownloading(), spec, null) { _, _, _ ->
+            if (!remembered) {
+                remembered = true
+                Resumable.remember(source.cache, spec)
+            }
+        }
         val canceller = launch { try { awaitCancellation() } finally { writer.cancel() } }
         val started = System.nanoTime()
         AppLog.i(TAG, "song $id: fetching (${key.substringAfterLast('/')})")
@@ -134,6 +160,7 @@ class Prefetcher(
             runInterruptible(Dispatchers.IO) { writer.cache() }
         } finally {
             canceller.cancel()
+            withContext(NonCancellable + Dispatchers.IO) { Resumable.remember(source.cache, spec) }
         }
         val ms = (System.nanoTime() - started) / 1_000_000
         AppLog.i(TAG, "song $id: cached ${source.cachedBytes(key)} bytes in $ms ms")
