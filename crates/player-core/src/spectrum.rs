@@ -127,7 +127,7 @@ impl Tap {
         let mut end = self.audible.load(Ordering::Relaxed);
         if running {
             let since = (self.epoch.elapsed().as_nanos() as u64).saturating_sub(stamp);
-            end += since * u64::from(rate) / 1_000_000_000;
+            end = end.saturating_add(frames_in(since, rate));
         }
         let end = end.min(written);
         let n = out.len().min(RING) as u64;
@@ -458,8 +458,23 @@ impl Analyzer {
     }
 }
 
+/// The frames played at `rate` in `nanos` nanoseconds. In u128: at 192 kHz the product
+/// overflows u64 after about 26 hours.
+fn frames_in(nanos: u64, rate: u32) -> u64 {
+    u64::try_from(u128::from(nanos) * u128::from(rate) / 1_000_000_000).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frames_in_does_not_overflow_after_a_long_idle() {
+        use super::frames_in;
+        assert_eq!(frames_in(1_000_000_000, 48_000), 48_000);
+        let day_and_a_half = 36 * 3600 * 1_000_000_000u64;
+        assert_eq!(frames_in(day_and_a_half, 192_000), 36 * 3600 * 192_000);
+        assert_eq!(frames_in(u64::MAX, u32::MAX), u64::MAX);
+    }
+
     use super::*;
 
     fn sine(freq: f32, amp: f32, rate: u32, n: usize) -> Vec<f32> {

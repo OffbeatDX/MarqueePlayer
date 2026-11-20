@@ -171,8 +171,7 @@ impl AudioDecoder for OpusDecoder {
         self.buf.copy_from_slice_interleaved(&&self.pcm[..n]);
 
         // Pre-skip by timestamp: frames before `pre_skip` in raw granule units.
-        let pts = packet.pts.get();
-        let pre_skip_trim = (i64::from(self.head.pre_skip) - pts).clamp(0, frames as i64) as usize;
+        let pre_skip_trim = pre_skip_trim(self.head.pre_skip, packet.pts.get(), frames);
         let start = (packet.trim_start.get() as usize).max(pre_skip_trim);
         let end = packet.trim_end.get() as usize;
         self.buf.trim(start.min(frames), end.min(frames.saturating_sub(start)));
@@ -201,9 +200,23 @@ impl RegisterableAudioDecoder for OpusDecoder {
     }
 }
 
+/// How many of a packet's `frames` decoded at granule `pts` fall before `pre_skip`.
+/// Saturates on a timestamp from a hostile file.
+fn pre_skip_trim(pre_skip: u16, pts: i64, frames: usize) -> usize {
+    i64::from(pre_skip).saturating_sub(pts).clamp(0, frames as i64) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_skip_trim_saturates_on_hostile_timestamps() {
+        assert_eq!(pre_skip_trim(312, 0, 960), 312);
+        assert_eq!(pre_skip_trim(312, 960, 960), 0);
+        assert_eq!(pre_skip_trim(312, i64::MIN, 960), 960);
+        assert_eq!(pre_skip_trim(312, i64::MAX, 960), 0);
+    }
 
     #[test]
     fn parses_opus_head() {

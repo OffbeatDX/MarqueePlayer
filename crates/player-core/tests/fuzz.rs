@@ -181,3 +181,27 @@ fn damaged_files_never_panic_hang_or_balloon() {
     }
     assert!(problems.is_empty(), "{} of {cases} damaged files misbehaved:\n{}", problems.len(), problems.join("\n"));
 }
+
+/// A seek past any timestamp (a seek to infinity in a track of unknown length) is refused,
+/// and the track plays on from where it was rather than from its start with nothing let
+/// through.
+#[test]
+fn a_seek_past_every_timestamp_is_refused_and_playback_goes_on() {
+    let d = common::dir("seek_past_end");
+    let p = d.join("tone.wav");
+    let samples: Vec<f32> = (0..44_100 * 2).map(|i| ((i / 2) as f32 * 0.01).sin() * 0.5).collect();
+    common::write_wav(&p, 44_100, &samples);
+    let mut src = Source::open(&p).unwrap();
+    let mut buf = Vec::new();
+    while buf.len() < 8_192 {
+        assert!(src.next_chunk(&mut buf).unwrap());
+    }
+    let at = buf.len();
+    assert!(src.seek(u64::MAX).is_err());
+    assert!(src.seek(i64::MAX as u64 + 1).is_err());
+    let mut more = Vec::new();
+    while more.is_empty() {
+        assert!(src.next_chunk(&mut more).unwrap(), "the track ended after a refused seek");
+    }
+    assert_eq!(more[0], samples[at], "playback went on from where it was");
+}

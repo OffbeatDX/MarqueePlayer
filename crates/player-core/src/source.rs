@@ -183,7 +183,7 @@ impl Source {
             }
             .filter(|t| t.scale == u64::from(sample_rate))
         {
-            ts_offset = t.delay as i64;
+            ts_offset = i64::try_from(t.delay).unwrap_or(i64::MAX);
             total_frames = Some(t.frames);
             trim_here = true;
         }
@@ -221,9 +221,13 @@ impl Source {
     }
 
     fn seek_inner(&mut self, frame: u64) -> Result<(), SourceError> {
+        if i64::try_from(frame).is_err() {
+            // Past any timestamp a stream can hold (a seek to infinity in a track of unknown
+            // length): refused, and the track plays on from where it was.
+            return Err(SourceError(format!("frame {frame} is past the end of any track")));
+        }
         let preroll = if self.is_opus { OPUS_SEEK_PREROLL } else { 0 };
-        let raw = frame.saturating_sub(preroll) as i64 + self.ts_offset;
-        let ts = if frame.saturating_sub(preroll) == 0 { 0 } else { raw };
+        let ts = seek_timestamp(frame, preroll, self.ts_offset);
         self.reader.seek(SeekMode::Accurate, SeekTo::Timestamp { ts: Timestamp::from(ts), track_id: self.track_id })?;
         self.decoder.reset();
         self.discard_until = frame;
@@ -276,10 +280,7 @@ impl Source {
         // Content frame of the first decoded frame. The decoder trimmed `trim_start` (and,
         // for Opus, everything before pre-skip), so start from whichever is later. MP4
         // priming is not trimmed by the decoder: those frames (`pre`) are dropped here.
-        let raw = packet.pts.get() + packet.trim_start.get() as i64;
-        let pre = if self.trim_here { (self.ts_offset - raw).clamp(0, frames as i64) as usize } else { 0 };
-        let first_raw = raw.max(self.ts_offset);
-        let first = (first_raw - self.ts_offset).max(0) as u64;
+        let (pre, first) = content_start(packet.pts.get(), packet.trim_start.get(), self.ts_offset, frames, self.trim_here);
         if self.trim_here && self.total_frames.is_some_and(|t| first >= t) {
             // Encoder padding: the content has ended.
             return Ok(false);
@@ -328,5 +329,50 @@ fn read_gain_tags(reader: &mut dyn FormatReader, tags: &mut GainTags) {
             };
             tags.offer(&tag.raw.key, &value);
         }
+    }
+}
+
+/// The stream timestamp a seek to content `frame` asks the reader for: `preroll` frames
+/// early (Opus), shifted by the stream's `ts_offset`. The start is 0 itself. Saturates
+/// rather than wrapping on a frame or offset from a hostile file.
+fn seek_timestamp(frame: u64, preroll: u64, ts_offset: i64) -> i64 {
+    let frame = frame.saturating_sub(preroll);
+    if frame == 0 { 0 } else { i64::try_from(frame).unwrap_or(i64::MAX).saturating_add(ts_offset) }
+}
+
+/// For a decoded packet at `pts` (stream timestamp) whose decoder trimmed `trim_start`
+/// frames, with `frames` left: how many leading frames are priming to drop here (`pre`,
+/// only when `trim_here`) and the content frame of the first one kept. Saturates rather
+/// than wrapping on timestamps from a hostile file.
+fn content_start(pts: i64, trim_start: u64, ts_offset: i64, frames: usize, trim_here: bool) -> (usize, u64) {
+    let raw = pts.saturating_add(i64::try_from(trim_start).unwrap_or(i64::MAX));
+    let pre = if trim_here { ts_offset.saturating_sub(raw).clamp(0, frames as i64) as usize } else { 0 };
+    let first = raw.max(ts_offset).saturating_sub(ts_offset).max(0) as u64;
+    (pre, first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_timestamps_saturate_on_hostile_values() {
+        assert_eq!(seek_timestamp(0, 0, 1024), 0);
+        assert_eq!(seek_timestamp(100, 3840, 312), 0);
+        assert_eq!(seek_timestamp(10_000, 0, 2112), 12_112);
+        assert_eq!(seek_timestamp(u64::MAX, 0, 2112), i64::MAX);
+        assert_eq!(seek_timestamp(i64::MAX as u64, 0, i64::MAX), i64::MAX);
+    }
+
+    #[test]
+    fn packet_starts_saturate_on_hostile_values() {
+        // Ordinary: MP4 priming of 2112 frames, the first packet at 0.
+        assert_eq!(content_start(0, 0, 2112, 1024, true), (1024, 0));
+        assert_eq!(content_start(2048, 0, 2112, 1024, true), (64, 0));
+        assert_eq!(content_start(4096, 0, 2112, 1024, true), (0, 1984));
+        // Crafted: timestamps and delays at the ends of the range.
+        assert_eq!(content_start(i64::MIN, 0, i64::MAX, 1024, true), (1024, 0));
+        assert_eq!(content_start(i64::MAX, u64::MAX, 0, 1024, true), (0, i64::MAX as u64));
+        assert_eq!(content_start(i64::MAX, 5, i64::MIN, 1024, false), (0, i64::MAX as u64));
     }
 }

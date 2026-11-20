@@ -499,6 +499,10 @@ impl Player {
 
     /// Seek within the audible track.
     pub fn seek(&self, seconds: f64) {
+        // Not a place in any track (NaN is taken as the start below).
+        if seconds == f64::INFINITY {
+            return;
+        }
         let token = self.status().token;
         *self.shared.seek_trace.lock().unwrap() = SeekTrace { requested: Some(Instant::now()), ..SeekTrace::default() };
         let _ = self.cmd.send(Cmd::Seek { token, secs: seconds.max(0.0) });
@@ -952,6 +956,7 @@ enum SeekTo {
 impl SeekTo {
     fn frame(self, rate: u32) -> u64 {
         match self {
+            // `as` saturates: NaN and negative times are the start, infinity the last frame.
             SeekTo::Secs(s) => (s * f64::from(rate)) as u64,
             SeekTo::Frame { frame, rate: at } => ((u128::from(frame) * u128::from(rate) + u128::from(at) / 2) / u128::from(at.max(1))) as u64,
         }
