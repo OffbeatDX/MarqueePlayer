@@ -153,19 +153,59 @@ fn sibling(path: &Path, token: &str, ext: &str) -> PathBuf {
 }
 
 /// A path as `ReplaceFileW` takes it, long-path form when it needs one.
+/// Verbatim paths (`\\?\...`, `\\?\UNC\...`) bypass Win32 path parsing, so forward slashes
+/// must be turned into backslashes and `.` / `..` components resolved first.
 #[cfg(windows)]
 fn wide(p: &Path) -> Vec<u16> {
+    use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::OsStrExt;
-    let s = p.as_os_str().to_string_lossy();
-    let long = if p.is_absolute() && s.len() >= 248 && !s.starts_with(r"\\?\") {
-        match s.strip_prefix(r"\\") {
-            Some(unc) => format!(r"\\?\UNC\{unc}"),
-            None => format!(r"\\?\{s}"),
+    use std::path::{Component, Prefix};
+    let push_normalized = |out: &mut OsString, comps: std::path::Components<'_>| {
+        let mut parts: Vec<&OsStr> = Vec::new();
+        for c in comps {
+            match c {
+                Component::Normal(seg) => parts.push(seg),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    parts.pop();
+                }
+                Component::RootDir | Component::Prefix(_) => {}
+            }
+        }
+        for (i, seg) in parts.iter().enumerate() {
+            if i > 0 {
+                out.push(r"\");
+            }
+            out.push(seg);
+        }
+    };
+    let long = if p.is_absolute() && p.as_os_str().len() >= 248 {
+        let mut comps = p.components();
+        match (comps.next(), comps.next()) {
+            (Some(Component::Prefix(pre)), Some(Component::RootDir)) => match pre.kind() {
+                Prefix::Disk(drive) => {
+                    let mut out = OsString::from(format!(r"\\?\{}:\", drive as char));
+                    push_normalized(&mut out, comps);
+                    Some(out)
+                }
+                Prefix::UNC(server, share) => {
+                    let mut out = OsString::from(r"\\?\UNC\");
+                    out.push(server);
+                    out.push(r"\");
+                    out.push(share);
+                    out.push(r"\");
+                    push_normalized(&mut out, comps);
+                    Some(out)
+                }
+                Prefix::Verbatim(_) | Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) | Prefix::DeviceNS(_) => None,
+            },
+            _ => None,
         }
     } else {
-        s.into_owned()
+        None
     };
-    std::ffi::OsStr::new(&long).encode_wide().chain([0]).collect()
+    let os = long.as_deref().unwrap_or(p.as_os_str());
+    os.encode_wide().chain([0]).collect()
 }
 
 // ---- Checks before writing ----------------------------------------------------------------
@@ -296,10 +336,35 @@ pub fn commit_with(s: &Staged, crash: Option<Crash>) -> Result<(), Failure> {
     if crash == Some(Crash::AfterReplace) {
         return Err(Failure::Other("simulated crash".into()));
     }
-    // The old file: gone now (or once the player lets go of it).
-    let _ = std::fs::remove_file(&s.backup);
-    let _ = std::fs::remove_file(&s.record);
+    // The old file: gone now (or once a handle sharing delete lets go of it). If something
+    // refuses to let it go (an antivirus or indexer lock), keep the recovery record so
+    // `recover` removes the backup at the next start.
+    let gone = match remove_backup(&s.backup) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            log::warn!("edit: could not remove backup {}: {e}; kept for recovery at next start", s.backup.display());
+            false
+        }
+    };
+    if gone {
+        let _ = std::fs::remove_file(&s.record);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by tests: removing the backup file fails, as when an antivirus or indexer locks it.
+    static REFUSE_BACKUP_REMOVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn remove_backup(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if REFUSE_BACKUP_REMOVE.with(std::cell::Cell::get) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "simulated backup lock"));
+    }
+    std::fs::remove_file(path)
 }
 
 #[cfg(windows)]
@@ -698,6 +763,72 @@ mod tests {
         recover(&dir.join("inflight"));
         assert!(victim.exists(), "never removed");
         assert_eq!(std::fs::read_dir(dir.join("inflight")).unwrap().count(), 0, "the record goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn wide_normalizes_long_drive_and_unc_paths() {
+        let decode = |w: Vec<u16>| {
+            assert_eq!(w.last(), Some(&0));
+            String::from_utf16(&w[..w.len() - 1]).unwrap()
+        };
+        let short = Path::new(r"C:\Music\01.flac");
+        assert_eq!(decode(wide(short)), r"C:\Music\01.flac");
+
+        let long_slash = format!("C:/{}song.flac", "dir/".repeat(70));
+        assert_eq!(decode(wide(Path::new(&long_slash))), format!(r"\\?\C:\{}song.flac", r"dir\".repeat(70)));
+
+        let long_dots = format!("D:/{}sub/.././song.flac", "dir/".repeat(70));
+        assert_eq!(decode(wide(Path::new(&long_dots))), format!(r"\\?\D:\{}song.flac", r"dir\".repeat(70)));
+
+        let long_unc_back = format!(r"\\server\share\{}song.flac", r"dir\".repeat(70));
+        assert_eq!(decode(wide(Path::new(&long_unc_back))), format!(r"\\?\UNC\server\share\{}song.flac", r"dir\".repeat(70)));
+
+        let long_unc_slash = format!("//server/share/{}song.flac", "dir/".repeat(70));
+        assert_eq!(decode(wide(Path::new(&long_unc_slash))), format!(r"\\?\UNC\server\share\{}song.flac", r"dir\".repeat(70)));
+
+        let already = format!(r"\\?\C:\{}song.flac", r"dir\".repeat(70));
+        assert_eq!(decode(wide(Path::new(&already))), already);
+
+        let already_unc = format!(r"\\?\UNC\server\share\{}song.flac", r"dir\".repeat(70));
+        assert_eq!(decode(wide(Path::new(&already_unc))), already_unc);
+    }
+
+    #[test]
+    fn commit_keeps_recovery_record_when_backup_cannot_be_removed() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                REFUSE_BACKUP_REMOVE.with(|c| c.set(false));
+            }
+        }
+        let dir = crate::testdir::TestDir::new("edit-bak-lock");
+        let _ = std::fs::remove_dir_all(&dir);
+        let inflight = dir.join("inflight");
+        std::fs::create_dir_all(&inflight).unwrap();
+        let original = dir.join("song.flac");
+        std::fs::write(&original, b"old content").unwrap();
+        let s = stage(&original, &inflight, 0).unwrap();
+        std::fs::write(&s.temp, b"new content").unwrap();
+        #[cfg(not(windows))]
+        std::fs::write(&s.backup, b"old content").unwrap();
+
+        {
+            let _reset = Reset;
+            REFUSE_BACKUP_REMOVE.with(|c| c.set(true));
+            commit(&s).unwrap();
+        }
+        assert_eq!(std::fs::read(&original).unwrap(), b"new content");
+        assert!(s.backup.exists(), "simulated lock left the backup behind");
+        assert!(s.record.exists(), "record must stay while the backup is still there");
+
+        let done = recover(&inflight);
+        assert!(!done.is_empty());
+        assert_eq!(std::fs::read(&original).unwrap(), b"new content", "the new file stays");
+        assert!(!s.backup.exists(), "recovery removes the orphaned backup");
+        assert!(!s.record.exists(), "and then removes the record");
+        assert!(!s.temp.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
