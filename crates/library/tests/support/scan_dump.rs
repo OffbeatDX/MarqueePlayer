@@ -13,7 +13,15 @@ use rusqlite::types::Value;
 /// run to the next and is shown as "new"; every other date (one the library had, one taken over
 /// from another album, one taken from the files) is shown as it is. `ids_up_to`: tracks that were
 /// in the library before (ids up to this) must keep their ids, which are shown.
+///
+/// "Now" reaches back `CLOCK_SLACK_MS` before `since_ms`: the wall clock a scan stamps its dates
+/// by can be stepped back while it runs (a WSL guest's clock is pulled to the NTP server's time
+/// and to its Windows host's in turn, half a second apart, every 32 seconds), and a date stamped
+/// just after such a step lies before `since_ms`. The dates a library had in these tests are
+/// decades older, and dates taken from the files are shown whatever they are.
 pub fn dump(conn: &Connection, since_ms: i64, ids_up_to: i64) -> Vec<(&'static str, String)> {
+    const CLOCK_SLACK_MS: i64 = 60_000;
+    let since_ms = since_ms - CLOCK_SLACK_MS;
     let q = |what: &'static str, sql: &str| -> (&'static str, String) {
         let mut st = conn.prepare(sql).unwrap_or_else(|e| panic!("{what}: {e}"));
         let n = st.column_count();
@@ -40,7 +48,7 @@ pub fn dump(conn: &Connection, since_ms: i64, ids_up_to: i64) -> Vec<(&'static s
             "tracks",
             "SELECT t.path, t.title, t.artist, t.disc_no, t.track_no, t.duration, t.genre, t.mtime, t.size, t.codec, t.sample_rate,
                     t.bit_depth, t.bitrate, t.channels, t.tags_read, t.from_name, a.key,
-                    CASE WHEN t.added_at * 1000 < ?1 - 1000 THEN t.added_at ELSE 'new' END
+                    CASE WHEN t.added_at * 1000 < ?1 THEN t.added_at ELSE 'new' END
              FROM tracks t JOIN albums a ON a.id = t.album_id WHERE ?2 = ?2 ORDER BY t.path",
         ),
         q("track ids kept", "SELECT path, id FROM tracks WHERE id <= ?2 AND ?1 = ?1 ORDER BY path"),
