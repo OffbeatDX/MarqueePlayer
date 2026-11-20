@@ -50,6 +50,8 @@ pub enum Trouble {
     /// Every request: read, then no answer at all, the connection held open (a server that
     /// hangs: the client waits for its timeout).
     Silent,
+    /// Every submission: 400, whatever it holds (a server that refuses every listen).
+    RefuseListens,
 }
 
 /// One request as the stand-in saw it.
@@ -284,6 +286,9 @@ fn respond(s: &mut Server, req: &Request, user: Option<String>, body: Option<Val
             let body = body.unwrap_or_default();
             let kind = body["listen_type"].as_str().unwrap_or("").to_owned();
             let listens = body["payload"].as_array().cloned().unwrap_or_default();
+            if s.trouble == Trouble::RefuseListens {
+                return (400, json!({"code": 400, "error": "listen refused"}), false);
+            }
             if let Some(bad) = &s.reject_track
                 && listens.iter().any(|l| l["track_metadata"]["track_name"].as_str() == Some(bad))
             {

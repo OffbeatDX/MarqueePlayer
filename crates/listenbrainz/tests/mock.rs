@@ -302,6 +302,32 @@ fn batches_keep_within_the_payload_size() {
     no_violations(&m);
 }
 
+/// A server that refuses every listen: three are dropped, then the rest is kept and tried
+/// again later, nothing more dropped while it goes on refusing; once it takes them, they go.
+#[test]
+fn a_server_that_refuses_every_listen_does_not_drain_the_queue() {
+    let d = dir("refuses-all");
+    connected(&d);
+    let m = Mock::start(TOKEN, USER);
+    m.set_trouble(Trouble::RefuseListens);
+    let mut run = start_with(Options { retry_max: Duration::from_millis(400), ..opts(&d, &m.url) });
+    run.wait("connected", is_connected);
+    for n in 1..=10 {
+        run.s.submit(play(n, &format!("T{n}")));
+    }
+    run.wait("three dropped", |s| s.note == "Sent 0, 3 not accepted by ListenBrainz" && s.queued == 7);
+    // Tried again after the wait, refused again: kept.
+    let t0 = Instant::now();
+    while m.with(|s| s.requests.iter().filter(|r| r.status == 400).count()) < 6 && t0.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(queue_file(&d).len(), 7, "nothing more dropped");
+    m.set_trouble(Trouble::None);
+    run.wait("the rest sent", |s| s.queued == 0 && s.note == "Sent 7 listens");
+    assert_eq!(m.tracks(), ["T4", "T5", "T6", "T7", "T8", "T9", "T10"]);
+    no_violations(&m);
+}
+
 #[test]
 fn a_server_error_is_retried_and_a_refused_listen_is_dropped_alone() {
     let d = dir("errors");

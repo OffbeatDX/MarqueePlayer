@@ -25,7 +25,10 @@
 //! backoff; and every answer's `X-RateLimit-Remaining` / `X-RateLimit-Reset-In` are honoured
 //! before the next request, which is never sooner than a second after the last (the documented
 //! "one call per second"). A 400 for a batch halves it until the listen it refuses is alone;
-//! that one is dropped with a log line, the others sent. A listen that can never be sent (no
+//! that one is dropped with a log line, the others sent. After `MAX_DROPPED_IN_ROW` dropped
+//! so in a row (a server that refuses every listen, not one), the rest is kept and sent again
+//! after the longest wait, and while the server goes on refusing, nothing more is dropped. A
+//! listen that can never be sent (no
 //! artist or title, a time before ListenBrainz's minimum, over 10 KB) is dropped the same way. A
 //! 401 (the token no longer accepted) stops sending and asks to connect again; the queue stays.
 //!
@@ -451,7 +454,13 @@ struct Worker {
     feedback: Vec<(Option<String>, Option<String>, i8)>,
     /// Connected once and not disconnected since (`Status::accepting`).
     accepting: bool,
+    /// Listens refused and dropped since the last one taken (`MAX_DROPPED_IN_ROW`).
+    dropped_in_row: usize,
 }
+
+/// Listens refused (400, each alone) and dropped in a row, at most: a server that refuses
+/// every listen would otherwise drain the whole queue one listen at a time.
+const MAX_DROPPED_IN_ROW: usize = 3;
 
 /// A request may go now, after a wait this short (slept on the thread); longer, it waits for the
 /// loop instead, so a command (Disconnect) is never kept waiting.
@@ -464,7 +473,7 @@ impl Worker {
         let backoff = opts.retry_min;
         let pacer = Pacer { min_gap: opts.min_gap, last: None, not_before: None };
         let accepting = !account.token.is_empty();
-        let mut w = Self { opts, account, account_path, queue, ids, notify, state: State::Disconnected, note: String::new(), refused: String::new(), retry_at: None, backoff, held: false, pacer, feedback: Vec::new(), accepting };
+        let mut w = Self { opts, account, account_path, queue, ids, notify, state: State::Disconnected, note: String::new(), refused: String::new(), retry_at: None, backoff, held: false, pacer, feedback: Vec::new(), accepting, dropped_in_row: 0 };
         w.state = w.idle_state();
         w
     }
@@ -697,6 +706,7 @@ impl Worker {
             match self.request(|c| c.submit(kind, &payload)) {
                 Ok(()) => {
                     self.refused.clear();
+                    self.dropped_in_row = 0;
                     sent += n;
                     self.queue.lock().unwrap_or_else(|e| e.into_inner()).remove(&batch[..n]);
                     self.backoff = self.opts.retry_min;
@@ -706,10 +716,18 @@ impl Worker {
                     log::warn!("listenbrainz: a batch of {n} was refused (HTTP {status}: {m}); sending it in halves");
                     window = n / 2;
                 }
-                Err(ApiError::Rejected(status, m)) => {
+                Err(ApiError::Rejected(status, m)) if self.dropped_in_row < MAX_DROPPED_IN_ROW => {
                     log::warn!("listenbrainz: a listen was refused (HTTP {status}: {m}); dropped");
                     dropped += 1;
+                    self.dropped_in_row += 1;
                     self.queue.lock().unwrap_or_else(|e| e.into_inner()).remove(&batch[..1]);
+                    if self.dropped_in_row == MAX_DROPPED_IN_ROW {
+                        break self.refusing();
+                    }
+                }
+                Err(ApiError::Rejected(status, m)) => {
+                    log::warn!("listenbrainz: a listen was refused again (HTTP {status}: {m}); kept");
+                    break self.refusing();
                 }
                 Err(e) => {
                     self.failed(&e, true);
@@ -726,6 +744,15 @@ impl Worker {
         }
         self.report();
         ok
+    }
+
+    /// The server refused `MAX_DROPPED_IN_ROW` listens in a row: what is left is kept, and sent
+    /// again after the longest wait. Always false (sending stopped).
+    fn refusing(&mut self) -> bool {
+        let left = self.queued();
+        log::warn!("listenbrainz: {MAX_DROPPED_IN_ROW} listens refused in a row; the {left} left are kept and sent again in {} s", self.opts.retry_max.as_secs());
+        self.retry_at = Some(Instant::now() + self.opts.retry_max);
+        false
     }
 
     /// Feedback waiting, oldest first; what has no recording id is dropped.
