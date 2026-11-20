@@ -247,6 +247,27 @@ fn a_range_request_gets_the_rest_of_the_file() {
     assert!(sink.body == data[12345..]);
 }
 
+/// `ETag` and `Last-Modified` come through in the head as sent, and `If-Range` goes out with
+/// `Range` as the caller gave it.
+#[test]
+fn validators_are_read_and_if_range_is_sent() {
+    let lm = "Wed, 21 Oct 2026 07:28:00 GMT";
+    let (url, seen) = serve("/file", move |req, c| {
+        let etag = if req.header("X-Weak").is_some() { "W/\"v1\"" } else { "\"v1\"" };
+        write_head(c, "200 OK", &["Content-Type: audio/flac".into(), "Content-Length: 3".into(), format!("ETag: {etag}"), format!("Last-Modified: {lm}")]);
+        c.write_all(b"abc").unwrap();
+    });
+    let d = http_client::download_same_server(&get(&url, &["Range: bytes=1-", "If-Range: \"v0\""], 5000), &mut Keep::default()).unwrap();
+    assert_eq!(d.head.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(d.head.last_modified.as_deref(), Some(lm));
+    assert_eq!(d.head.validator(), Some("\"v1\""));
+    let s = seen.lock().unwrap()[0].clone();
+    assert_eq!((s.header("Range"), s.header("If-Range")), (Some("bytes=1-"), Some("\"v0\"")));
+    let d = http_client::download(&get(&url, &["X-Weak: 1"], 5000), &mut Keep::default()).unwrap();
+    assert_eq!(d.head.etag.as_deref(), Some("W/\"v1\""));
+    assert_eq!(d.head.validator(), Some(lm), "a weak ETag cannot go in an If-Range");
+}
+
 #[test]
 fn a_body_cut_short_is_an_error_after_the_bytes_that_came() {
     let data = binary(10_000);

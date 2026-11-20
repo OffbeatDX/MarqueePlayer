@@ -11,7 +11,8 @@
 //! - [`request`] / [`get`] / [`post`]: the whole body as text (JSON APIs).
 //! - [`request_bytes`]: the whole body as bytes, with its `Content-Type` (cover art).
 //! - [`download`]: the body chunk by chunk, never held whole (a song file of several hundred
-//!   MB), with what the head said first (status, length, range, type), and a way to stop.
+//!   MB), with what the head said first (status, length, range, type, validators), and a way
+//!   to stop.
 //!
 //! Redirects are followed, up to 10. A request that carries an `Authorization` header, or
 //! one made through [`request_same_server`] / [`request_bytes_same_server`] /
@@ -103,6 +104,11 @@ pub struct Head {
     pub rate_limit: RateLimit,
     /// `Location` as sent, on a redirect the system's client did not follow.
     pub location: Option<String>,
+    /// `ETag` as sent (quotes and any `W/` kept): with `last_modified`, what tells this version
+    /// of the resource from another; [`Head::validator`] picks the one an `If-Range` can carry.
+    pub etag: Option<String>,
+    /// `Last-Modified` as sent (an HTTP date, not read).
+    pub last_modified: Option<String>,
 }
 
 /// A `Content-Range` of bytes: the first and last byte this body holds, and the length of
@@ -128,6 +134,15 @@ impl Head {
             t => Some(t.parse().ok()?),
         };
         (first <= last).then_some(ContentRange { first, last, total })
+    }
+
+    /// What an `If-Range` sent with a later `Range` request may carry, so that the range comes
+    /// only from this same version of the resource (else the server sends all of it, with 200):
+    /// the `ETag` when it is a strong one, else `Last-Modified`; None when there is neither (a
+    /// weak `ETag` cannot be used there).
+    pub fn validator(&self) -> Option<&str> {
+        let strong = self.etag.as_deref().map(str::trim).filter(|e| e.starts_with('"') && e.len() >= 2);
+        strong.or_else(|| self.last_modified.as_deref().map(str::trim).filter(|d| !d.is_empty()))
     }
 }
 
@@ -570,5 +585,17 @@ mod tests {
         assert_eq!(h("items 1-2/3"), None);
         assert_eq!(h("bytes 9-1/10"), None);
         assert_eq!(Head::default().range(), None);
+    }
+
+    #[test]
+    fn validators_prefer_a_strong_etag() {
+        let lm = "Wed, 21 Oct 2026 07:28:00 GMT";
+        let h = |etag: Option<&str>, last_modified: Option<&str>| Head { etag: etag.map(Into::into), last_modified: last_modified.map(Into::into), ..Head::default() };
+        assert_eq!(h(Some("\"abc\""), Some(lm)).validator(), Some("\"abc\""));
+        assert_eq!(h(Some("W/\"abc\""), Some(lm)).validator(), Some(lm));
+        assert_eq!(h(Some("W/\"abc\""), None).validator(), None);
+        assert_eq!(h(None, Some(lm)).validator(), Some(lm));
+        assert_eq!(h(None, Some("  ")).validator(), None);
+        assert_eq!(Head::default().validator(), None);
     }
 }

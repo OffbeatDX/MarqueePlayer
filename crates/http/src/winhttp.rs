@@ -162,6 +162,8 @@ pub(super) fn download(req: &Request, sink: &mut dyn Sink, follow: bool) -> Resu
             retry_after: header(&request, WINHTTP_QUERY_RETRY_AFTER).and_then(|s| parse_retry_after(&s)),
             rate_limit: rate_limit(|name| custom_header(&request, name)),
             location: if follow { None } else { header(&request, WINHTTP_QUERY_LOCATION) },
+            etag: header(&request, WINHTTP_QUERY_ETAG),
+            last_modified: header(&request, WINHTTP_QUERY_LAST_MODIFIED),
         };
         if sink.head(&head).is_break() {
             return Ok((head, true));

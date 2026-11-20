@@ -105,6 +105,8 @@ pub(super) fn download(req: &Request, sink: &mut dyn Sink, follow: bool) -> Resu
         retry_after: text("retry-after").and_then(|s| parse_retry_after(&s)),
         rate_limit: rate_limit(|name| text(&name.to_ascii_lowercase())),
         location: if follow { None } else { text("location") },
+        etag: text("etag"),
+        last_modified: text("last-modified"),
     };
     if sink.head(&head).is_break() {
         return Ok((head, true));
