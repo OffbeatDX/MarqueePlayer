@@ -1257,6 +1257,23 @@ impl Decoder {
 
     /// A seek plays every track at its own rate again (`Playing::seek`).
     fn seek(&mut self, token: Option<u64>, to: SeekTo) {
+        if self.current.is_none()
+            && let Some(s) = self.starting.as_mut()
+        {
+            // A growing track is still opening: remember the seek so it starts there once open.
+            if let SeekTo::Secs(secs) = to {
+                s.from = secs;
+            }
+            return;
+        }
+        if let Some(t) = token {
+            let known = self.current.as_ref().is_some_and(|c| c.token == t)
+                || self.prev.as_ref().is_some_and(|r| r.token == t)
+                || self.xfade.as_ref().and_then(|x| x.incoming.as_ref()).is_some_and(|i| i.token == t);
+            if !known {
+                return;
+            }
+        }
         self.plan = None;
         if let Some(x) = self.xfade.take()
             && let Some(mut incoming) = x.incoming
@@ -1783,5 +1800,107 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
         assert!(hits > 0, "no length of B left C's lookahead taken before B's last chunk");
+    }
+
+    #[test]
+    fn a_seek_for_an_untracked_token_does_not_reposition_current() {
+        let (player, _events) = Player::with_device(|| Box::new(Null));
+        let dir = std::env::temp_dir().join(format!("mp-engine-seek-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a_path = dir.join("a.wav");
+        let b_path = dir.join("b.wav");
+        let c_path = dir.join("c.wav");
+        wav(&a_path, 48_000, 2048);
+        wav(&b_path, 48_000, 2048);
+        wav(&c_path, 48_000, 48_000);
+
+        let (out, _out_rx) = unbounded();
+        let (ev, _ev_rx) = unbounded();
+        let (open, _open_rx) = unbounded();
+        let (_opened_tx, opened) = unbounded();
+        let mut d = Decoder::new(player.shared.clone(), out, ev, open, opened, bounded(1));
+
+        // Decode through short tracks A (1) and B (2) into C (3), so prev is B and current is C.
+        d.current = Some(d.open(TrackRequest::new(1, a_path)).unwrap());
+        d.next = Some(d.open(TrackRequest::new(2, b_path)).unwrap());
+        while d.current.as_ref().is_some_and(|c| c.token == 1) {
+            assert!(d.produce().is_some());
+        }
+        assert_eq!(d.current.as_ref().unwrap().token, 2);
+        assert_eq!(d.prev.as_ref().unwrap().token, 1);
+
+        d.next = Some(d.open(TrackRequest::new(3, c_path)).unwrap());
+        while d.current.as_ref().is_some_and(|c| c.token == 2) {
+            assert!(d.produce().is_some());
+        }
+        assert_eq!(d.current.as_ref().unwrap().token, 3);
+        assert_eq!(d.prev.as_ref().unwrap().token, 2);
+
+        // Produce one chunk of C so C is past frame 0.
+        assert!(matches!(d.produce(), Some(Msg::Audio(c)) if c.token == 3 && c.start == 0));
+        let pos_before = d.current.as_ref().unwrap().pos();
+        let gen_before = d.generation;
+        assert!(pos_before > 0);
+
+        // A seek meant for A (still audible in the output buffer) must not touch C.
+        d.handle(Cmd::Seek { token: Some(1), secs: 0.5 });
+        assert_eq!(d.generation, gen_before, "ignored seek must not bump generation");
+        assert_eq!(d.current.as_ref().unwrap().token, 3);
+        assert_eq!(d.current.as_ref().unwrap().pos(), pos_before, "C must not be repositioned");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_seek_while_a_growing_track_is_opening_sets_its_start_position() {
+        let (player, _events) = Player::with_device(|| Box::new(Null));
+        let dir = std::env::temp_dir().join(format!("mp-engine-seek-opening-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = dir.join("src.wav");
+        let growing_path = dir.join("growing.wav");
+        wav(&src_path, 48_000, 96_000);
+        let bytes = std::fs::read(&src_path).unwrap();
+        std::fs::write(&growing_path, []).unwrap();
+
+        let feed = Feed::new();
+        feed.set_length(Some(bytes.len() as u64));
+
+        let (out, _out_rx) = unbounded();
+        let (ev, _ev_rx) = unbounded();
+        let (open, _open_rx) = unbounded();
+        let (_opened_tx, opened) = unbounded();
+        let mut d = Decoder::new(player.shared.clone(), out, ev, open, opened, bounded(1));
+
+        d.handle(Cmd::Play(TrackRequest::growing(10, growing_path.clone(), feed.clone()), 0.0, None));
+        assert!(d.current.is_none());
+        assert!(d.starting.is_some());
+
+        // Seek while the growing file has no bytes yet and is still opening.
+        d.handle(Cmd::Seek { token: None, secs: 1.0 });
+
+        // Deliver the file so opening completes.
+        std::fs::write(&growing_path, &bytes).unwrap();
+        feed.advance(bytes.len() as u64);
+        feed.complete();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while d.current.is_none() {
+            assert!(Instant::now() < deadline, "growing track did not open in time");
+            d.poll_opened();
+            thread::sleep(Duration::from_millis(2));
+        }
+
+        let first_start = loop {
+            assert!(Instant::now() < deadline, "did not produce first chunk in time");
+            if let Some(Msg::Audio(c)) = d.produce() {
+                assert_eq!(c.token, 10);
+                break c.start;
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(first_start, 48_000, "track should start at the sought 1.0 s position");
+
+        drop(d);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
