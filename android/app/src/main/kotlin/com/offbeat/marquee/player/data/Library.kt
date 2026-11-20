@@ -112,7 +112,7 @@ object Library {
 
     fun init(context: Context) {
         app = context.applicationContext
-        loadFavourites()
+        favouriteStates.load()
     }
 
     private fun client(): SubsonicClient =
@@ -341,18 +341,23 @@ object Library {
 
     // ---- Writes: favourites, ratings, playlist additions -------------------------------------
 
-    private val favouriteOverrides = Overrides<Boolean>()
+    // Kept on disk, so the hearts (the notification's too) are right after a restart, offline
+    // included. Read and written on one background thread of their own.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val favouriteStates = FavouritesStore(
+        file = { File(app.filesDir, "favourites.json") },
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1)),
+    )
     private val ratingOverrides = Overrides<Int>()
-    private val _favourites = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val _ratings = MutableStateFlow<Map<String, Int>>(emptyMap())
 
     /** Favourite states changed in this run, by id; anything else is as the server last said (`starred`). */
-    val favourites: StateFlow<Map<String, Boolean>> = _favourites.asStateFlow()
+    val favourites: StateFlow<Map<String, Boolean>> = favouriteStates.state
 
     /** Ratings changed in this run, by id. */
     val ratings: StateFlow<Map<String, Int>> = _ratings.asStateFlow()
 
-    fun isFavourite(id: String, starred: String?, overrides: Map<String, Boolean> = _favourites.value): Boolean =
+    fun isFavourite(id: String, starred: String?, overrides: Map<String, Boolean> = favouriteStates.state.value): Boolean =
         overrides[id] ?: (starred != null)
 
     fun rating(id: String, userRating: Int?, overrides: Map<String, Int> = _ratings.value): Int =
@@ -409,8 +414,7 @@ object Library {
             if (report) postReadOnly()
             return false
         }
-        val ticket = favouriteOverrides.set(item.id, favourite)
-        publishFavourites()
+        val ticket = favouriteStates.set(item.id, favourite)
         val kind = item.kind.name.lowercase()
         val outcome = sendOrQueue(
             online = NetworkMonitor.online,
@@ -432,8 +436,7 @@ object Library {
             }
             is DirectWrite.Refused -> {
                 AppLog.w(TAG, "$what not changed: ${outcome.error.javaClass.simpleName}")
-                favouriteOverrides.rollback(ticket)
-                publishFavourites()
+                favouriteStates.rollback(ticket)
                 if (report) post("Couldn't save that. Check the connection.")
                 false
             }
@@ -449,54 +452,6 @@ object Library {
         if (favourite) c.star(id, albumId, artistId) else c.unstar(id, albumId, artistId)
     }
 
-    // The favourite states changed here are kept on disk, so the hearts (the notification's too)
-    // are right after a restart, offline included.
-
-    private fun favouritesFile() = File(app.filesDir, "favourites.json")
-    private val favouritesSerializer = kotlinx.serialization.builtins.MapSerializer(String.serializer(), Boolean.serializer())
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val favouritesScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
-    private val favouritesSnapshotLock = Any()
-    private val favouritesWriter = FavouritesWriter()
-
-    private fun loadFavourites() {
-        val f = favouritesFile()
-        if (!f.isFile) return
-        val map = runCatching { json.decodeFromString(favouritesSerializer, f.readText()) }.getOrNull() ?: return
-        for ((id, v) in map) favouriteOverrides.set(id, v)
-        _favourites.value = favouriteOverrides.snapshot()
-    }
-
-    private fun publishFavourites() {
-        val snap: Map<String, Boolean>
-        val seq: Long
-        synchronized(favouritesSnapshotLock) {
-            snap = favouriteOverrides.snapshot()
-            seq = favouritesWriter.nextSeq()
-            _favourites.value = snap
-        }
-        favouritesScope.launch {
-            runCatching {
-                favouritesWriter.write(favouritesFile(), json.encodeToString(favouritesSerializer, snap), seq)
-            }
-        }
-    }
-
-    /**
-     * Forgets the favourite states and deletes `favourites.json` through [favouritesWriter] on the
-     * writer's own thread, with a sequence number of its own: a write queued before (a toggle just
-     * before sign-out) is then skipped, so it can't bring the file back.
-     */
-    private suspend fun clearFavourites() {
-        val seq: Long
-        synchronized(favouritesSnapshotLock) {
-            favouriteOverrides.clear()
-            seq = favouritesWriter.nextSeq()
-            _favourites.value = emptyMap()
-        }
-        favouritesScope.launch { runCatching { favouritesWriter.clear(favouritesFile(), seq) } }.join()
-    }
-
     /**
      * getStarred2 is the server's whole answer: the states kept here follow it (a change made on
      * another device shows), except changes still waiting in the outbox.
@@ -507,16 +462,13 @@ object Library {
             s.album.forEach { add(it.id) }
             s.artist.forEach { add(it.id) }
         }
-        var changed = false
-        for ((id, v) in favouriteOverrides.snapshot()) {
+        val changes = HashMap<String, Boolean>()
+        for ((id, v) in favouriteStates.snapshot()) {
             if (Sync.outbox.pendingStar(id) != null) continue
             val server = id in starred
-            if (server != v) {
-                favouriteOverrides.set(id, server)
-                changed = true
-            }
+            if (server != v) changes[id] = server
         }
-        if (changed) publishFavourites()
+        favouriteStates.setAll(changes)
     }
 
     /** Rates a song, album or artist; 0 clears the rating. */
@@ -558,7 +510,7 @@ object Library {
         artists.clear()
         playlists.clear()
         lists.clear()
-        clearFavourites()
+        favouriteStates.clear()
         ratingOverrides.clear()
         _ratings.value = emptyMap()
         _playlistsChanged.value = null

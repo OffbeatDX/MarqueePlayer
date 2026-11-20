@@ -110,6 +110,22 @@ class Overrides<V : Any> {
         return true
     }
 
+    /**
+     * Adds the [loaded] values (kept from a previous run) for ids that have none yet: a change made
+     * here before they arrived is newer and stays. True when anything was added.
+     */
+    @Synchronized
+    fun fillMissing(loaded: Map<String, V>): Boolean {
+        var added = false
+        for ((id, v) in loaded) {
+            if (id !in values) {
+                values[id] = v
+                added = true
+            }
+        }
+        return added
+    }
+
     @Synchronized
     operator fun get(id: String): V? = values[id]
 

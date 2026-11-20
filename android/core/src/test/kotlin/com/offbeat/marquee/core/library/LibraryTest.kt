@@ -278,6 +278,19 @@ class LibraryTest {
     }
 
     @Test
+    fun loadedOverridesNeverReplaceANewerChange() {
+        val o = Overrides<Boolean>()
+        val toggle = o.set("a", false) // made before the saved states finished loading
+        assertTrue(o.fillMissing(mapOf("a" to true, "b" to true)))
+        assertEquals(mapOf("a" to false, "b" to true), o.snapshot())
+        assertFalse(o.fillMissing(mapOf("b" to false)))
+        assertEquals(true, o["b"])
+        // The toggle's own rollback still works after the load.
+        assertTrue(o.rollback(toggle))
+        assertEquals(mapOf("b" to true), o.snapshot())
+    }
+
+    @Test
     fun overridesRollBackOnlyTheirOwnChange() {
         val o = Overrides<Boolean>()
         val t1 = o.set("a", true)
