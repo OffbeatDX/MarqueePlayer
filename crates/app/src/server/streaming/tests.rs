@@ -461,7 +461,7 @@ fn eviction_keeps_the_cap_and_the_tracks_kept() {
     let mut cfg = Config::new(d.clone(), 10_000);
     let changes = Arc::new(Mutex::new(0));
     let c = changes.clone();
-    cfg.changed = Some(Arc::new(move || *c.lock().unwrap() += 1));
+    cfg.changed = Some(Arc::new(move |_| *c.lock().unwrap() += 1));
     let s = Streamer::new(cfg);
     // Five whole files of 3,000 bytes, played in order 0..5 (0 the longest ago).
     let infos: Vec<StreamInfo> = (0..5).map(|n| StreamInfo { song_id: format!("e{n}"), suffix: Some("flac".into()), content_type: None, size: 3000 }).collect();
@@ -575,5 +575,40 @@ fn a_clear_waiting_on_a_stalled_download_leaves_the_next_session_alone() {
     assert!(whole(s.dir(), &ib).is_some(), "the new session's track stays");
     assert_eq!(fs::read(data_path(s.dir(), &ib)).unwrap(), new);
     assert!(!pa.exists() && !sidecar_path(s.dir(), &key(&ia)).exists(), "the old session's files went");
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
+
+/// The space used is counted by the thread that changed it (a download, an eviction, a clear)
+/// and handed on with the news; what Settings reads is that count, never the folder.
+#[test]
+fn the_space_used_is_counted_where_it_changes_and_read_without_the_disk() {
+    let bytes: Vec<u8> = (0..30_000u32).map(|n| (n * 31) as u8).collect();
+    let mock = Mock::start();
+    mock.add("u", bytes.clone(), "audio/flac");
+    let told = Arc::new(Mutex::new(Vec::<(u64, String)>::new()));
+    let t = told.clone();
+    let mut cfg = Config::new(dir("counted"), DEFAULT_CAP);
+    cfg.changed = Some(Arc::new(move |n| t.lock().unwrap().push((n, std::thread::current().name().unwrap_or("").to_owned()))));
+    let s = Streamer::new(cfg);
+    s.set_client(Some(mock.client()));
+    assert_eq!(s.known_used(), 0);
+    let iu = info("u", &bytes, "flac");
+    let feed = feed_of(&s.request(1, &iu).unwrap());
+    wait_until(Duration::from_secs(5), "whole", || feed.is_complete());
+    wait_until(Duration::from_secs(5), "told", || !told.lock().unwrap().is_empty());
+    let (n, thread) = told.lock().unwrap()[0].clone();
+    assert_eq!(n, bytes.len() as u64, "the whole file, counted");
+    assert_eq!(thread, "mp-stream", "counted on the download's thread");
+    assert_eq!(s.known_used(), n);
+
+    // A file the streamer did not write: not seen until a worker counts again.
+    fs::write(s.dir().join("other.flac"), vec![0u8; 1000]).unwrap();
+    assert_eq!(s.known_used(), bytes.len() as u64, "no look at the folder");
+    s.set_cap(DEFAULT_CAP);
+    assert_eq!(s.known_used(), bytes.len() as u64 + 1000);
+    assert_eq!(told.lock().unwrap().last().unwrap().0, bytes.len() as u64 + 1000);
+    s.keep(&[], None);
+    s.clear(true);
+    assert_eq!((s.known_used(), told.lock().unwrap().last().unwrap().0), (0, 0));
     assert!(s.shutdown_and_wait(Duration::from_secs(5)));
 }

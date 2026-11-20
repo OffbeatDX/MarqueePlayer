@@ -46,7 +46,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -113,9 +113,10 @@ pub struct Config {
     pub read_timeout_ms: u32,
     pub backoff: Vec<Duration>,
     pub attempts: usize,
-    /// Called (on any thread) when the space used may have changed: a download finished, files
-    /// were evicted or cleared.
-    pub changed: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Called (on the worker thread that did it) when the space used may have changed: a download
+    /// finished, files were evicted or cleared. With the bytes the cache holds, counted on that
+    /// thread, so whoever shows them needs no look at the folder.
+    pub changed: Option<Arc<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl Config {
@@ -408,6 +409,8 @@ pub struct Streamer {
     pub requests: AtomicUsize,
     /// Downloads whose thread is running.
     pub running: AtomicUsize,
+    /// The bytes the cache held when last counted (`counted`): what Settings shows.
+    known: AtomicU64,
 }
 
 impl Streamer {
@@ -419,6 +422,7 @@ impl Streamer {
             inner: Mutex::new(Inner { client: None, downloads: HashMap::new(), kept: HashSet::new(), ahead: None, failures: HashMap::new(), cap, generation: 0 }),
             requests: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
+            known: AtomicU64::new(0),
         })
     }
 
@@ -431,10 +435,17 @@ impl Streamer {
         &self.cfg.dir
     }
 
-    fn changed(&self) {
+    /// The cache's bytes, just counted on this (worker) thread: kept, and said to `changed`.
+    fn counted(&self, bytes: u64) {
+        self.known.store(bytes, Ordering::Relaxed);
         if let Some(f) = &self.cfg.changed {
-            f();
+            f(bytes);
         }
+    }
+
+    /// The bytes the cache held when last counted: no look at the folder (the UI thread asks).
+    pub fn known_used(&self) -> u64 {
+        self.known.load(Ordering::Relaxed)
     }
 
     /// Signed in (or the sign-in renewed), or signed out (`None`): every download stops and its
@@ -564,10 +575,8 @@ impl Streamer {
             }
             self.start_ahead(&mut g);
         }
-        if d.feed.is_complete() {
-            self.evict();
-        }
-        self.changed();
+        let bytes = if d.feed.is_complete() { self.evict() } else { self.used() };
+        self.counted(bytes);
     }
 
     /// The songs being fetched now (the bench reports them).
@@ -734,20 +743,21 @@ impl Streamer {
         true
     }
 
-    /// Bytes the cache holds (whole and partial files, sidecars).
+    /// Bytes the cache holds (whole and partial files, sidecars): reads the folder, so only off
+    /// the UI thread.
     pub fn used(&self) -> u64 {
         entries(&self.cfg.dir).iter().map(|e| e.bytes).sum()
     }
 
     pub fn set_cap(&self, cap: u64) {
         self.lock().cap = cap;
-        self.evict();
-        self.changed();
+        let bytes = self.evict();
+        self.counted(bytes);
     }
 
     /// The cap kept: the least recently played files deleted first, never one kept or being
-    /// written.
-    pub fn evict(&self) {
+    /// written. Returns the bytes left.
+    pub fn evict(&self) -> u64 {
         let (cap, busy) = {
             let g = self.lock();
             let busy: HashSet<String> = g.kept.iter().cloned().chain(g.downloads.iter().filter(|(_, d)| !d.ended.load(Ordering::Acquire)).map(|(k, _)| k.clone())).collect();
@@ -756,7 +766,7 @@ impl Streamer {
         let mut all = entries(&self.cfg.dir);
         let mut total: u64 = all.iter().map(|e| e.bytes).sum();
         if total <= cap {
-            return;
+            return total;
         }
         all.sort_by_key(|e| e.used);
         for e in all {
@@ -772,6 +782,7 @@ impl Streamer {
             log::info!("stream cache: {} evicted ({} bytes)", e.key, e.bytes);
             total = total.saturating_sub(e.bytes);
         }
+        total
     }
 
     /// Delete the cache. `all`: everything, every download stopped and failed (sign-out). Else
@@ -818,7 +829,7 @@ impl Streamer {
             }
             drop(g);
         }
-        self.changed();
+        self.counted(self.used());
     }
 }
 
@@ -954,8 +965,8 @@ fn streamer() -> Option<Arc<Streamer>> {
 }
 
 /// Start the app's streamer on its cache folder with the cap set (main.rs, once). `changed` runs
-/// (on any thread) when the space used may have changed.
-pub fn install(dir: PathBuf, cap: u64, changed: Arc<dyn Fn() + Send + Sync>) {
+/// (on a worker thread) with the bytes used when they may have changed.
+pub fn install(dir: PathBuf, cap: u64, changed: Arc<dyn Fn(u64) + Send + Sync>) {
     let mut cfg = Config::new(dir, cap);
     cfg.changed = Some(changed);
     let s = Streamer::new(cfg);
@@ -963,8 +974,14 @@ pub fn install(dir: PathBuf, cap: u64, changed: Arc<dyn Fn() + Send + Sync>) {
     s.set_client(h.client.take());
     h.streamer = Some(s.clone());
     drop(h);
-    // A cap lowered while the app was closed, or files left from before.
-    std::thread::Builder::new().name("mp-stream-cap".into()).spawn(move || s.evict()).ok();
+    // A cap lowered while the app was closed, or files left from before; and the first count.
+    std::thread::Builder::new()
+        .name("mp-stream-cap".into())
+        .spawn(move || {
+            let bytes = s.evict();
+            s.counted(bytes);
+        })
+        .ok();
 }
 
 /// The signed-in client, or `None` when signed out or not connected: called when the app
@@ -1013,9 +1030,10 @@ pub fn set_cap(cap: u64) {
     }
 }
 
-/// Bytes the cache holds (reads the folder: call off the UI thread, or rarely).
+/// Bytes the cache held when last counted, on the worker thread that changed it (no look at the
+/// folder: the UI thread asks).
 pub fn used() -> u64 {
-    streamer().map_or(0, |s| s.used())
+    streamer().map_or(0, |s| s.known_used())
 }
 
 /// The app is quitting: every download stops (what is written stays).
@@ -1121,7 +1139,7 @@ pub fn used_text(bytes: u64) -> String {
 /// Start the app's streamer (main.rs, once, with the settings loaded).
 pub fn install_app(st: &std::rc::Rc<crate::state::State>) {
     let mb = st.settings.borrow().stream_cache_mb.max(1);
-    install(st.paths.stream(), mb * MB, Arc::new(|| crate::state::post(refresh_ui)));
+    install(st.paths.stream(), mb * MB, Arc::new(|bytes| crate::state::post(move |st| show(st, bytes))));
     refresh_ui(st);
 }
 
@@ -1134,11 +1152,15 @@ pub fn settings_shown() -> bool {
 }
 
 /// Settings > Playback > Music from the server: shown once there is a server or a cache, with
-/// the space used and the cap.
+/// the space used (as last counted: no look at the folder here, on the UI thread) and the cap.
 pub fn refresh_ui(st: &std::rc::Rc<crate::state::State>) {
+    show(st, used());
+}
+
+/// `refresh_ui` with the bytes used, as a worker thread just counted them.
+fn show(st: &std::rc::Rc<crate::state::State>, used: u64) {
     use slint::ComponentHandle;
     let Some(app) = st.app.upgrade() else { return };
-    let used = used();
     let shown = used > 0 || client().is_some() || library::remote::connected(&st.db).unwrap_or(false);
     SETTINGS_SHOWN.store(shown, Ordering::Relaxed);
     let p = app.global::<crate::Player>();
