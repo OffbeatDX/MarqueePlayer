@@ -9,11 +9,12 @@ secret (create one at last.fm/api/account/create) and press Connect. The app get
 opens Last.fm's authorisation page in the browser, and connects as soon as access is
 allowed; Settings then shows the user name, Disconnect and Send now. The key, secret and
 session key are kept in `lastfm.json` in the data folder (never in the database, never in
-the log), the session key sealed as the server's token in `navidrome.json` is (DPAPI for the
-Windows user; on Linux the file is the user's alone, mode 0600). A file from an older version,
-with the session key in plain text, is written again sealed when read; a session that does
-not open here (the portable edition on another PC, another Windows account, damage) is no
-session: the key and secret stay, and Connect signs in again.
+the log), the shared secret and session key sealed as the server's token in `navidrome.json`
+is (DPAPI for the Windows user; on Linux the file is the user's alone, mode 0600). A file
+from an older version, with the secret or session key in plain text, is written again sealed
+when read; a secret or session that does not open here (the portable edition on another PC,
+another Windows account, damage) is cleared: the API key stays, and re-entering the secret
+and pressing Connect signs in again.
 
 "Now playing" goes out when a track starts. A track longer than 30 s is scrobbled once it
 has played half its length or four minutes, whichever comes first (Last.fm's rule; the

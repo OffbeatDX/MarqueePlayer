@@ -3,9 +3,9 @@
 //!
 //! - `lastfm.json` (the data folder, `Options::config_dir`): the API key and shared secret the user entered, and
 //!   the session key and user name once connected. Never in the database, never logged.
-//!   The session key is sealed (`Options::sealer`: the app's DPAPI on Windows, a file only
-//!   the user can read on Linux); a file from before, with it in plain text, is written
-//!   again sealed when read. A session that does not open here is no session (signed out).
+//!   The shared secret and session key are sealed (`Options::sealer`: the app's DPAPI on Windows, a file only
+//!   the user can read on Linux); a file from before, with either in plain text, is written
+//!   again sealed when read. A secret or session that does not open here is cleared.
 //! - `scrobbles.json` (the same folder): plays not yet accepted, oldest first. A play is
 //!   written there by the caller's thread before `scrobble` returns, so one made just
 //!   before exit is not lost; the thread submits them in batches of up to 50.
@@ -37,11 +37,11 @@ pub struct Credentials {
     pub username: String,
 }
 
-/// How the session key is kept on disk: the app passes its own (`platform::secret`: DPAPI for
+/// How the API secret and session key are kept on disk: the app passes its own (`platform::secret`: DPAPI for
 /// the Windows user; on Linux a file only the user can read). `PLAIN` is for tests.
 #[derive(Clone, Copy, Debug)]
 pub struct Sealer {
-    /// Named in the file: a file sealed another way does not open (signed out).
+    /// Named in the file: a file sealed another way does not open.
     pub scheme: &'static str,
     pub seal: fn(&[u8]) -> Option<Vec<u8>>,
     /// None when it cannot be opened here (another user or PC, damage).
@@ -55,18 +55,22 @@ impl Sealer {
     pub const PLAIN: Sealer = Sealer { scheme: "plain", seal: |b| Some(b.to_vec()), open: |b| Some(b.to_vec()), write: |p, b| std::fs::write(p, b) };
 }
 
-/// `lastfm.json` as stored: the session key sealed (`Sealer`), as hex. A file from before
-/// carries it as plain `session_key`: read, then written again sealed.
+/// `lastfm.json` as stored: the API secret and session key sealed (`Sealer`), as hex. A file
+/// from before carries either or both as plain `api_secret` / `session_key`: read, then
+/// written again sealed.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Stored {
     api_key: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     api_secret: String,
     username: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     session_key: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     sealed_with: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    secret: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     session: String,
 }
@@ -82,40 +86,62 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len()).step_by(2).map(|i| s.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok())).collect()
 }
 
+fn open_sealed(sealed_with: &str, value: &str, sealer: &Sealer) -> Option<String> {
+    (sealed_with == sealer.scheme).then(|| unhex(value)).flatten().and_then(|b| (sealer.open)(&b)).and_then(|p| String::from_utf8(p).ok())
+}
+
 impl Credentials {
-    /// Read the file, and write it again sealed if it held the session key in plain text.
+    /// Read the file, and write it again sealed if it held the API secret or session key in plain text.
     pub fn load(path: &Path, sealer: &Sealer) -> Self {
         let (creds, plain) = Self::read(path, sealer);
         if plain {
-            log::info!("{}: the session key is kept sealed from now on", path.display());
+            log::info!("{}: the API secret and session key are kept sealed from now on", path.display());
             creds.save(path, sealer);
         }
         creds
     }
 
-    /// Read the file without writing it; true when it held the session key in plain text. A
-    /// session that does not open here (another PC or user, damage) is no session: signed out,
-    /// the key and secret kept.
+    /// Read the file without writing it; true when it held the API secret or session key in plain
+    /// text. A secret or session that does not open here (another PC or user, damage) is cleared;
+    /// the API key is kept.
     pub fn read(path: &Path, sealer: &Sealer) -> (Self, bool) {
         let s: Stored = read_json(path).unwrap_or_default();
-        let plain = !s.session_key.is_empty();
-        let session_key = if plain {
+        let plain_secret = !s.api_secret.is_empty();
+        let plain_session = !s.session_key.is_empty();
+        let api_secret = if plain_secret {
+            s.api_secret
+        } else if s.secret.is_empty() {
+            String::new()
+        } else {
+            open_sealed(&s.sealed_with, &s.secret, sealer).unwrap_or_else(|| {
+                log::warn!("{}: the saved API secret cannot be opened here (made for another PC or user, or damaged); enter it again", path.display());
+                String::new()
+            })
+        };
+        let session_key = if plain_session {
             s.session_key
         } else if s.session.is_empty() {
             String::new()
         } else {
-            let opened = (s.sealed_with == sealer.scheme).then(|| unhex(&s.session)).flatten().and_then(|b| (sealer.open)(&b)).and_then(|p| String::from_utf8(p).ok());
-            opened.unwrap_or_else(|| {
+            open_sealed(&s.sealed_with, &s.session, sealer).unwrap_or_else(|| {
                 log::warn!("{}: the saved session cannot be opened here (made for another PC or user, or damaged); connect again", path.display());
                 String::new()
             })
         };
         let username = if session_key.is_empty() { String::new() } else { s.username };
-        (Self { api_key: s.api_key, api_secret: s.api_secret, session_key, username }, plain)
+        (Self { api_key: s.api_key, api_secret, session_key, username }, plain_secret || plain_session)
     }
 
     pub fn save(&self, path: &Path, sealer: &Sealer) {
-        let mut s = Stored { api_key: self.api_key.clone(), api_secret: self.api_secret.clone(), username: self.username.clone(), ..Stored::default() };
+        let mut s = Stored { api_key: self.api_key.clone(), username: self.username.clone(), ..Stored::default() };
+        if !self.api_secret.is_empty() {
+            let Some(sealed) = (sealer.seal)(self.api_secret.as_bytes()) else {
+                log::warn!("{}: the API secret could not be sealed; not saved", path.display());
+                return;
+            };
+            s.sealed_with = sealer.scheme.into();
+            s.secret = hex(&sealed);
+        }
         if !self.session_key.is_empty() {
             let Some(sealed) = (sealer.seal)(self.session_key.as_bytes()) else {
                 log::warn!("{}: the session key could not be sealed; not saved", path.display());
@@ -269,7 +295,7 @@ pub struct Options {
     /// The first retry delay after a failure (doubles to `retry_max`).
     pub retry_min: Duration,
     pub retry_max: Duration,
-    /// How the session key is kept in `lastfm.json` (`Sealer::PLAIN` unless the app sets its own).
+    /// How the API secret and session key are kept in `lastfm.json` (`Sealer::PLAIN` unless the app sets its own).
     pub sealer: Sealer,
 }
 
@@ -370,7 +396,7 @@ impl Worker {
         let creds_path = opts.config_dir.join("lastfm.json");
         let creds = Credentials::load(&creds_path, &opts.sealer);
         let backoff = opts.retry_min;
-        let accepting = !creds.session_key.is_empty();
+        let accepting = !creds.api_key.is_empty() && !creds.api_secret.is_empty() && !creds.session_key.is_empty();
         let mut w = Self {
             opts,
             creds,
@@ -739,37 +765,70 @@ mod tests {
     }
 
     #[test]
-    fn the_session_key_is_kept_sealed_and_a_plain_one_is_sealed_when_read() {
+    fn the_api_secret_and_session_key_are_kept_sealed_and_plain_ones_are_sealed_when_read() {
         let d = dir("seal");
         let p = d.join("lastfm.json");
-        std::fs::write(&p, r#"{"api_key":"k","api_secret":"s","session_key":"sk-plain","username":"ann"}"#).unwrap();
+        // Migration from a fixture with both fields in plain text.
+        std::fs::write(&p, r#"{"api_key":"k","api_secret":"sec-plain","session_key":"sk-plain","username":"ann"}"#).unwrap();
         let c = Credentials::load(&p, &XOR);
-        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str(), c.username.as_str()), ("k", "s", "sk-plain", "ann"));
+        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str(), c.username.as_str()), ("k", "sec-plain", "sk-plain", "ann"));
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(!text.contains("sk-plain") && text.contains("xor-test"), "written again sealed: {text}");
+        assert!(!text.contains("sec-plain") && !text.contains("sk-plain") && text.contains("xor-test"), "written again sealed: {text}");
         assert_eq!(Credentials::read(&p, &XOR), (c.clone(), false), "reads back the same, nothing plain");
-        // Saved: sealed too.
-        Credentials { session_key: "sk-new".into(), ..c.clone() }.save(&p, &XOR);
-        assert!(!std::fs::read_to_string(&p).unwrap().contains("sk-new"));
-        assert_eq!(Credentials::read(&p, &XOR).0.session_key, "sk-new");
+        assert_eq!(Credentials::load(&p, &XOR), c, "file written by new code still loads");
+
+        // Migration from an intermediate file: session already sealed, api_secret still plain.
+        let sealed_sk = hex(&(XOR.seal)(b"sk-sealed").unwrap());
+        std::fs::write(&p, format!(r#"{{"api_key":"k","api_secret":"sec-old","username":"ann","sealed_with":"xor-test","session":"{sealed_sk}"}}"#)).unwrap();
+        let (c_mid, plain_mid) = Credentials::read(&p, &XOR);
+        assert!(plain_mid, "plain api_secret triggers migration");
+        assert_eq!((c_mid.api_secret.as_str(), c_mid.session_key.as_str()), ("sec-old", "sk-sealed"));
+        let c_mid = Credentials::load(&p, &XOR);
+        assert_eq!((c_mid.api_secret.as_str(), c_mid.session_key.as_str()), ("sec-old", "sk-sealed"));
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("sec-old") && !text.contains("sk-sealed") && text.contains("xor-test"), "migrated: {text}");
+        assert_eq!(Credentials::read(&p, &XOR), (c_mid, false));
+
+        // Round trip: saving new secret and session key seals both.
+        let updated = Credentials { api_key: "k2".into(), api_secret: "sec-new".into(), session_key: "sk-new".into(), username: "bob".into() };
+        updated.save(&p, &XOR);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("sec-new") && !text.contains("sk-new"), "both sealed on save: {text}");
+        assert_eq!(Credentials::read(&p, &XOR), (updated.clone(), false));
+        assert_eq!(Credentials::load(&p, &XOR), updated);
+
+        // Round trip with api_secret only (before connecting, no session key yet).
+        let creds_only = Credentials { api_key: "k3".into(), api_secret: "sec-only".into(), session_key: String::new(), username: String::new() };
+        creds_only.save(&p, &XOR);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("sec-only") && text.contains("xor-test"), "secret sealed even without session: {text}");
+        assert_eq!(Credentials::read(&p, &XOR), (creds_only.clone(), false));
+        assert_eq!(Credentials::load(&p, &XOR), creds_only);
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
-    fn a_session_that_does_not_open_here_is_signed_out() {
+    fn sealed_credentials_that_do_not_open_here_are_cleared() {
         let d = dir("locked");
         let p = d.join("lastfm.json");
         Credentials { api_key: "k".into(), api_secret: "s".into(), session_key: "sk".into(), username: "ann".into() }.save(&p, &XOR);
-        // Sealed another way (another system's build): signed out, the key and secret kept.
+        // Sealed another way (another system's build): secret and session cleared, API key kept.
         let (c, plain) = Credentials::read(&p, &Sealer::PLAIN);
         assert!(!plain);
-        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str(), c.username.as_str()), ("k", "s", "", ""));
+        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str(), c.username.as_str()), ("k", "", "", ""));
         // A seal that does not open (another user or PC), and one damaged.
-        std::fs::write(&p, r#"{"api_key":"k","api_secret":"s","username":"ann","sealed_with":"xor-test","session":"00ff"}"#).unwrap();
-        assert_eq!(Credentials::load(&p, &XOR).session_key, "");
-        std::fs::write(&p, r#"{"api_key":"k","api_secret":"s","username":"ann","sealed_with":"xor-test","session":"zz"}"#).unwrap();
-        assert_eq!(Credentials::load(&p, &XOR).session_key, "");
+        std::fs::write(&p, r#"{"api_key":"k","username":"ann","sealed_with":"xor-test","secret":"00ff","session":"00ff"}"#).unwrap();
+        let c = Credentials::load(&p, &XOR);
+        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str()), ("k", "", ""));
+        std::fs::write(&p, r#"{"api_key":"k","username":"ann","sealed_with":"xor-test","secret":"zz","session":"zz"}"#).unwrap();
+        let c = Credentials::load(&p, &XOR);
+        assert_eq!((c.api_key.as_str(), c.api_secret.as_str(), c.session_key.as_str()), ("k", "", ""));
         assert!(!d.join("lastfm.json.bad").exists(), "not a damaged file: nothing kept aside");
+        // If sealing itself fails, nothing is written in plain text.
+        let broken = Sealer { scheme: "broken", seal: |_| None, open: |_| None, write: |p, b| std::fs::write(p, b) };
+        let p2 = d.join("unsealed.json");
+        Credentials { api_key: "k".into(), api_secret: "plain-secret".into(), session_key: String::new(), username: String::new() }.save(&p2, &broken);
+        assert!(!p2.exists(), "a failed seal never writes a plain secret");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
