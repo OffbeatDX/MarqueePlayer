@@ -112,7 +112,7 @@ modes, the fixtures and every environment variable are in [docs/testing.md](docs
   them on; Discord is a local pipe. The API overrides (`MP_LASTFM_API`, `MP_LISTENBRAINZ_API`,
   `MP_LRCLIB_API`) work only in bench and test builds, and tests use stand-ins on 127.0.0.1.
 - **What goes back to a server is opt-in per kind.** The Navidrome client is read-only for
-  syncing, covers and streaming; favourites, ratings and plays are written only behind their own
+  syncing, covers and streaming; favourites and plays are written only behind their own
   switches (`subsonic::Writes`; [docs/features/navidrome.md](docs/features/navidrome.md)).
 - **Secrets stay out of logs and reports.** Passwords are never kept, tokens and session keys are
   sealed (DPAPI on Windows, mode 0600 on Linux and macOS), and neither they nor the server's address or

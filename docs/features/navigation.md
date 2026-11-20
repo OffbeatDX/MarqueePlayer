@@ -14,7 +14,7 @@ Settings > Window > Auto-hide player bar slides the bar away while music plays a
 back when the pointer reaches the bottom of the window (the strip where the bar sits). It
 stays while the pointer is anywhere on it, its buttons and sliders included, while a slider
 of it is being dragged, while one of its controls has the keyboard focus (Tab brings it
-back), and while a menu is open (the rating menu opens from it). Once nothing holds it, it
+back), and while a menu is open. Once nothing holds it, it
 lingers for `[motion] bar_linger` in `theme.toml` (600 ms) before going, also when the
 pointer leaves the window. Paused, stopped or on Now playing it stays. While it is away
 the sidebars and the queue reach the bottom of the window; they give the bar its room back
@@ -62,11 +62,11 @@ playlists](#smart-playlists)); a query without any is plain search, exactly as b
 | `artist:"nina simone"` | a text field contains it (folded as search folds: case, accents, kana, width): `artist` (every credited artist, featured too), `albumartist` (`aa`), `album`, `title`, `genre`, `label`, `format` (`codec`), `path` |
 | `label:=ECM` | exactly that (folded) |
 | `live` | a word: in the title, an artist, the album or the album artist; each word on its own, a `"quoted phrase"` as one |
-| `year:1994`, `year:1990..1999`, `year:1990s`, `year:>=2010`, `year:..1980` | numbers: `year`, `rating` (0 is not rated), `plays`, `length`, `bitrate` (kbps), `samplerate` (kHz, or Hz from 1000), `bitdepth`, `disc`, `track`; with `>`, `>=`, `<`, `<=`, `=`, `a..b` (either end open) or `n+` |
+| `year:1994`, `year:1990..1999`, `year:1990s`, `year:>=2010`, `year:..1980` | numbers: `year`, `plays`, `length`, `bitrate` (kbps), `samplerate` (kHz, or Hz from 1000), `bitdepth`, `disc`, `track`; with `>`, `>=`, `<`, `<=`, `=`, `a..b` (either end open) or `n+` |
 | `length:<3:00`, `length:90s`, `length:5m..8m` | lengths as `3:30`, `1:02:03`, `90s`, `5m`, `1h`, or minutes alone (`length:>10`), as the editor reads them |
 | `added:<30d`, `played:>1y`, `played:<2w` | in the last 30 days; longer ago than a year (never played included); `d`, `w`, `m` (months), `y` |
 | `added:2024`, `added:2024-03`, `added:>2023`, `added:2023..2024-06`, `played:never` | a year, month or day, after it, before it, between (local calendar, as in the editor) |
-| `is:favourite` (`favorite`, `fav`), `is:favalbum`, `is:local`, `is:remote`, `is:lossless`, `is:lossy`, `is:played`, `is:unplayed`, `is:rated`, `is:unrated`, `has:rating` | flags; `is:remote` is what plays from the Navidrome server (a track only it has), `is:local` what has a file here |
+| `is:favourite` (`favorite`, `fav`), `is:favalbum`, `is:local`, `is:remote`, `is:lossless`, `is:lossy`, `is:played`, `is:unplayed` | flags; `is:remote` is what plays from the Navidrome server (a track only it has), `is:local` what has a file here |
 | `playlist:"Road trip"` (`in:`) | in that playlist (ordinary or smart), by name |
 | `-genre:live`, `-is:remote`, `-live` | not |
 | `genre:jazz OR genre:soul` | either (`OR` in capitals, or `|`); it binds its two neighbours, everything else must all match |
@@ -81,19 +81,19 @@ are whole, so `>10` is "at least 11" exactly. A track missing the value (no year
 date. `-is:lossless` is lossy (a known lossy codec), as the editor's "Lossless: no" is.
 
 **What is not understood** is searched as text, never refused: an unknown field (`re:stacks`),
-a value that does not fit (`rating:9`, `length:abc`), `has:lyrics` (lyrics are read from the files
+a value that does not fit (`year:85`, `length:abc`), `has:lyrics` (lyrics are read from the files
 only when shown, never kept, so search cannot tell), `composer:` (the library does not keep
-composers). A line under the search box says what ("Searched as text: “re:” is not a field"). A
+composers), `rating:`, `is:rated` and `is:unrated` (ratings are no longer kept). A line under the search box says what ("Searched as text: “re:” is not a field"). A
 colon with no field before it (`4:33`, "Mission: Impossible") is just text, and nothing is said.
 
 **Results** keep their sections where they make sense: tracks are what the rules hold (24, then
 "See all"), in the order of the first number or date asked about (most played first for
-`plays:`, newest first for `added:` and `year:`, highest rated for `rating:`), otherwise by artist and
+`plays:`, newest first for `added:` and `year:`), otherwise by artist and
 album. Albums are listed only when every term can apply to an album (words, `album`,
 `albumartist`, `artist`, `genre`, `label`, `year`, `added`, `is:favalbum`, `is:local`, `is:remote`): the
 albums with a track that matches, words then looking in the album's title, album artist and label,
 newest first. Artists only when every term is a word, `artist:` or `albumartist:` (no `OR`):
-the artists whose names match. A rating, a play count or a length lists tracks only.
+the artists whose names match. A play count or a length lists tracks only.
 
 **Save as smart playlist** (a button above the results while the query has operators) opens the
 smart playlist editor with the query's rules, in the same order, and the query as the name, not
@@ -111,7 +111,7 @@ a query costs microseconds; a `playlist:` term asks the playlists table). Measur
 | `artist:beyonce` | rules | 1.0 ms |
 | `year:1990..1999` | rules | 1.2 ms |
 | `beyonce is:local` | rules | 3.9 ms |
-| `rating:>=4`, `added:<30d` | rules | 0.2 ms |
+| `added:<30d` | rules | 0.2 ms |
 
 `MP_BENCH=smart` times both paths on the messy library too (`bench-smart.txt`).
 
@@ -176,13 +176,12 @@ Up next) can have several rows chosen, as in a file manager (`selection.rs`, `se
   how many ("12 tracks"): Play (these tracks, as the queue; in the queue: from the first), Play next,
   Add to queue, Add to playlist (an existing one, or "New playlist…" with them), Remove from
   playlist (a playlist's page), Remove from queue (the queue), Add to / Remove from favourites
-  (Remove when every one is a favourite), Rate… (stars for all; checked when they all share one),
-  and View metadata shown but not for several (it shows one track). A right click on a row that
+  (Remove when every one is a favourite), and View metadata shown but not for several (it shows one track). A right click on a row that
   is not chosen chooses it alone and opens its own menu, as before.
 - Each acts once on all of them, in list order, in one database transaction where it writes, and
-  the pill says it once: "Added 12 tracks to “Mix”", "Rated 12 tracks ★★★★☆", "Removed 3 tracks
+  the pill says it once: "Added 12 tracks to “Mix”", "Removed 3 tracks
   from the queue". Files from outside the library (the queue can hold them) cannot be in a
-  playlist or carry a favourite or a rating: they are left out and counted ("Added 10 tracks to
+  playlist or carry a favourite: they are left out and counted ("Added 10 tracks to
   “Mix”, 2 skipped: not in the library"). Tracks that play from the server (the cloud) are chosen
   and acted on like any other: none of these needs a file here.
 - Dragging a chosen row drags them all, in list order: onto a playlist in the sidebar, onto its
@@ -208,7 +207,7 @@ A smart playlist is a playlist defined by rules (`library::smart`; the app's sid
 and `playlists/smartedit.rs`, `ui/smart.slint`). It always holds the tracks that match now.
 
 **Rules.** Conditions joined by "all of" or "any of", each a field, an operator and a value. A
-condition can be a group with the other join ("rated 4+ and *any of* favourite, played 10+
+condition can be a group with the other join ("lossless and *any of* favourite, played 10+
 times"); the editor makes groups one level deep (the format and the evaluation take any depth,
 so a later editor can go deeper without a format change). Fields and operators:
 
@@ -216,7 +215,7 @@ so a later editor can go deeper without a format change). Fields and operators:
 | --- | --- | --- |
 | Text | title, album, file path (either slash) | is, is not, contains, does not contain, starts with |
 | Picked or typed | artist (every credited artist, featured too), album artist, genre, label, format | the same; "is" / "is not" pick from what the library holds (type-to-filter), the others take typed text |
-| Number | year (the album's date), rating (0 = not rated), play count, plays in the last N days / weeks / months / years, length (whole seconds, typed `3:30`), bitrate (kbps), sample rate (typed in kHz), bit depth, disc number (none is disc 1), track number | is, is not, is at least, is at most, is between (inclusive) |
+| Number | year (the album's date), play count, plays in the last N days / weeks / months / years, length (whole seconds, typed `3:30`), bitrate (kbps), sample rate (typed in kHz), bit depth, disc number (none is disc 1), track number | is, is not, is at least, is at most, is between (inclusive) |
 | Date | date added (the album's), last played | is in the last N days / weeks / months / years, is not in the last…, is before, is after, is between; dates typed `2024-03-15`, `2024-03` or `2024` (a month or a year stands for all of it), in local time |
 | Yes / no | favourite, favourite album, played (at least once / never), lossless (yes / no: lossy), from the server (a track only the Navidrome server has; no: a file here) | |
 | Playlist | another playlist, ordinary or smart | is in, is not in |
@@ -233,7 +232,7 @@ each instant, not today's offset).
 
 **Order and limit.** By artist and album (the Albums page's order, an album's tracks in their
 order), title, artist, album, year, date added, last played, play count, plays in a recent
-period, rating, length, or random; each either way round (missing values last). An optional
+period, length, or random; each either way round (missing values last). An optional
 limit by tracks, minutes or hours, chosen by an order of its own ("25 tracks chosen by most
 played", "2 hours chosen at random"; whole tracks, never past the total), then shown in the
 list's order. Random is a stable shuffle by a seed kept with the playlist: the same order every
@@ -241,7 +240,7 @@ time, until **Reshuffle** (page button) picks a new seed. Not per day: a list th
 midnight under a listener is a surprise, and a stored seed is the same after a restart.
 
 **Live.** The library's generation moves on whenever what rules look at changes: a scan that
-changed the library, a rating, a favourite (track or album), a play counted, a playlist's tracks
+changed the library, a favourite (track or album), a play counted, a playlist's tracks
 or name. Then what is on screen is worked out again: the open smart playlist, the Playlists
 page's counts, the editor's preview; a home shelf when the home page is next shown. The page
 keeps its rows (cursor, scroll) when nothing in it changed. Playing from a smart playlist copies
@@ -267,7 +266,6 @@ median of 14 after a first run):
 | Lossless only | 7,240 | 9.1 ms | 2.3 ms |
 | Most played this year (50, by plays in 12 months) | 50 | 9.2 ms | 10.7 ms |
 | Recently added and unplayed | 1,971 | 4.1 ms | 2.0 ms |
-| Top rated lossless, jazz or soul (names "Top rated") | 229 | 9.1 ms | 8.7 ms |
 | Two hours at random | 26 | 12.7 ms | 13.3 ms |
 | Title contains "love" | 1,240 | 5.6 ms | 4.0 ms |
 | Genre is not jazz, by year | 17,640 | 27.6 ms | 5.7 ms |
@@ -282,11 +280,11 @@ clock, limits, orders, the shuffle, cycles, the JSON form, unknown rules and hos
 (`smart/reference.rs`), members and order.
 
 **Where they show.** Beside ordinary playlists: the sidebar (a filter glyph; no drop target), the
-Playlists page (their rules in words, "Genre is Jazz · rated 4+ · 50 tracks, most played", and
+Playlists page (their rules in words, "Genre is Jazz · lossless · 50 tracks, most played", and
 how many tracks, counted off the UI thread), home shelves (Settings > Home > Edit shelves, "By
 playlist"), and their own page: the rules in words, the count, Play, Shuffle, **Edit rules**,
 Reshuffle (random only), "⋯" (Rename, Duplicate…, Save as ordinary playlist…, Export) and Delete.
-The list is a track list like any other (play, queue, favourite, rate, drag rows out to the queue
+The list is a track list like any other (play, queue, favourite, drag rows out to the queue
 or a playlist), but its contents and order are the rules': no drag reorder, no × on rows, no drops
 onto it; Delete or Alt+↑/↓ on a row says so in the pill ("edit the rules to change what is in
 it"). "Add to playlist" menus and the name prompt's "add to existing" offer ordinary playlists
@@ -298,11 +296,10 @@ uses it"; `query::smart_playlists_using`), as their rule about it will then matc
 shelf made from a playlist is titled with the playlist's name (as it is now) unless given its own.
 
 **The editor** (a page; Back and Forward keep its draft). A new one starts on its name, then the
-rules; starting points ("Recently added and unplayed", "Favourites not heard in 6 months", "Top
-rated", "Most played this year", "Lossless only", "Two hours at random") fill the draft, to be
+rules; starting points ("Recently added and unplayed", "Favourites not heard in 6 months", "Most
+played this year", "Lossless only", "Two hours at random") fill the draft, to be
 changed. Each line is controls that read as a sentence: a choice opens its list under it (Enter,
-Down, F4 or a click; typing filters long lists; Up, Down, Enter, Esc), a typed value is a field,
-stars step with the arrows; up, down and × on each line, "Add rule", "Add group", a group's own
+Down, F4 or a click; typing filters long lists; Up, Down, Enter, Esc), a typed value is a field; up, down and × on each line, "Add rule", "Add group", a group's own
 "Rule". What a line cannot be yet is said under it (once it was touched, or on Save); the line
 above the rules says what they match now ("Matches 142 tracks · 9 h 12 min") or what to fix
 first, and the preview below lists the first 100. Save is refused, with the reason and the
@@ -325,6 +322,14 @@ an unknown limit shows nothing rather than too much, an unknown order shows by a
 the page and the editor say which ("A rule from a newer version of Marquee Player (the field
 “mood”)…"). Saving never lowers the version.
 
+**Ratings, from an earlier version.** The app no longer keeps ratings. A smart playlist saved
+with rules about them loses those rules when the app starts (`query::forget_rating_rules`,
+once, logged per playlist) and keeps the others as they were: a rating condition is taken out
+of its group (a group left with no rules goes too), an order or a limit's choice by rating
+becomes the default order. A list that was only "rated 4+" then holds every track, as a
+playlist with no rules does; edit it, or delete it. Read from a file in any other way
+(`Smart::from_json`), the same rules are dropped, never shown as unknown.
+
 ## Keys
 
 Settings > Keys lists every remappable action with its key. Click a key (or Tab to it and
@@ -338,7 +343,8 @@ the reason. Every change is saved at once: `settings.json` keeps only the action
 differ from the defaults (`"shortcuts": { "mute": ["K"], "repeat": [""] }`, `""` for none), so
 a future change of a default still reaches anyone who did not remap that action, and a key
 you chose always wins over a default (the action that had it by default goes without). An
-entry that cannot be read is ignored with a warning in the log, never the whole file.
+entry that cannot be read is ignored with a warning in the log, never the whole file;
+the keys an earlier version saved for rating (`rate_0` … `rate_5`) are dropped without one.
 Shift and a letter is a key of its own (`Shift+V` is not `V`); pressed where no action has it,
 it acts as the letter, as before it could be given (a typed character such as `/` or `?`
 carries its Shift with it, whatever the layout).
@@ -357,7 +363,6 @@ Remappable, with their default keys:
 | `S` | Shuffle on / off |
 | `R` | Repeat: off, all, one |
 | `L` | Favourite the playing track, or unfavourite it |
-| `1` … `5`, `0` | Rate the playing track (each its own action; `0` clears) |
 | `N` | Now playing (again: back) |
 | `Y` | Lyrics on now playing (again: Up next) |
 | `V` | Visualizer on / off |
@@ -491,7 +496,7 @@ over a real icon was not tried by the harness.
 
 Audio files or folders passed on the command line play at once: tracks in the library as
 library tracks, others as plain files whose tags are read on the fly, never added to the
-library (nothing is recorded for them: plays, favourites, ratings). A second launch with
+library (nothing is recorded for them: plays, favourites). A second launch with
 files hands them to the running instance (`WM_COPYDATA`) and exits. Files and folders
 dropped from Explorer on the window play now; dropped on the queue (the queue sidebar, or Up
 next on now playing) they are added to its end. The installed edition is in "Open with" for

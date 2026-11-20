@@ -15,9 +15,9 @@ on your Navidrome server as one library, for Windows, Linux and macOS.
 ## Why you might like it
 
 - **Your library, as it is.** Point it at your folders and play within seconds while the rest is
-  scanned. Moved and renamed files keep their plays, ratings and playlist places.
+  scanned. Moved and renamed files keep their plays, favourites and playlist places.
 - **Navidrome built in.** Any Subsonic / OpenSubsonic server sits beside your local files, with
-  streaming, caching and favourites, ratings and plays synced back.
+  streaming, caching and favourites and plays synced back.
 - **Sound left alone.** Gapless playback, ReplayGain, crossfade that keeps albums gapless, and
   bit-perfect output (WASAPI exclusive on Windows, native rates on PipeWire).
 - **A real equalizer.** Up to 32 bands, a setting per device, and import from Equalizer APO,

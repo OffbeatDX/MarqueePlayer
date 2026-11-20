@@ -190,7 +190,7 @@ side in `platform/macos/integration.rs`.
   PC), each library folder that was on the old drive, is gone there and exists at the same
   place on the new drive, follows it: `library::reroot` rewrites, in one transaction, every
   track's path, every album's folder, the group folders and the untagged albums' keys, so ids,
-  plays, ratings, playlists and the queue stay as they are and nothing is re-read or re-made.
+  plays, favourites, playlists and the queue stay as they are and nothing is re-read or re-made.
   Folders on other drives (a music disk that stays D:) are left alone. Not followed: the tag
   editor's undo journal (an undo across a letter change says the file is not there).
 - **Single instance**: keyed by the data folder as before, so a portable copy and an installed

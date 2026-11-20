@@ -3,12 +3,13 @@
 Settings > Library > Server adds the music on a Navidrome server (or another Subsonic or
 OpenSubsonic server) to the library, beside the music folders: folders only (as before), the
 server only, or both as one library, each album and track listed once. It is the app's own
-library all the same: favourites, ratings, plays and playlists are the app's, as they are for
-the folders' music. The server's music files are never changed. What the app writes back is
-your favourites and ratings and your plays, each behind its own switch (see "What goes back to
-the server"); those calls (`star`, `unstar`, `setRating`, `scrobble`) change only the server's own
-database. Nothing else is ever sent: no playlist, no delete, no tag, no scan. The sync, the
-covers and streaming use a read-only client (`subsonic::Client::new(.., true)`).
+library all the same: favourites, plays and playlists are the app's, as they are for the
+folders' music. The server's music files are never changed. What the app writes back is your
+favourites and your plays, each behind its own switch (see "What goes back to the server");
+those calls (`star`, `unstar`, `scrobble`) change only the server's own database. Ratings are
+neither read from the server nor sent to it. Nothing else is ever sent: no playlist, no delete,
+no tag, no scan. The sync, the covers and streaming use a read-only client
+(`subsonic::Client::new(.., true)`).
 
 **Signing in.** The address the server opens at in a browser (`http://` is allowed, with a note
 that the connection is not encrypted; fine on a home network), the user and the password, then
@@ -32,7 +33,7 @@ sign-in (LDAP) are each said in their own words under the fields.
 - a track only the server has is a row of its own, shown, searched, sorted and grouped as any
   other (its album dated by when the server first had it, for Recently added);
 - when a file is deleted and the server has it, the track stays, as the server's (its plays,
-  favourite, rating and playlist places with it); a file that appears for a server track becomes
+  favourite and playlist places with it); a file that appears for a server track becomes
   one row with it (after every scan: `remote::reconcile`).
 
 **Syncing** (`server/sync.rs`): at start (a few seconds after the window is up), after signing in,
@@ -87,22 +88,19 @@ first one's music the same way.
 
 **What goes back to the server** (`app/src/server/write.rs`, `library::marks`). Three switches,
 below the sign-in, all on by default:
-- **Sync favourites and ratings with the server**: both ways, for every track the server has
-  (its own tracks, and files matched to its songs). A heart or stars given here go to the server
-  at once, off the UI thread; given there, they come here at the next sync. A sync that lists
-  nothing (the server has not scanned) still reads the server's stars (`getStarred2`, one
-  request); a rating changed there comes with the next listing (after a scan there, or Sync
-  now). Per song, the favourite and rating last agreed with the server are kept
-  (`remote_marks`, schema 13), so each sync tells which side changed: only the server's, it is
-  taken; only here, it is sent; both (to different values), a rating made here wins, and for a
-  favourite the later change wins when both times are known (the server's star time, the app's
-  own change time), else the one made here. The first sync after this came (nothing agreed yet)
-  keeps every favourite of either side (starred on one, starred on both) and a rating made here,
-  else takes the server's. The scale is the same on both sides, 1 to 5 whole stars and none
-  (`setRating` 0), so nothing is rounded: a value sent and read back is the value sent, and a
-  value no side changed is never written. Offline, a change waits: a value here that differs
+- **Sync favourites with the server**: both ways, for every track the server has (its own
+  tracks, and files matched to its songs). A heart given here goes to the server at once, off
+  the UI thread; given there, it comes here at the next sync. A sync that lists nothing (the
+  server has not scanned) still reads the server's stars (`getStarred2`, one request). Per
+  song, the favourite last agreed with the server is kept (`remote_marks`, schema 13), so each
+  sync tells which side changed: only the server's, it is taken; only here, it is sent; both
+  (to different values), the later change wins when both times are known (the server's star
+  time, the app's own change time), else the one made here. The first sync after this came
+  (nothing agreed yet) keeps every favourite of either side (starred on one, starred on both).
+  A value no side changed is never written. Offline, a change waits: a value here that differs
   from the agreed one is what is still to send, so the next sync sends it, also after a restart.
-  Album favourites stay the app's own.
+  Album favourites stay the app's own. A rating changed in an earlier version and not yet sent
+  is dropped, never sent (its columns in `remote_marks` are kept, unused).
 - **Report plays to the server**: each play counted here of a track the server has is reported
   (`scrobble`, with the time it was counted), and "now playing" when one starts. The play is
   queued in the library with the play itself (`remote_plays`, one transaction), sent oldest first,

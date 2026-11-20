@@ -148,20 +148,20 @@ says why. As with any tool that writes to your music: keep a backup of your musi
 
 A smart playlist fills itself: you say what belongs in it, and it always holds the tracks that
 match now. **Playlists > New smart playlist…** opens the editor, where each rule reads as a
-sentence: "Genre is Jazz", "Rating is at least ★★★★", "Last played is not in the last 6 months",
+sentence: "Genre is Jazz", "Year is at least 1990", "Last played is not in the last 6 months",
 "Plays in the last 30 days is at least 3". Pick a field, a condition and a value (artists,
 genres, labels and formats are chosen from what your library holds; type a few letters to find
 one). Tracks can match **all** the rules or **any** of them, and **Add group** mixes the two
-("rated 4+, and a favourite or played often"). Below the rules: the order, and an optional limit
+("lossless, and a favourite or played often"). Below the rules: the order, and an optional limit
 ("25 tracks", "2 hours", chosen by most played, most recently added or at random). The count and
 a preview update as you change the rules. To start quickly, pick one of the starting points
-("Recently added and unplayed", "Top rated", "Lossless only"...) and change it.
+("Recently added and unplayed", "Most played this year", "Lossless only"...) and change it.
 
 Smart playlists sit beside your other playlists (marked with a filter icon), in the sidebar, on
 the Playlists page with their rules in words, and as home shelves. Their page has **Edit rules**,
 **Reshuffle** for a random one, and under **⋯** Rename, Duplicate, **Save as ordinary playlist**
 (a fixed copy of what it holds now) and Export. A smart playlist keeps up with your library: a
-new scan, a rating, a favourite or a play changes what is on its page. The queue you started
+new scan, a favourite or a play changes what is on its page. The queue you started
 from it does not change under you. You cannot drag tracks into one or remove tracks from it:
 change its rules instead.
 
@@ -291,7 +291,7 @@ Nothing else is sent anywhere.
 
 | What | Installed (Windows) | Portable (Windows) |
 | --- | --- | --- |
-| Settings, theme, the library database (plays, favourites, ratings, playlists), Last.fm connection, the log (and the previous run's, `marquee-player.previous.log`), the undo history of tag edits (`edits`) | `%APPDATA%\MarqueePlayer` | `Data` beside `MarqueePlayer.exe` |
+| Settings, theme, the library database (plays, favourites, playlists), Last.fm connection, the log (and the previous run's, `marquee-player.previous.log`), the undo history of tag edits (`edits`) | `%APPDATA%\MarqueePlayer` | `Data` beside `MarqueePlayer.exe` |
 | Caches: cover art, lyrics found online (safe to delete; made again as needed) | `%LOCALAPPDATA%\MarqueePlayer` | `Data\cache` |
 
 On Linux the same things are in `~/.config/marquee-player` (settings, theme),
@@ -333,7 +333,7 @@ since the update are not in that copy.
 **Installed:** Windows' **Settings > Apps > Installed apps**, Marquee Player, **Uninstall**. It
 removes the program, its shortcuts and everything it registered with Windows, and then asks
 whether to delete your library and settings too: choose **No** (the default) to keep your plays,
-playlists and ratings for a later installation. Your music files are never touched.
+playlists and favourites for a later installation. Your music files are never touched.
 **Portable:** quit it, turn off Start with Windows if you had turned it on, and delete the
 folder (its `Data` is your library). **Linux:** delete the AppImage (and its `.home` folder, or
 the folders listed above). **macOS:** turn off Open at login if you had turned it on, then move
@@ -368,7 +368,7 @@ Marquee Player just cannot play that format (the message says so).
 - "cannot write to the folder where it keeps your library": the data folder (see "Where your data
   is kept") is read-only or the disk is full.
 - "The library database is damaged": choose **Yes** to start with a new library (your music files
-  are not touched, and the damaged file is kept beside the new one, renamed); your plays, ratings
+  are not touched, and the damaged file is kept beside the new one, renamed); your plays, favourites
   and playlists then start afresh. If a copy from before the last update is mentioned
   (`library.v<number>.bak.db`), "Updating, and going back" says how to go back to it.
 - "last opened by a newer version": you started an older version after a newer one; see

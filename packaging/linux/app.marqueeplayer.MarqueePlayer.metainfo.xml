@@ -19,7 +19,7 @@
     <ul>
       <li>Gapless playback, ReplayGain, an equalizer that imports AutoEq and Equalizer APO files, crossfades</li>
       <li>Opus, FLAC, MP3, Ogg Vorbis, AAC and ALAC, WAV and AIFF</li>
-      <li>Playlists and smart playlists, ratings, favourites, home shelves</li>
+      <li>Playlists and smart playlists, favourites, home shelves</li>
       <li>Lyrics from local files or LRCLIB, a visualizer, Last.fm scrobbling, Discord Rich Presence</li>
       <li>Media keys and the desktop's media controls (MPRIS), a tray icon</li>
     </ul>

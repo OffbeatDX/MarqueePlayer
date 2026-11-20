@@ -55,7 +55,7 @@ The runner (`crates/bench-runner`, never shipped):
   the album page's list; the queue's Delete, block move and Esc. Snapshots `select-*.png`.
 - **`server`** (`bench/server.rs`, the `formats` set): a Navidrome server against a stand-in the app
   starts on 127.0.0.1 (`subsonic::mock`): sign-in, the sync and its covers, two albums matched by
-  their files, the server's own tracks, favourites, ratings and plays written back (and none
+  their files, the server's own tracks, favourites and plays written back (never a rating, and none
   with the switches off), Stop, the server gone, the shrink guard, a refused sign-in, signing
   out, the cloud on the server's music, the top right of Home for every sync and rescan, an
   empty library's Home (see [Measurement and test hooks](#measurement-and-test-hooks)).
@@ -218,18 +218,18 @@ the odd files and the 5.1 AAC note; `home` snapshots the home page at 1920 x 108
 minimum size.
 
 `MP_BENCH=smart` runs on the messy library too (made with any number of albums, e.g. `--
-%TEMP%\mp-smart-bench\music 120`), with ratings, favourites and plays seeded in its own
+%TEMP%\mp-smart-bench\music 120`), with favourites and plays seeded in its own
 database (`bench/smart.rs`): it builds a smart playlist in the editor by the keyboard (the name,
-Tab to the first rule, its field from the list by typing and Enter, its stars with Up, "Add
+Tab to the first rule, its field from the list by typing and Enter, its value, "Add
 rule" by Enter) and by the pointer (an entry clicked in a list), a genre picked by typing, a
 value typed wrong and explained, a save refused and fixed, a group, the limit; saves it and
 checks the page against the rules; checks live updating (a "never played" list loses a track
-once its play counts while the queue keeps it, a "rated 4+" list gains the playing track rated 5
-with the key `5`, a favourites list follows `L`), Reshuffle, a rule from a newer build kept and
+once its play counts while the queue keeps it, a "most played this year" list holds what its
+rules do, a favourites list follows `L`), Reshuffle, a rule from a newer build kept and
 shown, a playlist that cannot name itself, Delete's hint, "Add to playlist" offering ordinary
 playlists only, a home shelf, Save as ordinary playlist, Export, the Playlists page and the
-sidebar; then search operators (`rating:>=4 -is:remote` typed into the search field: tracks only,
-all rated 4+; the hint for `re:`; the syntax help; `year:` listing albums too; a plain query
+sidebar; then search operators (`plays:>=1 -is:remote` typed into the search field: tracks only,
+all played; the hint for `re:`; the syntax help; `year:` listing albums too; a plain query
 still plain; both paths timed; Save as smart playlist opening the editor with the rules, and the
 saved playlist holding what the search found); `s-*.png` at 1920 x 1080 and 960 x 620, and a count of failed checks at the end of
 `bench-smart.txt`.
@@ -285,8 +285,8 @@ stand-in slowed), the two albums one each with the files' titles, the covers in 
 and Copy diagnostics naming neither the address nor the user, no Show in Explorer and View
 metadata "From the server" for the server's tracks, an M3U export leaving them out, About's
 counts, Sync now listing again, a start's sync asking two questions (its scan, its stars), what
-goes back to the server (the three switches, a heart and stars sent at once, a play reported
-with its time, the server's heart and stars here after Sync now, both switches off: not one
+goes back to the server (the three switches, a heart sent at once and never a rating, a play
+reported with its time, the server's heart here after Sync now, both switches off: not one
 write, on again: what changed meanwhile sent, the Last.fm switch), Stop, the server gone (a
 quiet line), the shrink guard held then confirmed, a refused sign-in (signed out, marked, the
 music kept), signing in again and out. On the way: the cloud on a server album's page and its

@@ -24,4 +24,4 @@ Features:
 - [features/navigation.md](features/navigation.md): the sidebars and queue, browsing, search operators, playlists, selecting several tracks, smart playlists, the keys, middle-click scrolling, the tray icon and files opened from outside.
 - [features/playlists.md](features/playlists.md): M3U import and export.
 - [features/settings.md](features/settings.md): the Settings page, the interface size, the accent colour, the glass panels and Settings > About.
-- [features/metadata.md](features/metadata.md): technical details, View metadata, tag editing and ratings.
+- [features/metadata.md](features/metadata.md): technical details, View metadata and tag editing.

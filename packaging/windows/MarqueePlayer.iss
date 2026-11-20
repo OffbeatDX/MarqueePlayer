@@ -278,7 +278,7 @@ begin
     Local := ExpandConstant('{localappdata}\MarqueePlayer');
     if DirExists(Roaming) or DirExists(Local) then
       if MsgBox('Also delete your Marquee Player library and settings?' + #13#10#13#10 +
-           'Your play history, playlists, favourites, ratings and settings would be deleted for good (' + Roaming + ' and ' + Local + '). ' +
+           'Your play history, playlists, favourites and settings would be deleted for good (' + Roaming + ' and ' + Local + '). ' +
            'Your music files are not touched either way.' + #13#10#13#10 +
            'Choose No to keep them for a later installation.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
       begin

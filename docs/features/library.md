@@ -29,7 +29,7 @@ next scan and says so ("Stopped", with Resume, `Report::covers_cut`), not that t
 - when files vanished, a new file that could be one of them (the same title, numbers and
   duration) and the folders vanished tracks were in are held back and written at the end, with
   the removals and the guard, in one transaction, as every scan used to be: a moved library
-  keeps every play, favourite, rating and playlist entry. A first scan has nothing to hold
+  keeps every play, favourite and playlist entry. A first scan has nothing to hold
   back; a folder watcher's scan with something gone under its folders holds back everything
   (it may hand over to a full scan). Held files are read again if the scan is stopped before
   its end;
@@ -217,10 +217,10 @@ least what it showed. Nothing is re-read then. The next full scan reads every fi
 in the background ("Updating the library" in the sidebar), a batch of whole folders at a time,
 each in its own transaction (`scan::fill_tags`), and regroups albums by the rules above: albums
 that merge (a compilation, an album split by a featured credit) keep the oldest "added" date
-and every favourite; plays, ratings, playlist entries and the queue belong to tracks, whose
+and every favourite; plays, playlist entries and the queue belong to tracks, whose
 rows (ids) never change; art is cached again only for albums that changed which tracks they
 hold. Measured on 2,754 fixture tracks: 0.19 s for the re-read, 358 albums becoming 271, no art
-re-made, every play, rating, playlist entry and favourite kept; the scan test
+re-made, every play, playlist entry and favourite kept; the scan test
 `regrouping_an_old_library_keeps_every_piece_of_user_data` checks the same on a small library.
 Tag reading version 9 (the folder rule above, "feat." with no space) reads every file's tags
 again the same way, once: `a_split_soundtrack_is_regrouped_keeping_user_data`.

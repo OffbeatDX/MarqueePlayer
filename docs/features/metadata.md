@@ -1,6 +1,6 @@
 # Metadata and tag editing
 
-Technical details, View metadata, the tag editor and ratings.
+Technical details, View metadata and the tag editor.
 
 ## Technical details
 
@@ -245,7 +245,7 @@ without that sharing makes its save fail ("another program is using the file"), 
 
 **The library** takes the new tags the way it takes any retag: the folders of the files written
 are scanned at once (`scanning::rescan_changed`, what the folder watcher asks for too; its own
-ask a few seconds later finds nothing to read), so ids, plays, favourites, ratings, playlist
+ask a few seconds later finds nothing to read), so ids, plays, favourites, playlist
 entries and dates stay with the tracks, and an album whose identity changed (a new title, album
 artist or MusicBrainz release) is regrouped by the scanner's rules, its favourite and "added"
 date going with it (`scan.rs` test `the_editors_own_writes_come_in_like_any_retag`). The panel
@@ -282,11 +282,10 @@ bench may write only fixtures in a folder marked `.mp-edit-fixtures` inside the 
 temporary folder: `library::edit::atomic::set_guard` refuses every other path, and every bench
 build sets it.
 
-## Ratings
+## Ratings, no longer kept
 
-Tracks can be rated 1 to 5 stars: "Rate…" in a track's menu, the star beside the heart in
-the player bar, or `1`…`5` for the playing track (`0` clears; these keys can be remapped). Track lists
-show the stars of rated tracks. Ratings are kept in `track_ratings` (schema 6), apart from
-the scanned rows, and go with a track when it leaves the library. Those of the tracks a Navidrome
-server has are kept in step with it, both ways (see "What goes back to the server", under
-[Navidrome](navidrome.md#navidrome)).
+The app has no star ratings (favourites, the hearts, are as they were). A library from an
+earlier version keeps its ratings where they were stored (`track_ratings`, schema 6, and the
+rating columns of `remote_marks`, schema 13): nothing reads or writes them, and no schema change
+was made for it. A rating tag in a file (ID3's POPM, a `RATING` item) is a tag like any other:
+shown in View metadata as the file has it, never read into the library or written.
