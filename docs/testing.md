@@ -179,7 +179,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_SCAN_TIMING=1` | Print when each part of a scan ended, and how long each batch held the database (stderr) |
 | `MP_BENCH_ANSWER=yes` | A bench run's answer to the "start with a new library?" question for a damaged database (none: no) |
 | `MP_BENCH_REAL_CLIPBOARD=1` | Linux only, with `eq-paste`: also copy and paste through the toolkit's real clipboard (for the private headless session, whose clipboard is nobody's; never set it on a desktop someone uses) |
-| `MP_LOG=debug` | More logging |
+| `MP_LOG=debug` | More logging, and once a minute a `wake-ups a second` line (`wakes.rs`): the process's CPU as a share of one core, and per second the output thread's loop turns, a pull device's callbacks (Core Audio, PipeWire; each wakes the output thread), UI ticks, visualizer frames, tray icon frames, the window's winit events and the redraws asked of winit (not those Slint's macOS display link draws by itself). The window being covered or seen again (macOS, X11) is logged as it happens |
 
 Only one instance runs per data folder: launching the app again brings the running
 one's window back (from the tray too) and exits. An instance on another `MP_DATA_DIR` is a

@@ -498,6 +498,7 @@ impl Output {
     fn run(&mut self) {
         self.dev.thread_started();
         loop {
+            crate::wakes::note(&crate::wakes::OUTPUT_LOOP);
             if self.shared.shutdown.load(Ordering::Relaxed) {
                 self.dev.stop();
                 return;

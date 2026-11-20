@@ -20,6 +20,7 @@ pub mod resample;
 pub mod source;
 pub mod spectrum;
 mod stream;
+pub mod wakes;
 
 pub use engine::{Event, OutputConfig, OutputInfo, PlayState, Player, SeekTiming, Status, StreamInfo, TrackRequest, Transition};
 pub use feed::Feed;

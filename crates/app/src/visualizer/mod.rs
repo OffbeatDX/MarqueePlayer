@@ -800,6 +800,7 @@ fn still_frame(st: &Rc<State>, app: &AppWindow) {
 }
 
 fn frame(st: &Rc<State>) {
+    crate::wakes::note(&crate::wakes::VIZ_FRAMES);
     let Some(app) = st.app.upgrade() else { return };
     let at = stage(st, &app);
     let play = playing(st);

@@ -339,6 +339,10 @@ pub fn install(app: &AppWindow) {
     let weak = app.as_weak();
     app.window().on_winit_window_event(move |w, ev| {
         let Some(app) = weak.upgrade() else { return EventResult::Propagate };
+        crate::wakes::note(&crate::wakes::WINDOW_EVENTS);
+        if matches!(ev, WindowEvent::RedrawRequested) {
+            crate::wakes::note(&crate::wakes::REDRAWS);
+        }
         // Covered or seen again (macOS, X11): what runs only while the window shows follows;
         // Slint sees it too.
         if let WindowEvent::Occluded(o) = ev {

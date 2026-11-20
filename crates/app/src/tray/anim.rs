@@ -238,6 +238,7 @@ fn show(t: &mut TrayAnim, heights: &[f32; BARS], exact: bool) -> bool {
 }
 
 fn frame(st: &Rc<State>) {
+    crate::wakes::note(&crate::wakes::TRAY_FRAMES);
     let on = playing(st);
     ANIM.with(|a| {
         let mut a = a.borrow_mut();

@@ -239,6 +239,7 @@ impl Ring {
     /// `want`), with `delay` frames between the callback and the first of them heard.
     pub fn after_cycle(&self, real: usize, want: usize, delay: u64) {
         self.after_cycle_at(real, want, delay, self.now_ns());
+        crate::wakes::note(&crate::wakes::CALLBACKS);
         self.unpark();
     }
 

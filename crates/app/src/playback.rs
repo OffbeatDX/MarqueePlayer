@@ -578,6 +578,7 @@ fn say_if_ended_early(st: &Rc<State>) {
 /// the ticker's timer (ticker.rs: 100 ms while playing, less often or not at all when
 /// nothing moves).
 pub fn tick(st: &Rc<State>) {
+    crate::wakes::note(&crate::wakes::TICKS);
     while let Ok(ev) = st.events.try_recv() {
         match ev {
             Event::TrackStarted { token } => {

@@ -48,6 +48,7 @@ mod ticker;
 mod tray;
 mod views;
 mod visualizer;
+mod wakes;
 mod zoom;
 
 use std::cell::{Cell, RefCell};
@@ -125,6 +126,7 @@ fn run() {
             crash::install(paths.log());
             log::info!("{} {} ({}) on {}", about::NAME, about::VERSION, edition::get().short(), about::os_version());
             log::info!("config {}, data {}, cache {}, log {}", paths.config.display(), paths.data.display(), paths.cache.display(), paths.state.display());
+            wakes::start();
         }
         platform::instance::Instance::Second { signalled } => {
             log::info!(
