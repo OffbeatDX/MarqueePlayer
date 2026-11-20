@@ -25,6 +25,9 @@ data class Pin(
     val pinnedAtMs: Long = 0,
     val syncedAtMs: Long = 0,
     val changed: String? = null,
+    /** A playlist answer that would have dropped most of its songs, not followed yet ([PlaylistShrink]). */
+    val shrinkSeen: String? = null,
+    val shrinkSeenAtMs: Long = 0,
 ) {
     val key: String get() = keyOf(kind, id)
     val songIds: List<String> get() = songs.map { it.id }
@@ -38,7 +41,13 @@ data class Pin(
  * What a pin change means for the files: [fetch] are songs now wanted that were not before, [release]
  * songs nothing pins any more (their files can go).
  */
-data class PinChange(val pins: PinSet, val fetch: Set<String>, val release: Set<String>)
+data class PinChange(
+    val pins: PinSet,
+    val fetch: Set<String>,
+    val release: Set<String>,
+    /** A playlist's suspect shrink was held back ([PlaylistShrink]): its songs did not change. */
+    val held: Boolean = false,
+)
 
 /**
  * Every pin. A song shared by an album and a playlist (or pinned twice) is stored once: it is
@@ -69,7 +78,15 @@ data class PinSet(val pins: List<Pin> = emptyList()) {
     /** A pinned playlist's songs as the server now lists them; nothing changes when it is not pinned. */
     fun followPlaylist(id: String, songs: List<Song>, changed: String?, nowMs: Long): PinChange {
         val old = get(Pin.keyOf(PinKind.Playlist, id)) ?: return PinChange(this, emptySet(), emptySet())
-        return with(old.copy(songs = songs, changed = changed, syncedAtMs = nowMs))
+        val ids = songs.map { it.id }
+        if (PlaylistShrink.isSuspect(old.songIds.distinct().size, ids.distinct().size)) {
+            val seen = PlaylistShrink.fingerprint(ids)
+            if (!PlaylistShrink.isConfirmed(old.shrinkSeen, old.shrinkSeenAtMs, seen, nowMs)) {
+                val since = if (old.shrinkSeen == seen) old.shrinkSeenAtMs else nowMs
+                return with(old.copy(shrinkSeen = seen, shrinkSeenAtMs = since)).copy(held = true)
+            }
+        }
+        return with(old.copy(songs = songs, changed = changed, syncedAtMs = nowMs, shrinkSeen = null, shrinkSeenAtMs = 0))
     }
 
     private fun changeTo(next: PinSet): PinChange {
@@ -143,3 +160,21 @@ data class Reconcile(val fetch: List<String>, val delete: Set<String>) {
 
 /** The pins as read at start; [trusted] is false when the file was there but damaged ([PinSet.load]). */
 data class PinsLoad(val pins: PinSet, val trusted: Boolean)
+
+/**
+ * A pinned playlist the server suddenly lists as empty, or with under a quarter of its songs, may be
+ * a server mid-scan or a passing fault rather than the owner's edit: following it at once would delete
+ * the downloads of every song gone. Such an answer is held ([isSuspect]) and followed only when a later
+ * one, at least [CONFIRM_AFTER_MS] on, says the same ([isConfirmed]); a smaller change is followed at once.
+ */
+object PlaylistShrink {
+    const val CONFIRM_AFTER_MS = 10 * 60_000L
+
+    fun isSuspect(before: Int, after: Int): Boolean =
+        before > 0 && (after == 0 || (before >= 8 && after * 4 < before))
+
+    fun fingerprint(ids: List<String>): String = "${ids.size}:${ids.joinToString(",").hashCode()}"
+
+    fun isConfirmed(seen: String?, seenAtMs: Long, now: String, nowMs: Long): Boolean =
+        seen == now && nowMs - seenAtMs >= CONFIRM_AFTER_MS
+}

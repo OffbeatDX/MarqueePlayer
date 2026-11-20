@@ -295,8 +295,13 @@ object Downloads {
     suspend fun onPlaylistFetched(p: Playlist) {
         val pin = _pins.value[Pin.keyOf(PinKind.Playlist, p.id)] ?: return
         val diff = ListDiff.of(pin.songIds, p.entry.map { it.id })
-        if (diff.isEmpty && pin.name == p.name) return
+        // (A held shrink that the server took back is cleared by following the answer.)
+        if (diff.isEmpty && pin.name == p.name && pin.shrinkSeen == null) return
         val change = mutate { it.followPlaylist(p.id, p.entry.map { s -> s.forQueue() }, p.changed, System.currentTimeMillis()) }
+        if (change.held) {
+            AppLog.w(TAG, "playlist ${p.id}: the server lists ${p.entry.size} of its ${pin.songs.size} songs; downloads kept until a later answer says the same")
+            return
+        }
         _pins.value[pin.key]?.let { renamed -> if (renamed.name != p.name) mutate { s -> s.with(renamed.copy(name = p.name, coverArt = p.coverArt)) } }
         deleteSongs(change.release)
         CoverStore.sync(_pins.value, fetch = true)

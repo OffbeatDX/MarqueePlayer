@@ -223,6 +223,9 @@ The README describes the result.
   have opened both) are not deleted under the player when their download is removed or a playlist
   drops them (`HeldDeletes`); they go once they leave the play window or the service stops, unless
   pinned again meanwhile.
+- **A pinned playlist that empties**: an answer listing none, or under a quarter, of a pinned
+  playlist's songs (8 or more) is held, not followed: its downloads stay until an answer at least
+  10 minutes later says the same (`PlaylistShrink`); one that comes back as before clears it.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL
