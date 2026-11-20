@@ -822,6 +822,7 @@ pub fn run() {
             let f = server::facts(&st.db);
             check(r, "signed out: the server's music gone, the folders' as it was", !s.get_signed_in() && f.counts.server == 0 && f.counts.both == 0 && !f.connected && f.counts.local == local_before.get(), format!("{f:?}"));
             check(r, "the sign-in forgotten", !crate::server::navidrome::path(&st.paths.data).exists() && s.get_leftover().is_empty(), String::new());
+            check(r, "and its fields empty: no address, user or password", s.get_address().is_empty() && s.get_user().is_empty() && s.get_password().is_empty(), format!("{:?} {:?}", s.get_address(), s.get_user()));
             check(r, "and what was agreed with it, and no play left for it", one(st, "SELECT COUNT(*) FROM remote_marks") == 0 && one(st, "SELECT COUNT(*) FROM remote_plays") == 0, String::new());
             let pill = app.global::<Nav>().get_flash().to_string();
             check(r, "and said", pill.starts_with("Signed out."), pill);

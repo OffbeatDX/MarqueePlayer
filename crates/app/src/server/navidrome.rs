@@ -143,12 +143,19 @@ pub fn save(path: &Path, c: &Credentials, about: &About) -> bool {
     true
 }
 
-/// Forget the sign-in (signed out).
+/// Forget the sign-in (signed out): the file, and the copies made beside it that may hold the
+/// sealed token too (`navidrome.json.tmp`, a save cut short; `navidrome.json.bad`, a damaged file
+/// kept aside by `load`).
 pub fn remove(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path)
-        && e.kind() != std::io::ErrorKind::NotFound
-    {
-        log::warn!("{FILE} cannot be removed: {e}");
+    let name = path.file_name().unwrap_or_default();
+    for suffix in ["", ".tmp", ".bad"] {
+        let mut n = name.to_owned();
+        n.push(suffix);
+        if let Err(e) = std::fs::remove_file(path.with_file_name(&n))
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!("{} cannot be removed: {e}", n.to_string_lossy());
+        }
     }
 }
 
@@ -183,6 +190,35 @@ mod tests {
         assert!(!p.with_extension("json.tmp").exists());
         remove(&p);
         assert_eq!(load(&p), Loaded::None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Signed out: nothing of the sign-in is left in the folder, not the file, the copy a save
+    /// cut short left, nor a damaged one kept aside; the address, user, salt, token and the
+    /// sealed hex are in no file there.
+    #[test]
+    fn signing_out_leaves_nothing_of_the_sign_in() {
+        let d = dir("forget");
+        let p = path(&d);
+        assert!(save(&p, &creds(), &About::default()));
+        let sealed = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&p).unwrap()).unwrap()["secret"].as_str().unwrap().to_owned();
+        std::fs::write(d.join("navidrome.json.tmp"), format!("{{\"secret\":\"{sealed}\"")).unwrap();
+        std::fs::copy(&p, d.join("navidrome.json.bad")).unwrap();
+        std::fs::write(d.join("other.json"), "{}").unwrap();
+        remove(&p);
+        let left: Vec<(String, String)> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), String::from_utf8_lossy(&std::fs::read(e.path()).unwrap()).into_owned()))
+            .collect();
+        assert_eq!(left.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), ["other.json"], "only what is not the sign-in's");
+        let c = creds();
+        for (name, text) in &left {
+            for needle in [c.url.as_str(), &c.user, &c.salt, &c.token, &sealed] {
+                assert!(!text.contains(needle), "{name} still holds {needle}");
+            }
+        }
+        assert_eq!(load(&p), Loaded::None, "a restart is signed out");
         let _ = std::fs::remove_dir_all(&d);
     }
 

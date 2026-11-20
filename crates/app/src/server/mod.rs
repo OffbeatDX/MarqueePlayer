@@ -584,6 +584,16 @@ pub fn sign_out(st: &Rc<State>) {
     });
     set_client(None);
     navidrome::remove(&navidrome::path(&st.paths.data));
+    // Nothing of the sign-in stays in its fields either: not the address and user name (kept only
+    // when the server lost the sign-in, to sign in again with: `lost_sign_in`).
+    if let Some(app) = st.app.upgrade() {
+        let s = app.global::<crate::Server>();
+        s.set_address("".into());
+        s.set_user("".into());
+        s.set_password("".into());
+        s.set_plain_http(false);
+        s.set_error("".into());
+    }
     // The stream cache goes with the sign-in.
     crate::server::streaming::clear_cache();
     log::info!("server: signed out; removing its music from the library");
