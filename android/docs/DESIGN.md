@@ -219,6 +219,10 @@ The README describes the result.
   uptime, which stops while a paused phone sleeps. When play is pressed again the timer is checked
   against the clock: past its end it is cancelled (Off), never a sudden pause later; otherwise it is
   armed again for the time really left.
+- **A download removed while it plays**: the current song's and the next one's files (the player may
+  have opened both) are not deleted under the player when their download is removed or a playlist
+  drops them (`HeldDeletes`); they go once they leave the play window or the service stops, unless
+  pinned again meanwhile.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

@@ -633,6 +633,8 @@ class PlaybackService : MediaLibraryService() {
         bitmapExecutor.shutdown()
         closeEffectSession()
         player.release()
+        // Nothing is read any more: removals held back for the songs it was on happen now.
+        Downloads.setPlaying(emptySet())
         scope.cancel()
         super.onDestroy()
     }
@@ -763,8 +765,11 @@ class PlaybackService : MediaLibraryService() {
     private fun updatePrefetch(evenPaused: Boolean = false) {
         if (player.mediaItemCount == 0) {
             prefetcher.stop()
+            Downloads.setPlaying(emptySet())
             return
         }
+        // The current and the next song's downloads are not deleted while the player reads them.
+        Downloads.setPlaying(playWindow(1).mapTo(HashSet()) { player.getMediaItemAt(it).mediaId })
         // Only while playing is wanted: a restored, paused queue costs nothing until play (or until
         // a seek waits for the whole track, [evenPaused]).
         if (!player.playWhenReady && !evenPaused) return

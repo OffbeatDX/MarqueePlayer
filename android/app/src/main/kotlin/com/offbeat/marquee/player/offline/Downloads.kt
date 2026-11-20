@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.offbeat.marquee.core.library.SafeFile
+import com.offbeat.marquee.core.offline.HeldDeletes
 import com.offbeat.marquee.core.offline.ListDiff
 import com.offbeat.marquee.core.offline.Pin
 import com.offbeat.marquee.core.offline.PinChange
@@ -275,7 +276,7 @@ object Downloads {
         withContext(Dispatchers.IO) {
             // Anything left over (an interrupted write) goes too.
             val d = MediaStores.downloads(app)
-            MediaStores.songIds(d).forEach { MediaStores.removeSong(d, it) }
+            held.release(MediaStores.songIds(d)).forEach { MediaStores.removeSong(d, it) }
         }
         CoverStore.clear()
         AppLog.i(TAG, "removed every download: ${change.release.size} songs")
@@ -362,11 +363,34 @@ object Downloads {
         change
     }
 
+    /** Songs the player is reading are deleted once they leave the play window ([setPlaying]). */
+    private val held = HeldDeletes()
+
     private suspend fun deleteSongs(ids: Set<String>) {
         if (ids.isEmpty()) return
+        val now = held.release(ids)
+        if (now.size < ids.size) AppLog.i(TAG, "${ids.size - now.size} songs playing now: deleted once they have played")
         withContext(Dispatchers.IO) {
             val d = MediaStores.downloads(app)
-            ids.forEach { MediaStores.removeSong(d, it) }
+            now.forEach { MediaStores.removeSong(d, it) }
+        }
+    }
+
+    /**
+     * The songs the player is on (the current one and the next, which it may already have opened).
+     * Their files are not deleted under it; a removal held back for them happens once they leave.
+     */
+    fun setPlaying(ids: Set<String>) {
+        if (!started) return
+        val free = held.setInUse(ids, ::isWanted)
+        if (free.isEmpty()) return
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                val d = MediaStores.downloads(app)
+                free.forEach { MediaStores.removeSong(d, it) }
+            }
+            AppLog.i(TAG, "${free.size} removed songs deleted now they have played")
+            refresh()
         }
     }
 
@@ -387,7 +411,7 @@ object Downloads {
         if (r.delete.isNotEmpty() && !pinsTrusted) {
             AppLog.w(TAG, "${r.delete.size} stored songs not pinned kept: the pins file was damaged")
         } else if (r.delete.isNotEmpty()) {
-            r.delete.forEach { MediaStores.removeSong(d, it) }
+            held.release(r.delete.toSet()).forEach { MediaStores.removeSong(d, it) }
             AppLog.i(TAG, "deleted ${r.delete.size} songs nothing pins")
         }
         refresh()
