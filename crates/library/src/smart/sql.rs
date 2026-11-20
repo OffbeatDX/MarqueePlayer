@@ -7,6 +7,7 @@
 
 use rusqlite::types::Value as Sql;
 use rusqlite::{Connection, OptionalExtension, params_from_iter};
+use std::collections::HashMap;
 
 use super::{Ctx, Field, Group, Kind, Limiting, MAX_DEPTH, Node, Op, Smart, Sort, SortKey, Value, ago};
 use crate::query::{TRACK_COLS, Track, track_row};
@@ -481,20 +482,56 @@ pub fn references(smart: &Smart) -> Vec<i64> {
 /// names, and theirs), or nest deeper than `MAX_DEPTH`: the name of the playlist it names
 /// that leads there. None when it is fine. `me` None: a new playlist, which nothing can name
 /// yet (only depth is checked).
+///
+/// Depth is counted the way evaluation counts it: the smart playlists entered on the way
+/// down, `me` among them once it is saved; an ordinary playlist adds none. Every path counts,
+/// not just the first one that reaches a playlist: two branches can meet again lower down,
+/// and the longer one decides.
 pub fn would_cycle(conn: &Connection, me: Option<i64>, smart: &Smart) -> Option<String> {
-    fn reaches(conn: &Connection, me: Option<i64>, id: i64, depth: usize, seen: &mut Vec<i64>) -> bool {
-        if Some(id) == me || depth > MAX_DEPTH {
-            return true;
+    /// Below `id`, nothing comes back to `me`: the most smart playlists one path enters,
+    /// `id` included. None when one comes back to `me`, or a path is deeper than `limit`.
+    /// `heights` keeps each playlist's answer for the other paths that meet it; `path` is the
+    /// way down to here, so that a loop among other playlists (which evaluation stops at)
+    /// ends the walk instead of going round.
+    fn height(conn: &Connection, me: Option<i64>, id: i64, limit: usize, heights: &mut HashMap<i64, usize>, path: &mut Vec<i64>) -> Option<usize> {
+        if Some(id) == me {
+            return None;
         }
-        if seen.contains(&id) {
-            return false;
+        if let Some(h) = heights.get(&id) {
+            return Some(*h);
         }
-        seen.push(id);
-        let Ok(Some(Some(rules))) = playlist_rules(conn, id) else { return false };
-        references(&Smart::from_json(&rules)).into_iter().any(|r| reaches(conn, me, r, depth + 1, seen))
+        if path.contains(&id) {
+            return Some(0);
+        }
+        let Ok(Some(Some(rules))) = playlist_rules(conn, id) else {
+            heights.insert(id, 0);
+            return Some(0);
+        };
+        if path.len() >= limit {
+            return None; // entering this one would be one too many
+        }
+        path.push(id);
+        let mut below = 0;
+        for r in references(&Smart::from_json(&rules)) {
+            let Some(h) = height(conn, me, r, limit, heights, path) else {
+                path.pop();
+                return None;
+            };
+            below = below.max(h);
+        }
+        path.pop();
+        let h = below + 1;
+        if path.len() + h > limit {
+            return None;
+        }
+        heights.insert(id, h);
+        Some(h)
     }
+    // Evaluating `me` starts with it on the stack.
+    let limit = MAX_DEPTH - usize::from(me.is_some());
+    let mut heights = HashMap::new();
     for id in references(smart) {
-        if reaches(conn, me, id, 1, &mut Vec::new()) {
+        if height(conn, me, id, limit, &mut heights, &mut Vec::new()).is_none() {
             let name = conn.query_row("SELECT name FROM playlists WHERE id = ?1", [id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| "a playlist".into());
             return Some(name);
         }

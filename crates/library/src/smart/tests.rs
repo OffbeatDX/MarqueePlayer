@@ -551,6 +551,65 @@ fn playlists_name_playlists_and_cycles_are_refused() {
     assert_eq!(evaluate(&conn, &names(105), None, ctx()).unwrap().tracks.len(), 360, "a shorter chain is fine");
 }
 
+/// Smart playlist `id` naming each of `names` ("is in").
+fn smart_naming(conn: &Connection, id: i64, names: &[i64]) {
+    let rules: Vec<String> = names.iter().map(|n| format!(r#"{{"field":"playlist","op":"in","value":{n}}}"#)).collect();
+    let json = format!(r#"{{"rules":[{}]}}"#, rules.join(","));
+    conn.execute("INSERT INTO playlists (id, name, created_at, rules) VALUES (?1, ?2, 0, ?3)", params![id, format!("Nest {id}"), json]).unwrap();
+}
+
+#[test]
+fn nesting_depth_is_the_longest_path_and_matches_evaluation() {
+    let conn = fixture();
+    let names = |id: i64| one(Cond::new(Field::Playlist, Op::In, Value::Id(id)));
+    let too_deep = |s: &Smart, me: Option<i64>| evaluate(&conn, s, me, ctx()).unwrap().problems.iter().any(|p| p.contains("too deeply"));
+
+    // A diamond: 500 names 501 (short way) and then 510 (long way), and both come down to
+    // 520, which has two below it. The short way is walked first.
+    let diamond = |top: i64, long: i64| {
+        smart_naming(&conn, top + 20, &[top + 30]);
+        smart_naming(&conn, top + 30, &[top + 31]);
+        smart_naming(&conn, top + 31, &[]);
+        smart_naming(&conn, top + 1, &[top + 20]);
+        for i in 0..long {
+            let next = if i + 1 == long { top + 20 } else { top + 11 + i };
+            smart_naming(&conn, top + 10 + i, &[next]);
+        }
+        smart_naming(&conn, top, &[top + 1, top + 10]);
+    };
+    // Long way: 500, five, then 520 and its two: nine, one more than evaluation enters.
+    diamond(500, 5);
+    assert!(too_deep(&names(500), None), "evaluation stops on the long way");
+    assert_eq!(would_cycle(&conn, None, &names(500)), Some("Nest 500".into()), "so saving is refused");
+    // One shorter: eight, which is fine either way.
+    diamond(600, 4);
+    assert!(!too_deep(&names(600), None));
+    assert_eq!(would_cycle(&conn, None, &names(600)), None);
+
+    // A legal deep chain: eight smart playlists under a new one is fine; under a saved one
+    // (which counts itself when evaluated) it is one too many, both ways.
+    for i in 0..8 {
+        let below: Vec<i64> = if i == 7 { vec![] } else { vec![701 + i] };
+        smart_naming(&conn, 700 + i, &below);
+    }
+    assert!(!too_deep(&names(700), None));
+    assert_eq!(would_cycle(&conn, None, &names(700)), None);
+    smart_naming(&conn, 799, &[]);
+    assert!(too_deep(&names(700), Some(799)));
+    assert!(would_cycle(&conn, Some(799), &names(700)).is_some());
+    assert_eq!(would_cycle(&conn, Some(799), &names(701)), None);
+
+    // A real cycle, through a diamond's far side: 800 names 801 and 802, both name 803,
+    // and 803 names 800.
+    smart_naming(&conn, 803, &[800]);
+    smart_naming(&conn, 801, &[803]);
+    smart_naming(&conn, 802, &[803]);
+    assert_eq!(would_cycle(&conn, Some(800), &one(Cond::new(Field::Playlist, Op::In, Value::Id(802)))), Some("Nest 802".into()));
+    let both = Smart::from_json(r#"{"rules":[{"field":"playlist","op":"in","value":801},{"field":"playlist","op":"in","value":802}]}"#);
+    assert_eq!(would_cycle(&conn, Some(800), &both), Some("Nest 801".into()));
+    assert_eq!(would_cycle(&conn, Some(801), &names(802)), None, "803 names 800, not 801");
+}
+
 #[test]
 fn groups_nest_and_empty_rules_mean_every_track() {
     let conn = fixture();
