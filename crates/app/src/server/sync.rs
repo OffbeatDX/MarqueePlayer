@@ -276,7 +276,7 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
     if let Some(earlier) = &earlier {
         let kin = match same_server(&job.client, &conn, &listed, cancel) {
             Ok(k) => k,
-            Err(o) => return o,
+            Err(o) => return *o,
         };
         match kin {
             Kin::Same => {
@@ -440,13 +440,14 @@ fn user_of(identity: &str) -> &str {
 /// ids changed with an upgrade, while its songs' did not) a few albums spread over the listing
 /// are read, and most of their songs known: the same. A sign-in refused, or the library not
 /// read, ends the sync (the `Err`).
-fn same_server(client: &Client, conn: &rusqlite::Connection, listed: &[subsonic::Album], cancel: &AtomicBool) -> Result<Kin, Outcome> {
-    let (albums, songs) = remote::kept(conn).map_err(db_error)?;
-    let plays = library::marks::queued_count(conn).map_err(db_error)? as usize;
+fn same_server(client: &Client, conn: &rusqlite::Connection, listed: &[subsonic::Album], cancel: &AtomicBool) -> Result<Kin, Box<Outcome>> {
+    let db = |e: rusqlite::Error| Box::new(db_error(e));
+    let (albums, songs) = remote::kept(conn).map_err(db)?;
+    let plays = library::marks::queued_count(conn).map_err(db)? as usize;
     if albums == 0 && songs == 0 && plays == 0 {
         return Ok(Kin::Nothing);
     }
-    let found = remote::kept_albums_among(conn, listed.iter().map(|a| a.id.as_str())).map_err(db_error)?;
+    let found = remote::kept_albums_among(conn, listed.iter().map(|a| a.id.as_str())).map_err(db)?;
     if albums > 0 && found * 2 >= albums {
         return Ok(Kin::Same);
     }
@@ -455,13 +456,13 @@ fn same_server(client: &Client, conn: &rusqlite::Connection, listed: &[subsonic:
     let mut read: Vec<String> = Vec::new();
     for r in read_albums(client, &sample, cancel) {
         match r {
-            None => return Err(Outcome::Stopped),
+            None => return Err(Box::new(Outcome::Stopped)),
             Some(Ok(a)) => read.extend(a.song.into_iter().map(|s| s.id)),
-            Some(Err(e)) if is_sign_in(&e) => return Err(Outcome::Server(e)),
+            Some(Err(e)) if is_sign_in(&e) => return Err(Box::new(Outcome::Server(e))),
             Some(Err(_)) => {}
         }
     }
-    let known = remote::kept_songs_among(conn, read.iter().map(String::as_str)).map_err(db_error)?;
+    let known = remote::kept_songs_among(conn, read.iter().map(String::as_str)).map_err(db)?;
     if !read.is_empty() && known * 2 >= read.len() {
         return Ok(Kin::Same);
     }

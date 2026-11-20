@@ -108,7 +108,9 @@ fn unstar_held(rows: &[Row], plans: &[Plan<bool>]) -> bool {
 /// Compare every track the server has (or only `only`) with what the server said (`view`), and
 /// act on it (`library::marks`): the server's changes written here first, then the app's sent,
 /// each agreement recorded once the server took it. Sending stops at the first error that is not
-/// the song's own (no connection, the sign-in refused); what was not sent goes next time.
+/// the song's own (no connection, the sign-in refused); what was not sent goes next time. (The
+/// thread runs `pass_while`; this, for the tests.)
+#[cfg(test)]
 pub fn pass(conn: &mut Connection, client: &Client, view: &View, only: Option<i64>) -> rusqlite::Result<Done> {
     pass_while(conn, client, view, only, &|| true)
 }
@@ -226,7 +228,9 @@ fn pass_while(conn: &mut Connection, client: &Client, view: &View, only: Option<
 }
 
 /// Send the plays queued, oldest first, each off the queue once the server took it (or when the
-/// server no longer has its song). How many were sent, and the error that stopped it.
+/// server no longer has its song). How many were sent, and the error that stopped it. (The
+/// thread runs `flush_plays_while`; this, for the tests.)
+#[cfg(test)]
 pub fn flush_plays(conn: &Connection, client: &Client) -> rusqlite::Result<(usize, Option<Error>)> {
     flush_plays_while(conn, client, &|| true)
 }

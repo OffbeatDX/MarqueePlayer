@@ -358,7 +358,7 @@ mod tests {
                 if self.frames.position() as usize == self.frames.get_ref().len() {
                     self.n += 1;
                     let mut c = std::io::Cursor::new(Vec::new());
-                    write_frame(&mut c, if self.n % 2 == 0 { PING } else { 9 }, &json!({ "n": self.n })).unwrap();
+                    write_frame(&mut c, if self.n.is_multiple_of(2) { PING } else { 9 }, &json!({ "n": self.n })).unwrap();
                     self.frames = std::io::Cursor::new(c.into_inner());
                 }
                 self.frames.read(buf)
