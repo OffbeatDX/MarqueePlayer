@@ -103,20 +103,39 @@ thread_local! {
     static NEXT_ID: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
 }
 
-/// Open `paths`: walk and read off the UI thread, then play or queue.
-pub fn open(_st: &Rc<State>, paths: Vec<PathBuf>, mode: Mode) {
+/// Open `paths`: walked, looked up in the library (on a connection of its own) and read off
+/// the UI thread, then played or queued.
+pub fn open(st: &Rc<State>, paths: Vec<PathBuf>, mode: Mode) {
     if paths.is_empty() {
         return;
     }
+    let db = st.paths.database();
     std::thread::Builder::new()
         .name("mp-open-files".into())
         .spawn(move || {
+            library::background_thread();
             let files = collect(&paths);
-            // Tags for every file; library tracks are swapped in on the UI thread.
-            let read: Vec<Track> = files.iter().map(|f| outside_track(f, 0)).collect();
+            let conn = library::db::open(&db).inspect_err(|e| log::warn!("opening files: the library cannot be read ({e}); they play as files")).ok();
+            let read = resolve(conn.as_ref(), &files);
             state::post(move |st| finish(st, read, mode));
         })
         .ok();
+}
+
+/// The library's track for each file it has, in the order given; for the others a track from
+/// the file's own tags, with id 0 (`finish` numbers them).
+fn resolve(conn: Option<&rusqlite::Connection>, files: &[PathBuf]) -> Vec<Track> {
+    let ids: Vec<Option<i64>> = match conn {
+        Some(c) => {
+            let library: std::collections::HashMap<String, i64> = query::track_paths(c).unwrap_or_default().into_iter().map(|(p, id)| (m3u::key(Path::new(&p)), id)).collect();
+            files.iter().map(|f| library.get(&m3u::key(f)).copied()).collect()
+        }
+        None => vec![None; files.len()],
+    };
+    let wanted: Vec<i64> = ids.iter().flatten().copied().collect();
+    let tracks = conn.and_then(|c| query::tracks_by_id(c, &wanted).ok()).unwrap_or_default();
+    // Tags are read only for the files the library does not have.
+    files.iter().zip(ids).map(|(f, id)| id.and_then(|id| tracks.get(&id).cloned()).unwrap_or_else(|| outside_track(f, 0))).collect()
 }
 
 fn finish(st: &Rc<State>, read: Vec<Track>, mode: Mode) {
@@ -124,21 +143,20 @@ fn finish(st: &Rc<State>, read: Vec<Track>, mode: Mode) {
         views::flash(st, "No audio files there");
         return;
     }
-    let library: std::collections::HashMap<String, i64> = query::track_paths(&st.db).unwrap_or_default().into_iter().map(|(p, id)| (m3u::key(Path::new(&p)), id)).collect();
     let mut outside = 0;
     let tracks: Vec<Track> = read
         .into_iter()
-        .map(|t| match library.get(&m3u::key(Path::new(&t.path))).and_then(|&id| query::track(&st.db, id).ok().flatten()) {
-            Some(lib) => lib,
-            None => {
-                outside += 1;
-                let id = NEXT_ID.with(|n| {
-                    let id = n.get();
-                    n.set(id - 1);
-                    id
-                });
-                Track { id, ..t }
+        .map(|t| {
+            if t.id > 0 {
+                return t;
             }
+            outside += 1;
+            let id = NEXT_ID.with(|n| {
+                let id = n.get();
+                n.set(id - 1);
+                id
+            });
+            Track { id, ..t }
         })
         .collect();
     let n = tracks.len();
@@ -215,6 +233,35 @@ mod tests {
         let t = outside_track(&d.join("single.mp3"), -3);
         assert_eq!((t.id, t.title.as_str(), t.album_id), (-3, "single", -1), "untagged: named after the file");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn files_the_library_has_open_as_its_tracks() {
+        let d = std::env::temp_dir().join(format!("mp-opener-lib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (known, other) = (d.join("known.flac"), d.join("other.flac"));
+        for f in [&known, &other] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        let conn = library::db::open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO albums (id, key, title, album_artist, folder, added_at) VALUES (1, 'k', 'A', 'B', ?1, 0)",
+            [d.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracks (id, path, album_id, title, artist, duration, mtime, size, added_at) VALUES (5, ?1, 1, 'Known', 'B', 1, 0, 0, 0)",
+            [known.to_string_lossy()],
+        )
+        .unwrap();
+        let files = [other.clone(), known.clone(), known.clone()];
+        let got: Vec<(i64, String)> = resolve(Some(&conn), &files).into_iter().map(|t| (t.id, t.title)).collect();
+        // Without the library: every one a file from outside.
+        let without: Vec<i64> = resolve(None, &files).iter().map(|t| t.id).collect();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(got, [(0, "other".to_owned()), (5, "Known".to_owned()), (5, "Known".to_owned())]);
+        assert_eq!(without, [0, 0, 0]);
     }
 
     #[test]
