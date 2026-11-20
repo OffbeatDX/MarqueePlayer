@@ -211,18 +211,20 @@ impl WasapiDevice {
         // Intel HDA devices want buffers in multiples of 128 bytes.
         let period = client.calculate_aligned_period_near(default_period, Some(128), &wave).map_err(err)?;
         let mut client = client;
-        let attempt = |client: &mut AudioClient, period: i64| {
-            let mode = StreamMode::PollingExclusive { buffer_duration_hns: BUFFER_HNS.max(period * 4), period_hns: period };
+        let attempt = |client: &mut AudioClient, (buffer_duration_hns, period_hns): (i64, i64)| {
+            let mode = StreamMode::PollingExclusive { buffer_duration_hns, period_hns };
             client.initialize_client(&wave, Direction::Render, mode, None)
         };
-        if let Err(e) = attempt(&mut client, period) {
+        let mut used = exclusive_request(period);
+        if let Err(e) = attempt(&mut client, used) {
             match hresult(&e) {
                 Some(AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) => {
-                    // The documented retry: the size the device would take, on a new client.
+                    // The documented retry: exactly the size the device would take, on a new client.
                     let frames = client.get_buffer_size().map_err(err)?;
-                    let period = wasapi::calculate_period_100ns(i64::from(frames), i64::from(rate));
+                    used = aligned_retry(frames, rate, period);
+                    log::info!("wasapi: exclusive buffer not aligned; retrying with {frames} frames");
                     client = device.get_iaudioclient().map_err(err)?;
-                    attempt(&mut client, period).map_err(|e| format!("Exclusive mode failed ({e}); playing shared"))?;
+                    attempt(&mut client, used).map_err(|e| format!("Exclusive mode failed ({e}); playing shared"))?;
                 }
                 Some(AUDCLNT_E_DEVICE_IN_USE) => return Err("The device is in use by another application; playing shared".into()),
                 Some(AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED) => return Err("The device does not allow exclusive mode; playing shared".into()),
@@ -231,9 +233,27 @@ impl WasapiDevice {
             }
         }
         let render = client.get_audiorenderclient().map_err(err)?;
-        let poll = Duration::from_nanos((period.max(10_000) as u64) * 100 / 2);
-        Ok((Stream { client, render, event: None, poll }, fmt))
+        Ok((Stream { client, render, event: None, poll: poll_interval(used.1) }, fmt))
     }
+}
+
+/// The buffer and period (100 ns units) first asked of an exclusive stream whose device
+/// period is `period`: at least `BUFFER_HNS` of buffer, and four periods.
+fn exclusive_request(period: i64) -> (i64, i64) {
+    (BUFFER_HNS.max(period * 4), period)
+}
+
+/// The buffer and period for the retry after `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED`: exactly
+/// the `frames` the device reported it would take (at `rate`) as the buffer, and the
+/// device period, never longer than that buffer.
+fn aligned_retry(frames: u32, rate: u32, period: i64) -> (i64, i64) {
+    let buffer = wasapi::calculate_period_100ns(i64::from(frames), i64::from(rate.max(1)));
+    (buffer, period.min(buffer).max(1))
+}
+
+/// How often a polled exclusive stream is topped up: every half period (at least 1 ms).
+fn poll_interval(period_hns: i64) -> Duration {
+    Duration::from_nanos((period_hns.max(10_000) as u64) * 100 / 2)
 }
 
 impl Device for WasapiDevice {
@@ -407,5 +427,34 @@ mod mmcss {
             // SAFETY: the handle came from AvSetMmThreadCharacteristicsW on this thread.
             unsafe { AvRevertMmThreadCharacteristics(self.0) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_request_is_at_least_the_buffer_and_four_periods() {
+        assert_eq!(exclusive_request(30_000), (BUFFER_HNS, 30_000));
+        assert_eq!(exclusive_request(200_000), (800_000, 200_000));
+    }
+
+    #[test]
+    fn the_aligned_retry_asks_for_exactly_the_reported_buffer() {
+        // 44.1 kHz, 3 ms period: the device rounds the 40 ms buffer to 1792 frames.
+        let (buffer, period) = aligned_retry(1792, 44_100, 30_000);
+        assert_eq!(buffer, wasapi::calculate_period_100ns(1792, 44_100));
+        assert_eq!(buffer, 406_349);
+        assert_eq!(period, 30_000);
+        assert_ne!(buffer, BUFFER_HNS.max(buffer * 4));
+        // A reported buffer shorter than the period: the period shrinks to it.
+        assert_eq!(aligned_retry(64, 48_000, 30_000), (13_333, 13_333));
+    }
+
+    #[test]
+    fn polling_follows_the_period_used() {
+        assert_eq!(poll_interval(30_000), Duration::from_micros(1_500));
+        assert_eq!(poll_interval(1), Duration::from_micros(500));
     }
 }
