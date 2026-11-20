@@ -396,6 +396,9 @@ struct Inner {
     /// The words of the last failed download of each song (for the pill).
     failures: HashMap<String, String>,
     cap: u64,
+    /// Goes up when the account changes (`set_client`) and when the cache is cleared (`clear`):
+    /// a clear that waited for its downloads sees by it that another session began meanwhile.
+    generation: u64,
 }
 
 pub struct Streamer {
@@ -413,7 +416,7 @@ impl Streamer {
         let cap = cfg.cap;
         Arc::new(Streamer {
             cfg,
-            inner: Mutex::new(Inner { client: None, downloads: HashMap::new(), kept: HashSet::new(), ahead: None, failures: HashMap::new(), cap }),
+            inner: Mutex::new(Inner { client: None, downloads: HashMap::new(), kept: HashSet::new(), ahead: None, failures: HashMap::new(), cap, generation: 0 }),
             requests: AtomicUsize::new(0),
             running: AtomicUsize::new(0),
         })
@@ -452,6 +455,7 @@ impl Streamer {
                 d.set_stop(Stop::Fail(SIGNED_OUT.to_owned()));
             }
             g.ahead = None;
+            g.generation += 1;
         }
     }
 
@@ -772,32 +776,47 @@ impl Streamer {
 
     /// Delete the cache. `all`: everything, every download stopped and failed (sign-out). Else
     /// the tracks kept (playing, next) stay, with their downloads (Settings' Clear).
+    ///
+    /// Waiting for a stopped download can take up to its read timeout; a new sign-in in that time
+    /// starts a new session, whose tracks (kept, or being fetched) are left alone: only what is
+    /// none of theirs is deleted. Each song's files are checked and deleted under the lock, so no
+    /// download can start on them in between.
     pub fn clear(&self, all: bool) {
-        let keep: HashSet<String> = {
+        let (keep, mine, ds) = {
             let mut g = self.lock();
-            if all {
+            g.generation += 1;
+            let keep: HashSet<String> = if all {
                 for d in g.downloads.values() {
                     d.set_stop(Stop::Fail(SIGNED_OUT.to_owned()));
                 }
                 g.ahead = None;
+                g.kept.clear();
                 HashSet::new()
             } else {
                 g.kept.iter().cloned().chain(g.downloads.iter().filter(|(_, d)| !d.stopping()).map(|(k, _)| k.clone())).collect()
-            }
+            };
+            let ds: Vec<Arc<Download>> = if all { g.downloads.values().cloned().collect() } else { Vec::new() };
+            (keep, g.generation, ds)
         };
-        if all {
-            // The writers first, or one could write its sidecar again after it was deleted.
-            let ds: Vec<Arc<Download>> = self.lock().downloads.values().cloned().collect();
-            for d in ds {
-                d.join();
-            }
+        // The writers first, or one could write its sidecar again after it was deleted.
+        for d in ds {
+            d.join();
         }
         for e in entries(&self.cfg.dir) {
-            if !keep.contains(&e.key) {
-                for f in &e.files {
-                    let _ = fs::remove_file(f);
-                }
+            if keep.contains(&e.key) {
+                continue;
             }
+            let g = self.lock();
+            // Since the clear began: another sign-in, another clear, or (Settings' Clear) a track
+            // asked for. Its tracks stay.
+            let theirs = (g.generation != mine || !all) && (g.kept.contains(&e.key) || g.downloads.get(&e.key).is_some_and(|d| !d.stopping()));
+            if theirs {
+                continue;
+            }
+            for f in &e.files {
+                let _ = fs::remove_file(f);
+            }
+            drop(g);
         }
         self.changed();
     }

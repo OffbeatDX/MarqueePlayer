@@ -535,3 +535,45 @@ fn skipping_signing_out_and_quitting_leave_nothing_behind() {
     wait_until(Duration::from_secs(3), "no connection after quit", || mock.open() == 0);
     drop(p);
 }
+
+/// Sign-out clears the cache on a thread that first waits for each download to stop (a stalled
+/// one: up to its read timeout). Signing in again meanwhile starts a new session: what it fetches
+/// in that time stays, and only the old session's files go.
+#[test]
+fn a_clear_waiting_on_a_stalled_download_leaves_the_next_session_alone() {
+    let old: Vec<u8> = (0..200_000u32).map(|n| (n * 7) as u8).collect();
+    let new: Vec<u8> = (0..20_000u32).map(|n| (n * 13) as u8).collect();
+    let first = Mock::start();
+    first.add("a", old.clone(), "audio/flac");
+    // Silent from 50 KB on until the streamer gives up on the connection.
+    first.set(|b| b.stall_at = Some((50_000, Duration::from_secs(60))));
+    let s = streamer(&first, "clear-race");
+    let ia = info("a", &old, "flac");
+    let _ = s.request(1, &ia).unwrap();
+    let pa = data_path(s.dir(), &ia);
+    wait_until(Duration::from_secs(5), "the stall reached", || fs::metadata(&pa).is_ok_and(|m| m.len() >= 50_000));
+
+    // Signed out: the clear stops the download and waits for it.
+    let (s2, done) = (s.clone(), Arc::new(AtomicBool::new(false)));
+    let d2 = done.clone();
+    let clearing = std::thread::spawn(move || {
+        s2.clear(true);
+        d2.store(true, Ordering::SeqCst);
+    });
+    wait_until(Duration::from_secs(2), "the download told to stop", || s.lock().downloads.get(&key(&ia)).is_none_or(|d| d.stopping()));
+
+    // Signed in to another server before the clear is done, and a track fetched whole.
+    let second = Mock::start();
+    second.add("b", new.clone(), "audio/flac");
+    s.set_client(Some(second.client()));
+    let ib = info("b", &new, "flac");
+    let feed = feed_of(&s.request(2, &ib).unwrap());
+    wait_until(Duration::from_secs(5), "the new track whole", || feed.is_complete() && !sidecar_path(s.dir(), &key(&ib)).exists());
+    assert!(!done.load(Ordering::SeqCst), "the clear was still waiting (the test proves nothing otherwise)");
+    clearing.join().unwrap();
+
+    assert!(whole(s.dir(), &ib).is_some(), "the new session's track stays");
+    assert_eq!(fs::read(data_path(s.dir(), &ib)).unwrap(), new);
+    assert!(!pa.exists() && !sidecar_path(s.dir(), &key(&ia)).exists(), "the old session's files went");
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
