@@ -8,7 +8,9 @@
 //! signal.
 //!
 //! Seek / play-now: the decode thread bumps a generation counter; the output thread
-//! drops every chunk from an older generation and flushes the device buffer.
+//! drops every chunk from an older generation and flushes the device buffer. A played
+//! track opens on a thread of its own (`Starting`), so a stop, a seek or another play is
+//! taken while a sleeping disk wakes up.
 //!
 //! Crossfades between tracks at different sample rates: the device runs at one rate, so one
 //! track of the overlap has to be converted (`resample.rs`). The device keeps the rate it
@@ -883,13 +885,57 @@ struct Xfade {
     in_done: bool,
 }
 
-/// A `play` of a file still being written, opening on its own thread: where to start it,
-/// and the rate a skip's crossfade would mix at (`Cmd::Play`).
+/// A `play` opening on a thread of its own: where to start it, and the rate a skip's
+/// crossfade would mix at (`Cmd::Play`).
 struct Starting {
-    opening: Opening,
+    opening: StartOpen,
     req: TrackRequest,
     from: f64,
     mix_rate: u32,
+}
+
+/// What a `play` is opened by, off the decode thread, so a stop, a seek or another play is
+/// taken while it opens.
+enum StartOpen {
+    /// A file still being written, on its `mp-feed` thread.
+    Feed(Opening),
+    /// A local file, on a thread of its own (not `mp-open`, which may be held by a next
+    /// track's open that hangs). A newer play or a stop drops this end: the thread then
+    /// finishes its open, finds nobody waiting, and the file is closed.
+    Local(Receiver<Result<Source, String>>),
+}
+
+impl StartOpen {
+    /// Start opening the local file `path`; `wake` is signalled once it is open (or not).
+    fn local(path: &std::path::Path, wake: Sender<()>) -> Self {
+        let (tx, rx) = bounded(1);
+        let path = path.to_path_buf();
+        let failed = wake.clone();
+        let spawned = thread::Builder::new().name("mp-play-open".into()).spawn(move || {
+            let result = Source::open(&path).map_err(|e| e.to_string());
+            if tx.send(result).is_ok() {
+                let _ = wake.try_send(());
+            }
+        });
+        if let Err(e) = spawned {
+            // Said through `poll` (the channel is closed): wake the decode thread to take it.
+            log::warn!("no thread to open the track on ({e})");
+            let _ = failed.try_send(());
+        }
+        StartOpen::Local(rx)
+    }
+
+    /// The opened stream, or why it could not be opened, once known.
+    fn poll(&mut self) -> Option<Result<Stream, String>> {
+        match self {
+            StartOpen::Feed(o) => o.poll().map(|r| r.map(Stream::Feed)),
+            StartOpen::Local(rx) => match rx.try_recv() {
+                Ok(r) => Some(r.map(Stream::Local)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("it could not be opened (no thread to open it on)".into())),
+            },
+        }
+    }
 }
 
 /// A `set_next` track, opened on the `mp-open` thread.
@@ -1015,7 +1061,7 @@ impl Decoder {
 
     /// Open a track now, on this thread. One still being written opens on its own, waited for
     /// here only up to `REOPEN_WAIT` (this reopens the track just played, all of which is on
-    /// disk; a `play` of one goes through `starting` instead).
+    /// disk; a `play` goes through `starting` instead).
     fn open(&self, req: TrackRequest) -> Option<Playing> {
         let result = match req.still_growing() {
             None => Source::open(&req.path).map(Stream::Local).map_err(|e| e.to_string()),
@@ -1082,7 +1128,7 @@ impl Decoder {
             && let Some(result) = s.opening.poll()
         {
             let s = self.starting.take().unwrap();
-            let cur = self.opened(s.req, result.map(Stream::Feed), Transition::Gapless);
+            let cur = self.opened(s.req, result, Transition::Gapless);
             self.begin(cur, s.from, s.mix_rate);
         }
     }
@@ -1215,15 +1261,15 @@ impl Decoder {
                 self.starting = None;
                 self.open_next(None, Transition::Gapless);
                 self.prev = None;
-                // A file still being written opens on its own thread; this one goes on taking
-                // commands meanwhile (`run`), and begins it once it is open.
-                match req.still_growing().map(|f| Opening::spawn(&req.path, f, self.feed_wake.0.clone())) {
-                    Some(opening) => self.starting = Some(Starting { opening, req, from, mix_rate }),
-                    None => {
-                        let cur = self.open(req);
-                        self.begin(cur, from, mix_rate);
-                    }
-                }
+                // The track opens on a thread of its own (a sleeping disk or a stalled share can
+                // take seconds); this one goes on taking commands meanwhile (`run`), and begins
+                // it once it is open.
+                let wake = self.feed_wake.0.clone();
+                let opening = match req.still_growing() {
+                    Some(f) => StartOpen::Feed(Opening::spawn(&req.path, f, wake)),
+                    None => StartOpen::local(&req.path, wake),
+                };
+                self.starting = Some(Starting { opening, req, from, mix_rate });
             }
             Cmd::SetNext(req, via) => self.open_next(req, via),
             Cmd::Seek { token, secs } => self.seek(token, SeekTo::Secs(secs)),
@@ -1645,9 +1691,12 @@ impl Decoder {
             }
             self.poll_opened();
             let msg = match &self.starting {
-                // A growing `play` still opening.
+                // A `play` still opening: a growing file is waited for as buffering, a local
+                // one (moments, unless its disk is asleep) is not.
                 Some(s) if self.current.is_none() => {
-                    self.starved = Some(s.req.token);
+                    let growing = matches!(s.opening, StartOpen::Feed(_));
+                    self.starved = growing.then_some(s.req.token);
+                    self.awaiting_open = !growing;
                     None
                 }
                 _ if self.current.is_none() => continue,
