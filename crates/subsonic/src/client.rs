@@ -420,6 +420,7 @@ impl Client {
             range_start: u64,
             head: Option<StreamHead>,
             error: Option<(u16, Option<String>, Vec<u8>)>,
+            bad: Option<Error>,
             empty_end: bool,
         }
         impl http_client::Sink for Adapter<'_> {
@@ -439,22 +440,12 @@ impl Client {
                     self.error = Some((h.status, h.content_type.clone(), Vec::new()));
                     return ControlFlow::Continue(());
                 }
-                let range = h.range().filter(|_| h.status == 206);
-                let head = match range {
-                    Some(r) => StreamHead {
-                        start: r.first,
-                        range_honoured: r.first == self.range_start,
-                        length: h.content_length.or(Some(r.last - r.first + 1)),
-                        total: r.total,
-                        content_type: h.content_type.clone(),
-                    },
-                    None => StreamHead {
-                        start: 0,
-                        range_honoured: self.range_start == 0,
-                        length: h.content_length,
-                        total: h.content_length,
-                        content_type: h.content_type.clone(),
-                    },
+                let head = match stream_head(h, self.range_start) {
+                    Ok(head) => head,
+                    Err(e) => {
+                        self.bad = Some(e);
+                        return ControlFlow::Break(());
+                    }
                 };
                 let flow = self.sink.start(&head);
                 self.head = Some(head);
@@ -469,8 +460,11 @@ impl Client {
             }
         }
 
-        let mut a = Adapter { sink, range_start, head: None, error: None, empty_end: false };
+        let mut a = Adapter { sink, range_start, head: None, error: None, bad: None, empty_end: false };
         let r = http_client::download_same_server(&req, &mut a);
+        if let Some(e) = a.bad.take() {
+            return Err(self.failed(endpoint, e));
+        }
         if let Some((status, ct, body)) = a.error.take() {
             let e = self.binary_error(status, ct.as_deref(), &body).unwrap_or_else(|| Error::BadResponse("an error answer without an error".into()));
             return Err(self.failed(endpoint, e));
@@ -669,6 +663,31 @@ fn star_params(song_ids: &[&str], album_ids: &[&str], artist_ids: &[&str]) -> Pa
     [ids("id", song_ids), ids("albumId", album_ids), ids("artistId", artist_ids)].concat()
 }
 
+/// Build a [`StreamHead`] from a 2xx audio response's HTTP head; fails with
+/// [`Error::BadResponse`] when a 206's `Content-Range` span overflows `u64`.
+fn stream_head(h: &Head, range_start: u64) -> Result<StreamHead, Error> {
+    let range = h.range().filter(|_| h.status == 206);
+    match range {
+        Some(r) => {
+            let range_len = r.last.checked_sub(r.first).and_then(|d| d.checked_add(1)).ok_or_else(|| Error::BadResponse("invalid Content-Range".into()))?;
+            Ok(StreamHead {
+                start: r.first,
+                range_honoured: r.first == range_start,
+                length: h.content_length.or(Some(range_len)),
+                total: r.total,
+                content_type: h.content_type.clone(),
+            })
+        }
+        None => Ok(StreamHead {
+            start: 0,
+            range_honoured: range_start == 0,
+            length: h.content_length,
+            total: h.content_length,
+            content_type: h.content_type.clone(),
+        }),
+    }
+}
+
 /// The total of an unsatisfied `Content-Range` ("bytes */1000").
 fn total_of_unsatisfied(content_range: &str) -> Option<u64> {
     content_range.trim().strip_prefix("bytes")?.trim().strip_prefix("*/")?.trim().parse().ok()
@@ -726,6 +745,42 @@ mod tests {
     fn unsatisfied_ranges_read() {
         assert_eq!(total_of_unsatisfied("bytes */1000"), Some(1000));
         assert_eq!(total_of_unsatisfied("bytes 0-1/2"), None);
+    }
+
+    #[test]
+    fn overflowing_content_range_is_rejected() {
+        let hostile = Head {
+            status: 206,
+            content_length: None,
+            content_range: Some("bytes 0-18446744073709551615/*".into()),
+            content_type: Some("audio/flac".into()),
+            ..Head::default()
+        };
+        assert!(matches!(stream_head(&hostile, 0), Err(Error::BadResponse(_))));
+        let hostile_with_len = Head { content_length: Some(5), ..hostile };
+        assert!(matches!(stream_head(&hostile_with_len, 0), Err(Error::BadResponse(_))));
+
+        // Boundary range that does not overflow: 1..=u64::MAX has length u64::MAX.
+        let max_valid = Head {
+            status: 206,
+            content_length: None,
+            content_range: Some("bytes 1-18446744073709551615/*".into()),
+            content_type: Some("audio/flac".into()),
+            ..Head::default()
+        };
+        let sh = stream_head(&max_valid, 1).unwrap();
+        assert_eq!((sh.start, sh.range_honoured, sh.length, sh.total), (1, true, Some(u64::MAX), None));
+
+        // Normal range without Content-Length derives length from Content-Range.
+        let normal = Head {
+            status: 206,
+            content_length: None,
+            content_range: Some("bytes 10-19/100".into()),
+            content_type: Some("audio/flac".into()),
+            ..Head::default()
+        };
+        let sh = stream_head(&normal, 10).unwrap();
+        assert_eq!((sh.start, sh.range_honoured, sh.length, sh.total), (10, true, Some(10), Some(100)));
     }
 
     #[test]

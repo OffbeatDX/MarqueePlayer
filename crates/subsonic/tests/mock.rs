@@ -931,3 +931,17 @@ fn redirects_to_another_server_are_refused_and_same_server_redirects_are_followe
     assert_eq!(s.received, file().len() as u64);
     assert_eq!(same_seen.lock().unwrap().len(), 3);
 }
+
+#[test]
+fn an_overflowing_content_range_is_a_bad_response() {
+    let m = mock(|_| {
+        let mut r = raw(206, "audio/flac", b"audio");
+        r.chunked = true;
+        r.headers.push("Content-Range: bytes 0-18446744073709551615/*".into());
+        r
+    });
+    let mut sink = Keep2::default();
+    let e = m.client(true).stream("s1", &Quality::Original, 0, &mut sink).unwrap_err();
+    assert!(matches!(e, Error::BadResponse(_)), "{e:?}");
+    assert!(sink.head.is_none() && sink.body.is_empty(), "a malformed head never reaches the sink");
+}
