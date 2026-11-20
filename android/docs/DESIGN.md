@@ -231,6 +231,12 @@ The README describes the result.
   start looks for missing download covers at most once a day (the widget, a media button or a job can
   start the process); the download worker and a new pin fetch their covers anyway. Covers the server
   has no art for are remembered across restarts until the downloads are removed or the user signs out.
+- **The pins file is read off the main thread** at start: until it is, the pins are empty and
+  untrusted, and every change or clean-up (pinning, removing, reconcile, the covers, playlist syncs)
+  waits for it. The cover store's folder listing and the media-button receiver's queue check stay on
+  the main thread: the first is a few milliseconds and covers drawn before it would stay on the
+  placeholder offline; the receiver must answer at once, and only reading the queue tells it whether
+  play can resume.
 - **The equalizer** is scoped to the 10-band graphic EQ and one imported profile; the audio
   session is also handed to system equalizer apps.
 - **Auto and the widget**: artwork for other apps comes from a cover content provider, so no URL

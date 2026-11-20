@@ -33,6 +33,7 @@ import com.offbeat.marquee.player.net.NetState
 import com.offbeat.marquee.player.net.NetworkMonitor
 import com.offbeat.marquee.player.playback.MediaStores
 import com.offbeat.marquee.player.session.errorMessage
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -127,10 +128,16 @@ object Downloads {
     /**
      * False for the rest of the run when the pins file was there but damaged ([PinSet.load]): what
      * is stored is then never deleted for not being pinned (reconcile, the covers), only by the
-     * user's own removals.
+     * user's own removals. False too until the file has been read.
      */
-    @Volatile var pinsTrusted = true
+    @Volatile var pinsTrusted = false
         private set
+
+    /** The pins file has been read ([init] reads it off the main thread). */
+    private val ready = CompletableDeferred<Unit>()
+
+    /** Returns once the pins are loaded; every change and every clean-up waits for it. */
+    suspend fun awaitReady() = ready.await()
     private fun prefs() = app.getSharedPreferences("downloads", Context.MODE_PRIVATE)
 
     @Synchronized
@@ -140,11 +147,15 @@ object Downloads {
         app = context.applicationContext
         _quality.value = StreamQuality.fromId(prefs().getString("quality", null), StreamQuality.ORIGINAL)
         _wifiOnly.value = prefs().getBoolean("wifi_only", true)
-        val loaded = PinSet.load(pinsFile()) { AppLog.w(TAG, it) }
-        pinsTrusted = loaded.trusted
-        _pins.value = loaded.pins
         CoverStore.init(app)
+        // The pins file is read off the main thread (Application.onCreate runs for the widget, a
+        // media button or a job too). Until then [pins] is empty and untrusted: nothing that changes
+        // or deletes runs before [ready].
         scope.launch {
+            val loaded = PinSet.load(pinsFile()) { AppLog.w(TAG, it) }
+            _pins.value = loaded.pins
+            pinsTrusted = loaded.trusted
+            ready.complete(Unit)
             reconcile()
             if (_pins.value.wanted().any { it !in _stored.value.complete }) schedule()
             // Covers missing from the store (pinned before it existed, or fetched while offline): a
@@ -268,6 +279,7 @@ object Downloads {
     }
 
     suspend fun unpin(key: String) {
+        awaitReady()
         val name = _pins.value[key]?.name
         val change = mutate { it.without(key) }
         deleteSongs(change.release)
@@ -300,6 +312,7 @@ object Downloads {
 
     /** A playlist as the server just gave it: if it is pinned and changed, the pin follows. */
     suspend fun onPlaylistFetched(p: Playlist) {
+        awaitReady()
         val pin = _pins.value[Pin.keyOf(PinKind.Playlist, p.id)] ?: return
         val diff = ListDiff.of(pin.songIds, p.entry.map { it.id })
         // (A held shrink that the server took back is cleared by following the answer.)
@@ -322,6 +335,7 @@ object Downloads {
      * is created again for every rotation, and each sync costs one request per pinned playlist.
      */
     suspend fun syncPlaylistsIfDue(): Int {
+        awaitReady()
         if (_pins.value.pins.none { it.kind == PinKind.Playlist }) return 0
         val now = System.currentTimeMillis()
         if (!Throttle.isDue(prefs().getLong(PLAYLISTS_SYNCED_AT, 0), now, Throttle.PLAYLIST_SYNC_MS)) return 0
@@ -331,6 +345,7 @@ object Downloads {
 
     /** Every pinned playlist, fetched and followed (app start, the network back, the daily job). */
     suspend fun syncPlaylists(): Int {
+        awaitReady()
         val lists = _pins.value.pins.filter { it.kind == PinKind.Playlist }
         var synced = 0
         for (pin in lists) {
@@ -380,11 +395,15 @@ object Downloads {
 
     // ---- Plumbing ----------------------------------------------------------------------------
 
-    private suspend fun mutate(block: (PinSet) -> PinChange): PinChange = mutex.withLock {
-        val change = block(_pins.value)
-        _pins.value = change.pins
-        withContext(Dispatchers.IO) { SafeFile.write(pinsFile(), change.pins.encode()) }
-        change
+    private suspend fun mutate(block: (PinSet) -> PinChange): PinChange {
+        // Never before the file is read: a change to the empty set would overwrite every pin.
+        awaitReady()
+        return mutex.withLock {
+            val change = block(_pins.value)
+            _pins.value = change.pins
+            withContext(Dispatchers.IO) { SafeFile.write(pinsFile(), change.pins.encode()) }
+            change
+        }
     }
 
     /** Songs the player is reading are deleted once they leave the play window ([setPlaying]). */
@@ -426,6 +445,7 @@ object Downloads {
      * ([MediaStores.dropErrorReplies]): they are fetched again.
      */
     suspend fun reconcile() = withContext(Dispatchers.IO) {
+        awaitReady()
         val d = MediaStores.downloads(app)
         if (!healed) {
             healed = true
