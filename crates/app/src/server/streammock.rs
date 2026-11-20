@@ -1,6 +1,7 @@
 //! A local stand-in for a Navidrome server, on 127.0.0.1 only, for the streaming tests and
 //! `MP_BENCH=streaming` (bench/streaming.rs): `stream` of the original file with ranges as Navidrome
-//! serves `format=raw` (206 with `Content-Range`, 416 past the end), `ping`, and
+//! serves `format=raw` (206 with `Content-Range`, 416 past the end; a `Last-Modified` on each
+//! answer and an `If-Range` honoured, as Go's `http.ServeContent` does there), `ping`, and
 //! `getLyricsBySongId`; and on demand a throttled link, a stall at an offset, a connection
 //! dropped mid-body, 503s, ranges ignored, and songs that are gone (404). It checks each
 //! request's token as the server does (md5(password + salt)), and keeps what it was asked and
@@ -44,6 +45,8 @@ pub struct Seen {
     pub id: String,
     /// The range asked (0 without one).
     pub from: u64,
+    /// The `If-Range` sent, if one was.
+    pub if_range: Option<String>,
     pub at: Instant,
     pub auth_ok: bool,
 }
@@ -52,6 +55,13 @@ pub struct Seen {
 struct Song {
     bytes: Arc<Vec<u8>>,
     content_type: String,
+    /// Its `Last-Modified`: another for each version of the file (`replace`).
+    modified: String,
+}
+
+/// The `Last-Modified` of a song's `n`th version (HTTP dates, a day apart).
+fn modified(n: usize) -> String {
+    format!("Wed, {:02} Oct 2026 07:28:00 GMT", 1 + n % 28)
 }
 
 #[derive(Default)]
@@ -112,7 +122,16 @@ impl Mock {
     }
 
     pub fn add(&self, id: &str, bytes: Vec<u8>, content_type: &str) {
-        self.shared.songs.lock().unwrap().insert(id.to_owned(), Song { bytes: Arc::new(bytes), content_type: content_type.to_owned() });
+        self.shared.songs.lock().unwrap().insert(id.to_owned(), Song { bytes: Arc::new(bytes), content_type: content_type.to_owned(), modified: modified(0) });
+    }
+
+    /// The song's file replaced on the server by `bytes`, under the same id: another
+    /// `Last-Modified` from here on.
+    pub fn replace(&self, id: &str, bytes: Vec<u8>) {
+        let mut songs = self.shared.songs.lock().unwrap();
+        let song = songs.get_mut(id).expect("a song added before");
+        let next = (1..).map(modified).find(|m| *m != song.modified).unwrap_or_default();
+        *song = Song { bytes: Arc::new(bytes), content_type: song.content_type.clone(), modified: next };
     }
 
     pub fn remove(&self, id: &str) {
@@ -238,7 +257,8 @@ fn answer(mut conn: TcpStream, s: &Shared, n: usize) {
     let auth_ok = param("u").as_deref() == Some(USER) && !salt.is_empty() && token == subsonic::token(PASSWORD, &salt) && param("p").is_none();
     let id = param("id").unwrap_or_default();
     let from = headers.get("range").and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split('-').next()).and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(0);
-    s.seen.lock().unwrap().push(Seen { endpoint: endpoint.clone(), id: id.clone(), from, at: Instant::now(), auth_ok });
+    let if_range = headers.get("if-range").cloned();
+    s.seen.lock().unwrap().push(Seen { endpoint: endpoint.clone(), id: id.clone(), from, if_range: if_range.clone(), at: Instant::now(), auth_ok });
     if !auth_ok {
         let body = r#"{"subsonic-response":{"status":"failed","version":"1.16.1","type":"navidrome","serverVersion":"0.53.3","openSubsonic":true,"error":{"code":40,"message":"Wrong username or password"}}}"#;
         return reply(&mut conn, 200, "application/json", body.as_bytes());
@@ -249,7 +269,7 @@ fn answer(mut conn: TcpStream, s: &Shared, n: usize) {
             let l = s.lyrics.lock().unwrap().get(&id).cloned().unwrap_or_else(|| "[]".into());
             reply(&mut conn, 200, "application/json", format!(r#"{{"subsonic-response":{{{ENVELOPE},"lyricsList":{{"structuredLyrics":{l}}}}}}}"#).as_bytes())
         }
-        "stream" => stream(&mut conn, s, &id, from, param("format").as_deref() == Some("raw"), n),
+        "stream" => stream(&mut conn, s, &id, from, if_range.as_deref(), param("format").as_deref() == Some("raw"), n),
         _ => reply(&mut conn, 200, "application/json", br#"{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":0,"message":"not in the mock"}}}"#),
     }
 }
@@ -269,7 +289,7 @@ fn client_left(conn: &TcpStream) -> bool {
     left
 }
 
-fn stream(conn: &mut TcpStream, s: &Shared, id: &str, from: u64, raw: bool, n: usize) {
+fn stream(conn: &mut TcpStream, s: &Shared, id: &str, from: u64, if_range: Option<&str>, raw: bool, n: usize) {
     assert!(raw, "the app asks for the original file only");
     let song = s.songs.lock().unwrap().get(id).cloned();
     let Some(song) = song else {
@@ -285,15 +305,18 @@ fn stream(conn: &mut TcpStream, s: &Shared, id: &str, from: u64, raw: bool, n: u
         b.clone()
     };
     let len = song.bytes.len() as u64;
-    let start = if b.ignore_ranges { 0 } else { from };
+    // A range of another version of the file than the one asked about: the whole file instead.
+    let changed = if_range.is_some_and(|v| v != song.modified);
+    let start = if b.ignore_ranges || changed { 0 } else { from };
+    let lm = format!("Last-Modified: {}", song.modified);
     if start >= len && len > 0 {
         let _ = write_head(conn, 416, "text/plain", &[format!("Content-Range: bytes */{len}")], 0);
         return;
     }
     let ok = if start > 0 {
-        write_head(conn, 206, &song.content_type, &[format!("Content-Range: bytes {start}-{}/{len}", len - 1), "Accept-Ranges: bytes".into()], (len - start) as usize)
+        write_head(conn, 206, &song.content_type, &[format!("Content-Range: bytes {start}-{}/{len}", len - 1), "Accept-Ranges: bytes".into(), lm], (len - start) as usize)
     } else {
-        write_head(conn, 200, &song.content_type, &["Accept-Ranges: bytes".into()], len as usize)
+        write_head(conn, 200, &song.content_type, &["Accept-Ranges: bytes".into(), lm], len as usize)
     };
     if !ok {
         return;

@@ -395,7 +395,7 @@ fn a_partial_file_after_a_crash_is_completed_never_played_as_whole() {
     f.seek(SeekFrom::Start(len - 50_000)).unwrap();
     f.write_all(&bytes[(len - 50_000) as usize..(len - 20_000) as usize]).unwrap();
     drop(f);
-    write_sidecar(&sidecar_path(&d, &key(&i)), len, &[0..head, len - 50_000..len]).unwrap();
+    write_sidecar(&sidecar_path(&d, &key(&i)), len, &[0..head, len - 50_000..len], None).unwrap();
     let mut cfg = Config::new(d.clone(), DEFAULT_CAP);
     cfg.read_timeout_ms = 700;
     let s = Streamer::new(cfg);
@@ -610,5 +610,129 @@ fn the_space_used_is_counted_where_it_changes_and_read_without_the_disk() {
     s.keep(&[], None);
     s.clear(true);
     assert_eq!((s.known_used(), told.lock().unwrap().last().unwrap().0), (0, 0));
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
+
+/// A streamer on `d` (a folder another one may have left files in), signed in to the mock.
+fn streamer_on(mock: &Mock, d: &Path) -> Arc<Streamer> {
+    let mut cfg = Config::new(d.to_path_buf(), DEFAULT_CAP);
+    cfg.read_timeout_ms = 700;
+    cfg.backoff = vec![Duration::from_millis(100), Duration::from_millis(200)];
+    let s = Streamer::new(cfg);
+    s.set_client(Some(mock.client()));
+    s
+}
+
+/// What a download stopped part of the way leaves in `d`: its partial file and its sidecar
+/// (read back). The link is slow, so the stop comes well before the end.
+fn stopped_part_way(mock: &Mock, d: &Path, i: &StreamInfo) -> Sidecar {
+    mock.set(|b| b.rate = 200_000);
+    let s = streamer_on(mock, d);
+    let _req = s.request(1, i).unwrap();
+    wait_until(Duration::from_secs(10), "some of it", || mock.sent() >= 150_000);
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+    mock.set(|b| b.rate = 0);
+    serde_json::from_slice(&fs::read(sidecar_path(d, &key(i))).unwrap()).unwrap()
+}
+
+/// An unchanged file goes on from its partial file as before (a 206 from where it stopped), the
+/// range sent with the validator the first answer gave, which the sidecar keeps.
+#[test]
+fn a_partial_file_goes_on_with_its_validator() {
+    let bytes: Vec<u8> = (0..600_000u32).map(|n| (n * 7 + n / 251) as u8).collect();
+    let mock = Mock::start();
+    mock.add("v", bytes.clone(), "audio/flac");
+    let i = info("v", &bytes, "flac");
+    let d = dir("validator");
+    let side = stopped_part_way(&mock, &d, &i);
+    let validator = mock.streams()[0].clone();
+    assert_eq!((validator.from, validator.if_range), (0, None), "the first asks from the start, with nothing to send");
+    let lm = side.validator.clone().expect("the sidecar keeps the validator");
+    let head = side.filled.first().map_or(0, |r| r.1);
+    assert!(head > 0 && head < bytes.len() as u64, "part of it on disk: {:?}", side.filled);
+
+    let before = mock.streams().len();
+    let sent = mock.sent();
+    let s = streamer_on(&mock, &d);
+    let feed = feed_of(&s.request(2, &i).unwrap());
+    wait_until(Duration::from_secs(10), "whole", || feed.is_complete());
+    let after: Vec<_> = mock.streams()[before..].to_vec();
+    assert_eq!(after.len(), 1, "one range for the rest: {after:?}");
+    assert_eq!((after[0].from, after[0].if_range.as_deref()), (head, Some(lm.as_str())));
+    assert!(((mock.sent() - sent) as u64) <= bytes.len() as u64 - head, "only what was missing");
+    assert_eq!(fs::read(data_path(&d, &i)).unwrap(), bytes);
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
+
+/// A file replaced on the server with one of the same size after part of it was fetched: the
+/// range sent with the old validator is answered with the whole new file (200), which replaces
+/// the partial one; nothing of the old is kept, whatever stretch of it was on disk.
+#[test]
+fn a_partial_file_of_a_file_changed_since_is_written_afresh() {
+    let old: Vec<u8> = (0..600_000u32).map(|n| (n * 7 + n / 251) as u8).collect();
+    let new: Vec<u8> = old.iter().map(|b| b ^ 0x5a).collect();
+    let mock = Mock::start();
+    mock.add("c", old.clone(), "audio/flac");
+    let i = info("c", &old, "flac");
+    let d = dir("changed");
+    let side = stopped_part_way(&mock, &d, &i);
+    let lm = side.validator.clone().expect("a validator");
+    // And a stretch near the end, as a probe for the end of the file would have left.
+    let path = data_path(&d, &i);
+    let mut f = OpenOptions::new().write(true).open(&path).unwrap();
+    let tail = old.len() as u64 - 40_000;
+    f.seek(SeekFrom::Start(tail)).unwrap();
+    f.write_all(&old[tail as usize..]).unwrap();
+    drop(f);
+    let mut filled: Vec<Range<u64>> = side.filled.iter().map(|&(a, b)| a..b).collect();
+    add_range(&mut filled, tail..old.len() as u64);
+    write_sidecar(&sidecar_path(&d, &key(&i)), old.len() as u64, &filled, Some(&lm)).unwrap();
+
+    mock.replace("c", new.clone());
+    let before = mock.streams().len();
+    let s = streamer_on(&mock, &d);
+    let feed = feed_of(&s.request(2, &i).unwrap());
+    wait_until(Duration::from_secs(10), "whole", || feed.is_complete() || feed.failure().is_some());
+    assert_eq!(feed.failure(), None);
+    let after: Vec<_> = mock.streams()[before..].to_vec();
+    assert!(fs::read(&path).unwrap() == new, "the new file, nothing of the old");
+    assert!(after[0].from > 0 && after[0].if_range.as_deref() == Some(lm.as_str()), "the range asked with the old validator: {after:?}");
+    let sidecar = sidecar_path(&d, &key(&i));
+    wait_until(Duration::from_secs(5), "no sidecar", || !sidecar.exists());
+    assert!(s.shutdown_and_wait(Duration::from_secs(5)));
+}
+
+/// A file replaced on the server during its download (the engine may have read the old bytes):
+/// the range after a dropped connection comes as the whole new file, and the track fails as for a
+/// change of size, its files deleted; asked again, the new file is fetched whole.
+#[test]
+fn a_file_changed_during_its_download_fails_and_is_fetched_again() {
+    let old: Vec<u8> = (0..400_000u32).map(|n| (n * 13 + n / 97) as u8).collect();
+    let new: Vec<u8> = old.iter().map(|b| b.wrapping_add(1)).collect();
+    let mock = Mock::start();
+    mock.add("d", old.clone(), "audio/flac");
+    mock.set(|b| {
+        b.rate = 400_000;
+        b.drop_at = Some(150_000);
+    });
+    let i = info("d", &old, "flac");
+    let d = dir("changed-during");
+    let s = streamer_on(&mock, &d);
+    let feed = feed_of(&s.request(1, &i).unwrap());
+    // Replaced while the first answer still sends the old file: the range after the drop is
+    // asked of the new one.
+    wait_until(Duration::from_secs(10), "some of it", || mock.sent() >= 50_000);
+    mock.replace("d", new.clone());
+    wait_until(Duration::from_secs(10), "failed", || feed.failure().is_some());
+    assert!(feed.failure().unwrap().contains("changed on the server"), "{:?}", feed.failure());
+    let froms: Vec<_> = mock.streams().iter().map(|r| (r.from, r.if_range.is_some())).collect();
+    assert!(froms.len() >= 2 && froms[1].0 > 0 && froms[1].1, "the retry sent its range with the validator: {froms:?}");
+    let path = data_path(&d, &i);
+    wait_until(Duration::from_secs(5), "files deleted", || !path.exists() && !sidecar_path(&d, &key(&i)).exists());
+
+    mock.set(|b| b.rate = 0);
+    let feed = feed_of(&s.request(2, &i).unwrap());
+    wait_until(Duration::from_secs(10), "whole", || feed.is_complete());
+    assert_eq!(fs::read(&path).unwrap(), new);
     assert!(s.shutdown_and_wait(Duration::from_secs(5)));
 }

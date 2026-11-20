@@ -17,6 +17,18 @@
 //! sidecar whose size is not the catalog's is deleted. A whole file is played as any local file
 //! (`TrackRequest::new`): no network at all.
 //!
+//! **A file replaced on the server** under the same id and with the same size is told apart only
+//! by the server's answers: the sidecar keeps the first answer's validator (`StreamHead::
+//! validator`: Navidrome sends the file's `Last-Modified`), each range asked later sends it as
+//! `If-Range`, and the server sends a changed file whole from its start (200) instead of a range of
+//! it. A partial file going on from a sidecar shows the engine none of its stretches until the
+//! first answer says they are of the file the server has; when it says otherwise, the partial
+//! file is emptied and the new one written from what came, never stitched to the old. Within one
+//! download (the engine has read the old bytes) the feed fails as for a change of size. A whole
+//! cached file is not checked: the catalog has no mark of a file's version (its `created` may stay
+//! when a file is replaced, its hash moves with play counts and stars), and asking the server on
+//! each play would cost the request a cached play saves.
+//!
 //! **A download** is a thread of its own (`mp-stream`), which writes the file and tells the
 //! engine's [`Feed`] what is on disk once it is written (plain `write`s to the file, which another
 //! handle reads at once; the sidecar only after `sync_data`). It reads from the start; when a
@@ -236,6 +248,11 @@ fn next_stretch(filled: &[Range<u64>], total: u64, wanted: Option<u64>, cursor: 
 struct Sidecar {
     size: u64,
     filled: Vec<(u64, u64)>,
+    /// The validator of the file the stretches are of, when the server sent one: sent back as
+    /// `If-Range`. None in a sidecar written before it was kept (then the stretches are trusted,
+    /// as they were).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    validator: Option<String>,
 }
 
 /// The file being written and what of it is on disk.
@@ -244,6 +261,12 @@ struct Disk {
     sidecar: PathBuf,
     filled: Vec<Range<u64>>,
     total: Option<u64>,
+    /// What tells the file being written from another version of it (`StreamHead::validator`).
+    validator: Option<String>,
+    /// The stretches on disk are known to be of the file the server has, and the feed was told
+    /// of them. False for stretches from an earlier run, kept under a validator, until an answer
+    /// confirms it.
+    confirmed: bool,
     persisted: Instant,
     dirty: bool,
 }
@@ -255,6 +278,7 @@ impl Disk {
     fn open(path: &Path, sidecar: &Path, expected: u64) -> io::Result<Disk> {
         let mut filled = Vec::new();
         let mut total = None;
+        let mut validator = None;
         let kept = fs::read(sidecar).ok().and_then(|b| serde_json::from_slice::<Sidecar>(&b).ok());
         match kept {
             Some(s) if s.size > 0 && (expected == 0 || s.size == expected) => {
@@ -264,16 +288,29 @@ impl Disk {
                     add_range(&mut filled, a.min(len)..b.min(len).min(s.size));
                 }
                 total = Some(s.size);
+                validator = s.validator;
                 log::info!("stream cache: going on with {} ({} of {} bytes on disk)", path.display(), filled.iter().map(|r| r.end - r.start).sum::<u64>(), s.size);
             }
             _ => {
                 let _ = fs::remove_file(path);
             }
         }
-        write_sidecar(sidecar, total.unwrap_or(0), &filled)?;
+        write_sidecar(sidecar, total.unwrap_or(0), &filled, validator.as_deref())?;
         let persisted = Instant::now();
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
-        Ok(Disk { file, sidecar: sidecar.to_path_buf(), filled, total, persisted, dirty: false })
+        let confirmed = validator.is_none() || filled.is_empty();
+        Ok(Disk { file, sidecar: sidecar.to_path_buf(), filled, total, validator, confirmed, persisted, dirty: false })
+    }
+
+    /// Another version of the file than the stretches on disk: the partial file emptied (the
+    /// sidecar first), to be written afresh from what the server sends now.
+    fn restart(&mut self, total: Option<u64>, validator: Option<String>) -> io::Result<()> {
+        self.filled.clear();
+        self.total = total;
+        self.validator = validator;
+        self.confirmed = true;
+        self.write_sidecar()?;
+        self.file.set_len(0)
     }
 
     fn write_at(&mut self, pos: u64, bytes: &[u8]) -> io::Result<()> {
@@ -289,7 +326,7 @@ impl Disk {
     }
 
     fn write_sidecar(&mut self) -> io::Result<()> {
-        write_sidecar(&self.sidecar, self.total.unwrap_or(0), &self.filled)?;
+        write_sidecar(&self.sidecar, self.total.unwrap_or(0), &self.filled, self.validator.as_deref())?;
         self.persisted = Instant::now();
         self.dirty = false;
         Ok(())
@@ -316,8 +353,8 @@ impl Disk {
 }
 
 /// The sidecar, written whole or not at all (a new file renamed over the old).
-fn write_sidecar(sidecar: &Path, size: u64, filled: &[Range<u64>]) -> io::Result<()> {
-    let s = Sidecar { size, filled: filled.iter().map(|r| (r.start, r.end)).collect() };
+fn write_sidecar(sidecar: &Path, size: u64, filled: &[Range<u64>], validator: Option<&str>) -> io::Result<()> {
+    let s = Sidecar { size, filled: filled.iter().map(|r| (r.start, r.end)).collect(), validator: validator.map(str::to_owned) };
     let tmp = sidecar.with_extension("partial-new");
     fs::write(&tmp, serde_json::to_vec(&s).unwrap_or_default())?;
     fs::rename(&tmp, sidecar)
@@ -609,8 +646,11 @@ impl Streamer {
         };
         if let Some(t) = disk.total {
             d.feed.set_length(Some(t));
-            for r in &disk.filled {
-                d.feed.fill(r.clone());
+            // Stretches not yet confirmed are told once an answer confirms them (`Sink::version`).
+            if disk.confirmed {
+                for r in &disk.filled {
+                    d.feed.fill(r.clone());
+                }
             }
         }
         let started = Instant::now();
@@ -650,9 +690,10 @@ impl Streamer {
             if from > 0 {
                 ranges += 1;
             }
+            let validator = disk.validator.clone();
             let mut sink = Sink { s: self, d, disk: &mut disk, from, pos: from, limit, ended: None, io: None, wrote: 0, in_order };
             self.requests.fetch_add(1, Ordering::Relaxed);
-            let r = client.stream(&d.info.song_id, &Quality::Original, from, None, &mut sink);
+            let r = client.stream(&d.info.song_id, &Quality::Original, from, validator.as_deref(), &mut sink);
             let (pos, ended, io_err, wrote) = (sink.pos, sink.ended.take(), sink.io.take(), sink.wrote);
             in_order |= sink.in_order;
             cursor = pos;
@@ -886,6 +927,54 @@ struct Sink<'a> {
     in_order: bool,
 }
 
+/// What an answer says of the file on disk (`Sink::version`).
+enum Version {
+    /// The same file (or nothing tells otherwise): go on.
+    Same,
+    /// Another file, and the partial one was emptied for it.
+    Restarted,
+}
+
+impl Sink<'_> {
+    /// Whether this answer is of the file the stretches on disk are of. Stretches kept from an
+    /// earlier run are confirmed (and told to the feed) or, when the answer is of another file,
+    /// dropped: the partial file is emptied and written afresh. Within a download whose bytes the
+    /// feed has had, another file ends it (`Ended::Failed`, set here) as a change of size does.
+    fn version(&mut self, head: &StreamHead) -> io::Result<Version> {
+        let disk = &mut *self.disk;
+        if !disk.confirmed {
+            // With a validator, its own word; without, whether the If-Range sent with the range
+            // was met.
+            let same = match head.validator.as_deref() {
+                Some(v) => disk.validator.as_deref() == Some(v),
+                None => self.from > 0 && head.start == self.from,
+            };
+            if same {
+                disk.confirmed = true;
+                for r in &disk.filled {
+                    self.d.feed.fill(r.clone());
+                }
+                return Ok(Version::Same);
+            }
+            log::info!("stream: {} changed on the server since its partial file was written: written afresh", self.d.key);
+            disk.restart(head.total, head.validator.clone())?;
+            return Ok(Version::Restarted);
+        }
+        match (disk.validator.as_deref(), head.validator.as_deref()) {
+            (Some(a), Some(b)) if a != b => {
+                log::warn!("stream: {} changed on the server while it downloaded", self.d.key);
+                self.ended = Some(Ended::Failed("the file changed on the server while it downloaded: play it again".to_owned()));
+            }
+            (None, Some(b)) => {
+                disk.validator = Some(b.to_owned());
+                disk.dirty = true;
+            }
+            _ => {}
+        }
+        Ok(Version::Same)
+    }
+}
+
 impl StreamSink for Sink<'_> {
     fn start(&mut self, head: &StreamHead) -> ControlFlow<()> {
         match (self.disk.total, head.total) {
@@ -899,6 +988,25 @@ impl StreamSink for Sink<'_> {
                 return ControlFlow::Break(());
             }
             _ => {}
+        }
+        match self.version(head) {
+            Ok(Version::Same) => {}
+            Ok(Version::Restarted) => {
+                // The new file, from where this body starts: read on (not "in order": the server
+                // does ranges, it only had another file).
+                if head.start != self.from {
+                    self.limit = None;
+                }
+                self.pos = head.start;
+                return ControlFlow::Continue(());
+            }
+            Err(e) => {
+                self.io = Some(e);
+                return ControlFlow::Break(());
+            }
+        }
+        if self.ended.is_some() {
+            return ControlFlow::Break(());
         }
         if head.start != self.from {
             // The range was not honoured: the body is the file from its start, and so will every
