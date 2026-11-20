@@ -182,6 +182,13 @@ fn read_albums(client: &Client, ids: &[&str], cancel: &AtomicBool) -> Vec<Option
     out.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
+/// An album that came with far fewer songs than the server counts for it (none, or under half):
+/// an answer cut short, not an album emptied. Taken as read, its songs would count as gone.
+fn cut_short(a: &subsonic::Album, listed: &subsonic::Album) -> bool {
+    let count = a.song_count.max(listed.song_count) as usize;
+    count > 0 && a.song.len() * 2 < count
+}
+
 fn db_error(e: impl std::fmt::Display) -> Outcome {
     Outcome::Library(e.to_string())
 }
@@ -307,9 +314,14 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
         let ids: Vec<&str> = chunk.iter().map(|a| a.id.as_str()).collect();
         let mut part: Vec<RemoteAlbum> = Vec::with_capacity(chunk.len());
         let mut last_error = None;
-        for r in read_albums(&job.client, &ids, cancel) {
+        for (r, listed) in read_albums(&job.client, &ids, cancel).into_iter().zip(chunk) {
             match r {
                 None => return Outcome::Stopped,
+                Some(Ok(a)) if cut_short(&a, listed) => {
+                    log::info!("server sync: an album came with {} of its {} songs; read as failed", a.song.len(), a.song_count.max(listed.song_count));
+                    failed += 1;
+                    complete = false;
+                }
                 Some(Ok(a)) => part.push(album_of(&a)),
                 // Removed on the server since it was listed: rightly not in the catalog.
                 Some(Err(Error::NotFound(_))) => {}
@@ -1006,6 +1018,24 @@ mod tests {
         let o = f.run(&job).0;
         assert!(matches!(&o, Outcome::Server(e) if is_sign_in(e)), "{o:?}");
         assert_eq!(remote::counts(&f.conn()).unwrap().server, 12, "the library as last synced");
+    }
+
+    /// An album that comes without the songs the server counts for it is an answer cut short:
+    /// read as failed, so the listing is not complete and none of its songs is taken for gone.
+    /// One the server counts empty is emptied, and its songs go.
+    #[test]
+    fn an_album_that_comes_without_its_songs_is_not_read() {
+        let f = Fixture::new("empty-album", library_of(12));
+        assert!(matches!(f.run(&f.job(false)).0, Outcome::Synced { complete: true, .. }));
+        f.mock.edit(|l| l.albums[3].song.clear());
+        let (o, _) = f.run(&f.job(true));
+        let Outcome::Synced { report, failed, complete, .. } = o else { panic!("{o:?}") };
+        assert_eq!((failed, complete, report.removed_songs), (1, false, 0));
+        assert_eq!(remote::counts(&f.conn()).unwrap().server, 24);
+        f.mock.edit(|l| l.albums[3].song_count = 0);
+        let (o, _) = f.run(&f.job(true));
+        let Outcome::Synced { report, failed, complete, .. } = o else { panic!("{o:?}") };
+        assert_eq!((failed, complete, report.removed_songs), (0, true, 2));
     }
 
     /// Stop between albums: what was written stays, the next sync goes on and ends whole. Another
