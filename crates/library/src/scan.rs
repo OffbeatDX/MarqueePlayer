@@ -1457,30 +1457,54 @@ fn root_prefixes(root: &Path) -> (String, String) {
 /// `keep`: the library folders that stay; what one of them holds too (one folder inside the
 /// other, `outermost`) stays.
 pub fn forget_root(conn: &mut Connection, root: &Path, keep: &[PathBuf]) -> rusqlite::Result<usize> {
-    let (a, b) = root_prefixes(root);
+    if root.as_os_str().is_empty() {
+        return Ok(0);
+    }
     let keep: Vec<&PathBuf> = keep.iter().filter(|k| within(k, root) || within(root, k)).collect();
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    const UNDER: &str = "(substr(path, 1, length(?1)) = ?1 OR substr(path, 1, length(?2)) = ?2)";
+    #[cfg(windows)]
     let mut under: Vec<(i64, i64, String, bool)> = tx
-        .prepare(&format!("SELECT id, album_id, path, remote_id IS NOT NULL FROM tracks WHERE {UNDER} AND path NOT LIKE 'navidrome:%'"))?
-        .query_map(params![a, b], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+        .prepare("SELECT id, album_id, path, remote_id IS NOT NULL FROM tracks WHERE path NOT LIKE 'navidrome:%'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, _, path, _)| within(Path::new(path), root))
+        .collect();
+    #[cfg(not(windows))]
+    let mut under: Vec<(i64, i64, String, bool)> = {
+        let (a, b) = root_prefixes(root);
+        const UNDER: &str = "(substr(path, 1, length(?1)) = ?1 OR substr(path, 1, length(?2)) = ?2)";
+        tx.prepare(&format!("SELECT id, album_id, path, remote_id IS NOT NULL FROM tracks WHERE {UNDER} AND path NOT LIKE 'navidrome:%'"))?
+            .query_map(params![a, b], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
     under.retain(|(_, _, path, _)| !keep.iter().any(|k| within(Path::new(path), k)));
     let mut touched = Touched::default();
     let mut albums: Vec<i64> = Vec::new();
     let mut n = 0;
-    for (id, album, _, shared) in &under {
-        if *shared && crate::remote::to_server_only(&tx, *id, &mut touched)? {
-            albums.push(*album);
-            n += 1;
+    {
+        let mut delete = tx.prepare("DELETE FROM tracks WHERE id = ?1 AND path NOT LIKE 'navidrome:%'")?;
+        for (id, album, _, shared) in &under {
+            if *shared && crate::remote::to_server_only(&tx, *id, &mut touched)? {
+                albums.push(*album);
+                n += 1;
+            } else {
+                relations::forget_track(&tx, *id, &mut touched)?;
+                n += delete.execute([id])?;
+            }
         }
     }
-    let mut delete = tx.prepare("DELETE FROM tracks WHERE id = ?1 AND path NOT LIKE 'navidrome:%'")?;
-    for (id, _, _, _) in &under {
-        n += delete.execute([id])?;
+    {
+        let empty_albums: Vec<i64> = tx
+            .prepare("SELECT id FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)")?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut delete_album = tx.prepare("DELETE FROM albums WHERE id = ?1")?;
+        for id in empty_albums {
+            relations::forget_album(&tx, id, &mut touched)?;
+            delete_album.execute([id])?;
+        }
     }
-    drop(delete);
-    tx.execute("DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)", [])?;
     // An album with tracks in a folder that stays as well: what is left of it decides its values.
     let thinned: Vec<i64> = if keep.is_empty() { Vec::new() } else { under.iter().map(|t| t.1).collect() };
     let mut values: Vec<i64> = albums.iter().chain(&thinned).copied().collect();
@@ -1496,7 +1520,7 @@ pub fn forget_root(conn: &mut Connection, root: &Path, keep: &[PathBuf]) -> rusq
     if !albums.is_empty() {
         crate::remote::mark_pending(&tx, albums)?;
     }
-    if !values.is_empty() {
+    if !touched.is_empty() {
         relations::resolve(&tx, &mut touched)?;
     }
     tx.commit()?;
@@ -2123,6 +2147,79 @@ mod tests {
             assert_eq!(lib.id("A/X/01.wav"), None);
             assert!(lib.id("AB/Y/01.wav").is_some(), "a sibling sharing the name's start stays");
             assert_eq!((lib.albums(), lib.plays_total()), (1, 0));
+        }
+
+        #[test]
+        fn forgetting_a_root_drops_artists_and_genres_credited_nowhere_else() {
+            let mut lib = Lib::new("forget-relations");
+            lib.tagged(
+                "Gone/X/01.wav",
+                &[
+                    (K::TrackArtist, "Solo Ghost"),
+                    (K::AlbumArtist, "Solo Ghost"),
+                    (K::AlbumTitle, "Ghost Album"),
+                    (K::TrackTitle, "One"),
+                    (K::Genre, "Spectral"),
+                ],
+            );
+            lib.tagged(
+                "Gone/X/02.wav",
+                &[
+                    (K::TrackArtist, "Solo Ghost feat. Shared Guest"),
+                    (K::AlbumArtist, "Solo Ghost"),
+                    (K::AlbumTitle, "Ghost Album"),
+                    (K::TrackTitle, "Two"),
+                    (K::Genre, "Spectral; Shared Genre"),
+                ],
+            );
+            lib.tagged(
+                "Keep/Y/01.wav",
+                &[
+                    (K::TrackArtist, "Staying Band feat. Shared Guest"),
+                    (K::AlbumArtist, "Staying Band"),
+                    (K::AlbumTitle, "Stay Album"),
+                    (K::TrackTitle, "Three"),
+                    (K::Genre, "Shared Genre"),
+                ],
+            );
+            lib.scan();
+            assert!(crate::query::find_artist(&lib.conn, "Solo Ghost").unwrap().is_some());
+            assert_eq!(crate::query::search(&lib.conn, "Solo Ghost", 10).unwrap().artists.len(), 1);
+            let genre_count = |lib: &Lib, key: &str| -> i64 {
+                lib.conn.query_row("SELECT COUNT(*) FROM genres WHERE key = ?1", [key], |r| r.get(0)).unwrap()
+            };
+            assert_eq!(genre_count(&lib, "spectral"), 1);
+
+            let root = PathBuf::from(lib.p("Gone"));
+            let n = forget_root(&mut lib.conn, &root, &[]).unwrap();
+            assert_eq!(n, 2);
+            lib.assert_no_orphans();
+            assert!(crate::query::find_artist(&lib.conn, "Solo Ghost").unwrap().is_none());
+            assert!(crate::query::search(&lib.conn, "Solo Ghost", 10).unwrap().artists.is_empty());
+            assert!(crate::query::search(&lib.conn, "artist:\"Solo Ghost\"", 10).unwrap().artists.is_empty());
+            assert_eq!(genre_count(&lib, "spectral"), 0);
+            assert!(crate::query::find_artist(&lib.conn, "Staying Band").unwrap().is_some());
+            assert!(crate::query::find_artist(&lib.conn, "Shared Guest").unwrap().is_some());
+            assert_eq!(genre_count(&lib, "shared genre"), 1);
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn forgetting_a_root_ignores_letter_case_on_windows() {
+            let mut lib = Lib::new("forget-case");
+            lib.file("A/X/01.wav", "Only A", "X", "one", None);
+            lib.file("AB/Y/01.wav", "Only AB", "Y", "two", None);
+            lib.scan();
+            let flipped: String = lib
+                .p("A")
+                .chars()
+                .map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else { c.to_ascii_uppercase() })
+                .collect();
+            let n = forget_root(&mut lib.conn, Path::new(&flipped), &[]).unwrap();
+            assert_eq!(n, 1);
+            assert_eq!(lib.id("A/X/01.wav"), None);
+            assert!(lib.id("AB/Y/01.wav").is_some(), "a sibling sharing the name's start stays");
+            lib.assert_no_orphans();
         }
 
         /// One library folder inside another: what is in both is walked once, as the outer
