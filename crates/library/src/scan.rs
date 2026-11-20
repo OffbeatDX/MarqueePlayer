@@ -1509,9 +1509,10 @@ pub fn forget_root(conn: &mut Connection, root: &Path, keep: &[PathBuf]) -> rusq
             delete_album.execute([id])?;
         }
     }
-    // An album with tracks in a folder that stays as well: what is left of it decides its values.
-    let thinned: Vec<i64> = if keep.is_empty() { Vec::new() } else { under.iter().map(|t| t.1).collect() };
-    let mut values: Vec<i64> = albums.iter().chain(&thinned).copied().collect();
+    // An album with tracks elsewhere as well (in a folder inside or around this one, or in
+    // another library folder altogether: one release id ties them): what is left of it
+    // decides its values.
+    let mut values: Vec<i64> = albums.iter().copied().chain(under.iter().map(|t| t.1)).collect();
     values.sort_unstable();
     values.dedup();
     for &album in &values {
@@ -2296,6 +2297,28 @@ mod tests {
             // The last folder removed: all of it goes.
             assert_eq!(forget_root(&mut lib.conn, &inner, &[]).unwrap(), 1);
             assert_eq!(lib.tracks(), 0);
+        }
+
+        /// One album (one release id) in two library folders that are not inside each other:
+        /// removing one folder leaves the album to the tracks in the other, which decide its
+        /// values again.
+        #[test]
+        fn forgetting_one_of_two_roots_an_album_spans_works_its_values_out_again() {
+            use ItemKey as K;
+            let mut lib = Lib::new("forget-spanned");
+            let tags = |n: &'static str, date: &'static str| [(K::TrackArtist, "Glass Owls"), (K::AlbumArtist, "Glass Owls"), (K::AlbumTitle, "Spread"), (K::TrackTitle, n), (K::TrackNumber, n), (K::MusicBrainzReleaseId, "mb-spread"), (K::RecordingDate, date)];
+            lib.tagged("One/Spread A/1.wav", &tags("1", "2001"));
+            lib.tagged("Two/Spread B/2.wav", &tags("2", "2002"));
+            lib.tagged("Two/Spread B/3.wav", &tags("3", "2002"));
+            let (one, two) = (lib.music().join("One"), lib.music().join("Two"));
+            let roots = vec![one.clone(), two.clone()];
+            scan(&mut lib.conn, &lib.art, &roots, &|_| {}).unwrap();
+            assert_eq!(lib.albums(), 1, "one album across both folders");
+            let date = |lib: &Lib| lib.conn.query_row("SELECT date FROM albums", [], |r| r.get::<_, String>(0)).unwrap();
+            assert_eq!(date(&lib), "2002", "most of its tracks say 2002");
+            assert_eq!(forget_root(&mut lib.conn, &two, std::slice::from_ref(&one)).unwrap(), 2);
+            assert_eq!((lib.albums(), lib.tracks()), (1, 1));
+            assert_eq!(date(&lib), "2001", "the track left decides");
         }
 
         impl Lib {
