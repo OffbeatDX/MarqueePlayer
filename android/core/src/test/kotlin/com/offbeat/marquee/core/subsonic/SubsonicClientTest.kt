@@ -361,6 +361,31 @@ class SubsonicClientTest {
         }
     }
 
+    @Test
+    fun urlWithUsernameOrPasswordIsRefused() {
+        val withCreds = listOf(
+            "https://me:secret@music.example.com",
+            "https://me@music.example.com",
+            "https://:secret@music.example.com",
+            "me:secret@music.example.com",
+            "https://me:secret@music.example.com/nd/rest/",
+        )
+        for (raw in withCreds) {
+            assertNull("expected null for $raw", SubsonicClient.normalizeUrl(raw))
+            assertTrue("expected hasUrlCredentials for $raw", SubsonicClient.hasUrlCredentials(raw))
+        }
+        // An '@' in the path is not userinfo and stays allowed.
+        assertEquals("https://music.example.com/@user", SubsonicClient.normalizeUrl("https://music.example.com/@user")!!.toString())
+        assertFalse(SubsonicClient.hasUrlCredentials("https://music.example.com/@user"))
+        assertFalse(SubsonicClient.hasUrlCredentials("not a url ::"))
+        try {
+            SubsonicClient(SubsonicCredentials("https://me:secret@music.example.com", "u", "s", "t"), readOnly = true)
+            fail("accepted URL with embedded credentials")
+        } catch (e: SubsonicError.InvalidUrl) {
+            assertTrue(e.hasCredentials)
+        }
+    }
+
     // ---- Redirects --------------------------------------------------------------
 
     @Test

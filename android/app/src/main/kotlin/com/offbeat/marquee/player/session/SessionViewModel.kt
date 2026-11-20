@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 
 data class SignInForm(
     val url: String = "",
@@ -71,19 +72,9 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
     fun signIn() {
         val f = _form.value
         if (f.busy) return
-        val missing = when {
-            f.url.isBlank() -> "Enter the server address."
-            f.user.isBlank() -> "Enter your username."
-            f.password.isEmpty() -> "Enter your password."
-            else -> null
-        }
-        if (missing != null) {
-            _form.update { it.copy(error = missing) }
-            return
-        }
-        val normalized = SubsonicClient.normalizeUrl(f.url)
-        if (normalized == null) {
-            _form.update { it.copy(error = errorMessage(SubsonicError.InvalidUrl())) }
+        val (normalized, validationError) = validateSignIn(f)
+        if (validationError != null || normalized == null) {
+            _form.update { it.copy(error = validationError) }
             return
         }
         // The address and user are hidden from the log from now on, before the server answers.
@@ -148,4 +139,14 @@ class SessionViewModel(app: Application) : AndroidViewModel(app) {
         AppSession.set(c)
         _state.value = SessionState.SignedIn(readOnly = readOnly, testServer = testServer)
     }
+}
+
+/** Validates the sign-in form locally; returns the normalised server URL or an error for the screen. */
+internal fun validateSignIn(f: SignInForm): Pair<HttpUrl?, String?> {
+    if (f.url.isBlank()) return null to "Enter the server address."
+    if (SubsonicClient.hasUrlCredentials(f.url)) return null to errorMessage(SubsonicError.InvalidUrl(hasCredentials = true))
+    if (f.user.isBlank()) return null to "Enter your username."
+    if (f.password.isEmpty()) return null to "Enter your password."
+    val normalized = SubsonicClient.normalizeUrl(f.url) ?: return null to errorMessage(SubsonicError.InvalidUrl())
+    return normalized to null
 }

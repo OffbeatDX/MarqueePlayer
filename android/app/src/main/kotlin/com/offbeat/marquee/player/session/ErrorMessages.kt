@@ -5,7 +5,11 @@ import java.net.UnknownServiceException
 
 /** What the user reads for each client error. Never includes the address or credentials. */
 fun errorMessage(e: SubsonicError): String = when (e) {
-    is SubsonicError.InvalidUrl -> "That doesn't look like a server address."
+    is SubsonicError.InvalidUrl -> if (e.hasCredentials) {
+        "Don't put a username or password in the server address. Enter them below instead."
+    } else {
+        "That doesn't look like a server address."
+    }
     is SubsonicError.Network -> when {
         !com.offbeat.marquee.player.net.NetworkMonitor.online -> "You're offline, and this isn't saved on the phone yet."
         e.cause is UnknownServiceException -> "Plain http isn't allowed. Use an https:// address."

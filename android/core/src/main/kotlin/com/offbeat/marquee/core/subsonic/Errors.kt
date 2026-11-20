@@ -16,8 +16,11 @@ sealed class SubsonicError(message: String, cause: Throwable? = null) : Exceptio
     class Server(val code: Int?, val httpStatus: Int?, serverMessage: String?) :
         SubsonicError("Server error (code=$code, http=$httpStatus): ${serverMessage.orEmpty()}")
 
-    /** What was typed cannot be a server address. */
-    class InvalidUrl : SubsonicError("Not a valid server address")
+    /** What was typed cannot be a server address (or embeds a username/password). */
+    class InvalidUrl(val hasCredentials: Boolean = false) : SubsonicError(
+        if (hasCredentials) "Server address cannot contain a username or password"
+        else "Not a valid server address",
+    )
 
     /** The address answered, but not with a Subsonic response. */
     class NotSubsonic(detail: String) : SubsonicError("Not a Subsonic server: $detail")

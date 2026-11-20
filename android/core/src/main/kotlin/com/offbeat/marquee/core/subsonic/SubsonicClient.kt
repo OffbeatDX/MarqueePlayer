@@ -39,7 +39,8 @@ class SubsonicClient(
     httpClient: OkHttpClient = defaultHttpClient(),
     private val clientName: String = CLIENT_NAME,
 ) {
-    private val base: HttpUrl = normalizeUrl(credentials.url) ?: throw SubsonicError.InvalidUrl()
+    private val base: HttpUrl = normalizeUrl(credentials.url)
+        ?: throw SubsonicError.InvalidUrl(hasCredentials = hasUrlCredentials(credentials.url))
 
     /**
      * The HTTP client every call goes through (API, streams, downloads, covers): automatic
@@ -323,11 +324,7 @@ class SubsonicClient(
             .addInterceptor(SameOriginRedirectInterceptor())
             .build()
 
-        /**
-         * The base URL from what the user typed: https:// added when there is no scheme, a
-         * trailing slash or `/rest` removed. Null when it cannot be an HTTP URL.
-         */
-        fun normalizeUrl(input: String): HttpUrl? {
+        private fun parseUrl(input: String): HttpUrl? {
             var s = input.trim()
             if (s.isEmpty()) return null
             if (!s.contains("://")) s = "https://$s"
@@ -335,6 +332,23 @@ class SubsonicClient(
             if (s.endsWith("/rest")) s = s.removeSuffix("/rest")
             val url = s.toHttpUrlOrNull() ?: return null
             if (url.host.isEmpty()) return null
+            return url
+        }
+
+        /** True when [input] puts a username or password in the address (e.g. `https://me:secret@host`). */
+        fun hasUrlCredentials(input: String): Boolean {
+            val url = parseUrl(input) ?: return false
+            return url.username.isNotEmpty() || url.password.isNotEmpty()
+        }
+
+        /**
+         * The base URL from what the user typed: https:// added when there is no scheme, a
+         * trailing slash or `/rest` removed. Null when it cannot be an HTTP URL or carries a
+         * username or password.
+         */
+        fun normalizeUrl(input: String): HttpUrl? {
+            val url = parseUrl(input) ?: return null
+            if (url.username.isNotEmpty() || url.password.isNotEmpty()) return null
             return url.newBuilder().query(null).fragment(null).build()
         }
     }
