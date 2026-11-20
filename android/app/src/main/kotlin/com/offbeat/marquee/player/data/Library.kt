@@ -483,6 +483,21 @@ object Library {
     }
 
     /**
+     * Forgets the favourite states and deletes `favourites.json` through [favouritesWriter] on the
+     * writer's own thread, with a sequence number of its own: a write queued before (a toggle just
+     * before sign-out) is then skipped, so it can't bring the file back.
+     */
+    private suspend fun clearFavourites() {
+        val seq: Long
+        synchronized(favouritesSnapshotLock) {
+            favouriteOverrides.clear()
+            seq = favouritesWriter.nextSeq()
+            _favourites.value = emptyMap()
+        }
+        favouritesScope.launch { runCatching { favouritesWriter.clear(favouritesFile(), seq) } }.join()
+    }
+
+    /**
      * getStarred2 is the server's whole answer: the states kept here follow it (a change made on
      * another device shows), except changes still waiting in the outbox.
      */
@@ -543,10 +558,8 @@ object Library {
         artists.clear()
         playlists.clear()
         lists.clear()
-        favouriteOverrides.clear()
-        favouritesFile().delete()
+        clearFavourites()
         ratingOverrides.clear()
-        _favourites.value = emptyMap()
         _ratings.value = emptyMap()
         _playlistsChanged.value = null
     }
@@ -554,7 +567,8 @@ object Library {
 
 /**
  * Serializes atomic writes to `favourites.json` via `<name>.tmp` and skips any snapshot whose
- * sequence number is older than the last write.
+ * sequence number is older than the last write or clear (sign-out), so a late write can't undo
+ * a newer one or bring back a deleted file.
  */
 internal class FavouritesWriter {
     private val seqGen = java.util.concurrent.atomic.AtomicLong(0)
@@ -573,6 +587,16 @@ internal class FavouritesWriter {
             file.delete()
             if (!tmp.renameTo(file)) tmp.delete()
         }
+        return true
+    }
+
+    /** Deletes [file] (and a leftover temp file) unless a newer write or clear already ran. */
+    @Synchronized
+    fun clear(file: File, seq: Long = nextSeq()): Boolean {
+        if (seq <= lastSeq) return false
+        lastSeq = seq
+        File(file.parentFile, file.name + ".tmp").delete()
+        file.delete()
         return true
     }
 }

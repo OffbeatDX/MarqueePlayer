@@ -35,6 +35,35 @@ class FavouritesWriterTest {
         assertEquals("""{"a":true,"b":false}""", file.readText())
     }
 
+    /** Sign-out: a toggle's write that was queued before the clear but runs after it is skipped. */
+    @Test
+    fun lateWriteDoesNotBringBackAClearedFile() {
+        val file = File(tmp.root, "favourites.json")
+        val writer = FavouritesWriter()
+        assertTrue(writer.write(file, """{"a":true}""", writer.nextSeq()))
+        val queuedBeforeSignOut = writer.nextSeq()
+        val signOut = writer.nextSeq()
+
+        assertTrue(writer.clear(file, signOut))
+        assertFalse(file.exists())
+        assertFalse(writer.write(file, """{"a":true,"b":true}""", queuedBeforeSignOut))
+        assertFalse("a late write re-created the file after sign-out", file.exists())
+
+        // A change made after sign-out (the next sign-in) is written as usual.
+        assertTrue(writer.write(file, """{"c":true}""", writer.nextSeq()))
+        assertEquals("""{"c":true}""", file.readText())
+    }
+
+    @Test
+    fun olderClearDoesNotDeleteANewerWrite() {
+        val file = File(tmp.root, "favourites.json")
+        val writer = FavouritesWriter()
+        val clearSeq = writer.nextSeq()
+        assertTrue(writer.write(file, """{"a":true}""", writer.nextSeq()))
+        assertFalse(writer.clear(file, clearSeq))
+        assertEquals("""{"a":true}""", file.readText())
+    }
+
     @Test
     fun concurrentOutOfOrderWritesSerializeAndKeepNewestSnapshot() {
         val file = File(tmp.root, "favourites.json")
