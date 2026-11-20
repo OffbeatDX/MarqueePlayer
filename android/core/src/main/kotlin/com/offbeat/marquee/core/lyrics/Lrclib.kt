@@ -1,5 +1,6 @@
 package com.offbeat.marquee.core.lyrics
 
+import com.offbeat.marquee.core.subsonic.SameOriginRedirectInterceptor
 import com.offbeat.marquee.core.subsonic.await
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -215,3 +216,16 @@ class LoopbackOnly(private val onRefused: () -> Unit = {}) : Interceptor {
         return chain.proceed(chain.request())
     }
 }
+
+/**
+ * Sets up a read-only (test) build's LRCLIB client so every request, redirects included, stays on
+ * the loopback: [LoopbackOnly] checks the first request, and OkHttp's own redirect following (which
+ * would run after it, unchecked) is replaced by [SameOriginRedirectInterceptor], which follows a
+ * redirect only to the same scheme, host and port and refuses any other before a DNS lookup or a
+ * connection. The stand-in never needs a redirect to another host.
+ */
+fun OkHttpClient.Builder.lrclibLoopbackOnly(onRefused: () -> Unit = {}): OkHttpClient.Builder =
+    followRedirects(false)
+        .followSslRedirects(false)
+        .addInterceptor(LoopbackOnly(onRefused))
+        .addInterceptor(SameOriginRedirectInterceptor())

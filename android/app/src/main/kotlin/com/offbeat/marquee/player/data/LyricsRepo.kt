@@ -3,7 +3,7 @@ package com.offbeat.marquee.player.data
 import android.content.Context
 import android.os.LocaleList
 import com.offbeat.marquee.player.diag.AppLog
-import com.offbeat.marquee.core.lyrics.LoopbackOnly
+import com.offbeat.marquee.core.lyrics.lrclibLoopbackOnly
 import com.offbeat.marquee.core.lyrics.LrclibClient
 import com.offbeat.marquee.core.lyrics.LyricsAnswer
 import com.offbeat.marquee.core.lyrics.LyricsCache
@@ -39,7 +39,7 @@ enum class OnlineLyrics {
  *
  * LRCLIB has its own OkHttp client: the Subsonic read-only guard refuses anything that is not a
  * `rest/` endpoint. It shares the session client's connection pool and dispatcher. In read-only
- * builds it also carries [LoopbackOnly], so nothing but a local stand-in can ever be reached.
+ * builds it also carries [lrclibLoopbackOnly] (redirects included), so nothing but a local stand-in can ever be reached.
  */
 object LyricsRepo {
     private const val TAG = "MarqueeLyrics"
@@ -74,7 +74,7 @@ object LyricsRepo {
             .dispatcher(session.dispatcher)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
-            .apply { if (BuildConfig.READ_ONLY) addInterceptor(LoopbackOnly { AppLog.w(TAG, "Refused by read-only mode: a lyrics request to a non-loopback host") }) }
+            .apply { if (BuildConfig.READ_ONLY) lrclibLoopbackOnly { AppLog.w(TAG, "Refused by read-only mode: a lyrics request to a non-loopback host") } }
             .addInterceptor { chain ->
                 // The host and path only: never the track or the query.
                 AppLog.i(TAG, "lrclib ${chain.request().url.host}${chain.request().url.encodedPath}")

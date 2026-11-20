@@ -337,6 +337,36 @@ class LrclibClientTest {
         }
     }
 
+    /** A redirect from the loopback stand-in must not take a test build's request anywhere else. */
+    @Test
+    fun testBuildsStayOnTheLoopbackAcrossRedirects() = runTest {
+        val looked = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val dns = object : okhttp3.Dns {
+            override fun lookup(hostname: String): List<java.net.InetAddress> {
+                looked += hostname
+                if (hostname != "localhost" && hostname != "127.0.0.1") throw java.net.UnknownHostException(hostname)
+                return okhttp3.Dns.SYSTEM.lookup(hostname)
+            }
+        }
+        val guarded = http.newBuilder().dns(dns).lrclibLoopbackOnly().build()
+        // A redirect on the same loopback server is still followed.
+        server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/api/get-moved"))
+        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(MockResponse().setBody("[]"))
+        assertEquals(LyricsAnswer.NotFound, LrclibClient(guarded, server.url("/").toString(), "x").lookup(t))
+        assertEquals("/api/get", server.takeRequest().requestUrl!!.encodedPath)
+        assertEquals("/api/get-moved", server.takeRequest().requestUrl!!.encodedPath)
+        // A redirect to another host is refused before it is even looked up.
+        server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "http://lrclib.invalid/api/get"))
+        try {
+            LrclibClient(guarded, server.url("/").toString(), "x").lookup(t)
+            fail()
+        } catch (e: LrclibError.Network) {
+            // refused
+        }
+        assertFalse("the redirect target was looked up: $looked", "lrclib.invalid" in looked)
+    }
+
     @Test
     fun busyAndServerErrorsAreTyped() = runTest {
         server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "30"))
