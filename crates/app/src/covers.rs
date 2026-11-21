@@ -3,9 +3,10 @@
 //!
 //! A model asks for a cover in `row_data`; if it is not in memory yet the row gets a
 //! placeholder and the request goes to a worker. When the decode lands back on the UI
-//! thread, every live model waiting for that cover gets a `row_changed`. This keeps
-//! scrolling smooth: nothing decodes on the UI thread, and only rows on screen
-//! (which `ListView` instantiates) ask for anything.
+//! thread, every live model waiting for that cover gets a `row_changed`, which reaches the
+//! tile of that row alone (`RowNotify`). This keeps scrolling smooth: nothing decodes on
+//! the UI thread, only rows on screen (which `ListView` instantiates) ask for anything,
+//! and a cover that loads redraws one tile.
 //!
 //! The newest request is decoded first. After a fast scroll through a large grid, the
 //! covers where the scroll stopped come first, not after hundreds the user scrolled
@@ -27,7 +28,7 @@ use std::rc::{Rc, Weak};
 use std::sync::{Arc, Condvar, Mutex};
 
 use library::{Album, ArtCache};
-use slint::{Image, Model, ModelNotify, ModelTracker, Rgb8Pixel, SharedPixelBuffer, SharedString};
+use slint::{Image, Model, ModelNotify, ModelPeer, ModelTracker, Rgb8Pixel, SharedPixelBuffer, SharedString};
 
 use crate::AlbumCard;
 
@@ -390,17 +391,85 @@ pub fn card(a: &Album, cover: Option<Image>) -> AlbumCard {
     }
 }
 
+/// A model's change tracking with a tracker for each row read by its index.
+///
+/// A grid reads its tiles by index (`albums[i]`: Slint has no grid, so a row of the list
+/// holds several). `ModelNotify` alone keeps one dependency for every row read that way: a
+/// change to one row, a cover loaded, then has every tile on screen read its album again
+/// and lay out its texts and its artist links again, on each frame a cover came in.
+/// Scrolling fast through covers not in memory yet, that was every frame: on a maximized
+/// 1440p window (sixty tiles) frames of 16 to 20 ms where the Genres page, whose few covers
+/// are soon all in memory, took 5 (`MP_BENCH=grid`). Here a row's change reaches only what
+/// read that row.
+#[derive(Default)]
+struct RowNotify {
+    /// The repeaters over the model (`for album in albums`) and its row count.
+    all: ModelNotify,
+    /// The rows read by index, each with what depends on it (as row 0 of its own tracker).
+    rows: RefCell<HashMap<usize, Rc<ModelNotify>>>,
+}
+
+impl RowNotify {
+    fn row_changed(&self, row: usize) {
+        // Out of the map first: marking dependents must not meet a borrow of it.
+        let tracker = self.rows.borrow().get(&row).cloned();
+        if let Some(t) = tracker {
+            t.row_changed(0);
+        }
+        self.all.row_changed(row);
+    }
+
+    /// Rows came, went or moved: whatever read a row by its index reads it again (and
+    /// tracks it again, so the trackers start over).
+    fn every_row_changed(&self) {
+        let rows = std::mem::take(&mut *self.rows.borrow_mut());
+        for t in rows.values() {
+            t.row_changed(0);
+        }
+    }
+
+    fn row_added(&self, index: usize, count: usize) {
+        self.every_row_changed();
+        self.all.row_added(index, count);
+    }
+
+    fn row_removed(&self, index: usize, count: usize) {
+        self.every_row_changed();
+        self.all.row_removed(index, count);
+    }
+
+    fn reset(&self) {
+        self.every_row_changed();
+        self.all.reset();
+    }
+}
+
+impl ModelTracker for RowNotify {
+    fn attach_peer(&self, peer: ModelPeer) {
+        self.all.attach_peer(peer);
+    }
+
+    fn track_row_count_changes(&self) {
+        self.all.track_row_count_changes();
+    }
+
+    fn track_row_data_changes(&self, row: usize) {
+        let tracker = self.rows.borrow_mut().entry(row).or_default().clone();
+        tracker.track_row_data_changes(0);
+    }
+}
+
 /// Albums as a Slint model, covers filled in as they load.
 pub struct AlbumModel {
     albums: RefCell<Vec<Album>>,
     /// Rows waiting for each cover stem.
     waiting: RefCell<HashMap<String, Vec<usize>>>,
-    notify: ModelNotify,
+    notify: RowNotify,
 }
 
 impl AlbumModel {
     pub fn new(albums: Vec<Album>) -> Rc<Self> {
-        let m = Rc::new(Self { albums: RefCell::new(albums), waiting: RefCell::default(), notify: ModelNotify::default() });
+        let m = Rc::new(Self { albums: RefCell::new(albums), waiting: RefCell::default(), notify: RowNotify::default() });
         let weak: Weak<dyn CoverListener> = Rc::downgrade(&(m.clone() as Rc<dyn CoverListener>));
         register(weak);
         m
@@ -474,6 +543,8 @@ impl Model for AlbumModel {
     }
 
     fn row_data(&self, row: usize) -> Option<AlbumCard> {
+        #[cfg(feature = "bench")]
+        ROW_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let albums = self.albums.borrow();
         let a = albums.get(row)?;
         // An album only the server has, on screen without its cover yet: fetched first.
@@ -483,7 +554,12 @@ impl Model for AlbumModel {
         let cover = a.art.as_deref().and_then(|stem| {
             let img = get(stem, card_kind());
             if img.is_none() {
-                self.waiting.borrow_mut().entry(stem.to_owned()).or_default().push(row);
+                // Once: a row read again while it waits is told once when the cover comes.
+                let mut waiting = self.waiting.borrow_mut();
+                let rows = waiting.entry(stem.to_owned()).or_default();
+                if !rows.contains(&row) {
+                    rows.push(row);
+                }
             }
             img
         });
@@ -579,6 +655,17 @@ pub fn decodes() -> usize {
 #[cfg(feature = "bench")]
 pub fn cached(stem: &str, kind: Kind) -> bool {
     CACHE.with(|c| c.borrow().as_ref().is_some_and(|c| c.entries.contains_key(&(stem.to_owned(), kind))))
+}
+
+/// Measurement (bench/mod.rs): rows of album models read so far. A grid scrolled reads each
+/// tile's a few times (as it comes, and again when its cover does), not once for every
+/// cover that comes in while it is on screen (`RowNotify`).
+#[cfg(feature = "bench")]
+static ROW_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "bench")]
+pub fn row_reads() -> usize {
+    ROW_READS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Measurement (bench/zoom.rs): the size of a cover in memory.
