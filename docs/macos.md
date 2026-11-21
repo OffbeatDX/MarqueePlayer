@@ -171,10 +171,13 @@ The owner's decisions for the port, and how the code carries them out:
   file's extended attributes, as on Linux.
 - **The Finder, links, the clipboard** (`platform/macos/shell.rs`): "Show in Finder"
   (`open -R`), folders and web pages with `open`, the general pasteboard for Copy and Paste.
-- **Rendering** uses Slint's software renderer at the display's native scale. Core Animation
-  composites the changed tiles in an sRGB window. macOS color-manages the result for the
-  display. The transport uses the album's pre-blurred artwork.
-  Set `SLINT_BACKEND=winit-skia` to use Metal and live backdrop blur.
+- **Rendering.** The default uses retained software tiles at the display's native scale
+  and pre-blurred album art behind the transport. `SLINT_BACKEND=winit-software` selects
+  it explicitly. `SLINT_BACKEND=winit-skia` selects Skia on Metal with live backdrop blur.
+  During playback, Core Animation can draw the spectrum beneath the Metal window contents.
+  The glass samples the moving backdrop while the controls stay sharp. When a sidebar
+  slides across the page or a menu opens, Skia draws the full scene together. Settings → About
+  reports the window surface in use.
 - **Fonts** use San Francisco unless `theme.toml`'s `font_family` names another.
 - **Words**: "Show in Finder", "Exclusive mode" (not available), "Open at login"
   (`platform::Words`).
@@ -217,6 +220,23 @@ beta averaged 35.5% of one core with a median physical footprint of 787 MiB. The
 renderer with the Core Animation spectrum averaged 3.1% and 142 MiB. Retired instructions
 fell from 1.75 billion to 107 million per second. macOS adjusts CPU clock speed with load,
 so the same renderer's CPU percentage varies between runs.
+
+The Metal comparison below used the same machine, passage and window, seven seconds of
+warm-up and a fresh process per 32-second sample. The first row is commit `86c160e`
+with Metal explicitly selected. The other three rows ran the same revised release binary.
+
+| Renderer and visualizer | CPU, % of one core | Median physical footprint |
+| --- | ---: | ---: |
+| Previous Metal, Classic | 49.65% | 683.3 MiB |
+| Metal with Core Animation, Classic | 5.23% | 686.4 MiB |
+| Tiled default, Classic | 4.06% | 132.3 MiB |
+| Metal with Core Animation, Ripples at Full | 7.83% | 820.5 MiB |
+
+All three revised runs reported zero audio underruns. A window capture of Ripples
+at Full showed 58.4 distinct updates per second in the area around the cover. On
+this Mac most of Metal's memory cost persisted even without a moving visualizer.
+The CPU improvement and the remaining footprint are why Metal is available as an
+override and the tiled renderer remains the default.
 
 Remaining platform checks include the following.
 

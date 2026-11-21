@@ -617,6 +617,9 @@ export global Visualizer {
     in-out property <bool> active;
     // On macOS the compositor can draw the spectrum and backdrop below the UI.
     in-out property <bool> native-underlay;
+    // Cache the controls above moving Slint-drawn paths. Their glass stays live underneath.
+    in-out property <bool> metal-surface;
+    out property <bool> cache-controls: metal-surface && active && !still && !native-underlay;
     in-out property <bool> still;
     // The stage's size, from the stage shown (Rust lays the frame out across it).
     in-out property <length> stage-width;

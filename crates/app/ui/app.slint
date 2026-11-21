@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Page, AlbumCard, TrackRow, ShelfView, ShelfLayout, QueueRow, PlaylistRow, NamedCount, ShelfEdit } from "types.slint";
-import { Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions } from "stores.slint";
+import { StageBounds, Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions } from "stores.slint";
 import { HomePage } from "pages/home.slint";
 import { AlbumsPage, ShelfAllPage, ArtistsPage, GroupsPage, TracksPage } from "pages/browse.slint";
 import { AlbumPageView } from "pages/album.slint";
@@ -75,6 +75,17 @@ export component AppWindow inherits Window {
     // Whether the player bar is up (for the bench).
     out property <bool> bar-visible: Player.bar-up;
     out property <length> seek-width: player-bar.seek-width;
+    // Native glass follows stationary chrome. A sliding panel or overlay must sample the
+    // complete foreground and spectrum together until the chrome reaches its resting place.
+    out property <bool> viz-fixed-glass: left-sidebar.settled && right-sidebar.settled
+        && bar-area.y == (Player.bar-up ? self.height - bar-area.height : self.height)
+        && content.x == (Nav.sidebar-pinned ? Theme.sidebar-width : 0px)
+        && content.width == self.width - content.x - (Nav.queue-pinned ? Theme.queue-width : 0px)
+        && !MenuStore.open && !Dialog.open && !Picker.open && !Autoscroll.on;
+    changed viz-fixed-glass => {
+        if !self.viz-fixed-glass && Visualizer.native-underlay && Theme.glass { Actions.visualizer-wake(); }
+    }
+    out property <StageBounds> viz-pill-frame: { x: nav-pill.x, y: nav-pill.y, width: nav-pill.width, height: nav-pill.height };
     // Where the player bar and the caption buttons are, and what the bar needs (for the
     // interface size bench: everything inside the window at every size).
     out property <length> bar-top: bar-area.y;
@@ -238,7 +249,7 @@ export component AppWindow inherits Window {
             }
         }
 
-        NavPill {
+        nav-pill := NavPill {
             // Clear of the system's caption buttons where they are over the page (macOS).
             x: max(content.x + 12px, Chrome.caption-inset);
             y: 14px;
@@ -259,13 +270,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        QueueSidebar {
+        right-sidebar := QueueSidebar {
             y: 0;
             window-width: root.width;
             window-height: root.height;
         }
 
-        Sidebar { x: 0; y: 0; window-height: root.height; }
+        left-sidebar := Sidebar { x: 0; y: 0; window-height: root.height; }
 
         // With auto-hide, the bar's place at the bottom: the pointer reaching it brings the
         // bar back. Under the bar, so it only sees the pointer while the bar is away. It

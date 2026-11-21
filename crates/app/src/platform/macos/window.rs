@@ -68,19 +68,21 @@ fn with_window<R>(f: impl FnOnce(&AppWindow, &winit::window::Window) -> R) -> Op
 }
 
 /// The live surface, when AppKit has attached it to the window.
-pub fn renderer() -> Option<&'static str> {
+fn window_surface(window: &winit::window::Window) -> Option<i32> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     unsafe extern "C" {
         fn mp_macos_window_surface(view: *mut std::ffi::c_void) -> i32;
     }
-    with_window(|_, window| {
-        let RawWindowHandle::AppKit(view) = window.window_handle().ok()?.as_raw() else { return None };
-        // SAFETY: winit keeps the NSView alive here, and this callback runs on its UI thread.
-        match unsafe { mp_macos_window_surface(view.ns_view.as_ptr()) } {
-            1 => Some(super::system::TILED_RENDERER),
-            2 => Some("Metal GPU window surface"),
-            _ => None,
-        }
+    let RawWindowHandle::AppKit(view) = window.window_handle().ok()?.as_raw() else { return None };
+    // SAFETY: winit keeps the NSView alive here, and this callback runs on its UI thread.
+    Some(unsafe { mp_macos_window_surface(view.ns_view.as_ptr()) })
+}
+
+pub fn renderer() -> Option<&'static str> {
+    with_window(|_, window| match window_surface(window)? {
+        1 => Some(super::system::TILED_RENDERER),
+        2 => Some("Metal GPU window surface"),
+        _ => None,
     }).flatten()
 }
 
@@ -88,7 +90,8 @@ pub fn renderer() -> Option<&'static str> {
 /// report the zoomed state, follow the app terminating. The handle is 0 (macOS code finds the
 /// window through the app).
 pub fn install(app: &AppWindow, hooks: Hooks) -> Option<isize> {
-    let maximized = app.window().with_winit_window(|w| w.is_maximized())?;
+    let (maximized, surface) = app.window().with_winit_window(|w| (w.is_maximized(), window_surface(w)))?;
+    app.global::<crate::Visualizer>().set_metal_surface(surface == Some(2));
     APP.with(|a| *a.borrow_mut() = Some(app.as_weak()));
     HOOKS.with(|h| h.set(Some(hooks)));
     MAXIMIZED.with(|m| m.set(Some(maximized)));
