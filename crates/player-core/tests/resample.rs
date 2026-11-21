@@ -397,6 +397,9 @@ fn what_it_costs() {
     // The slowest chunk: within a quarter of the time it plays for (on a CI runner, which
     // measured a third once, `common::allowance`).
     let share_limit = 0.25 * common::allowance();
+    // A second of audio: within a tenth of a core (a CI runner's core is half as fast, and
+    // 44.1 to 768 kHz measured 102 ms there).
+    let cost_limit = 100.0 * common::allowance();
     for (from, to) in all {
         let t0 = Instant::now();
         let f = filter(from, to);
@@ -442,14 +445,14 @@ fn what_it_costs() {
             assert_eq!(made, f.output_frames((x.len() / 2) as u64));
             per_sec = per_sec.min(total / secs);
             worst_chunk = worst_chunk.min(worst);
-            if per_sec < 100.0 && worst_chunk / chunk_ms < share_limit {
+            if per_sec < cost_limit && worst_chunk / chunk_ms < share_limit {
                 break;
             }
         }
         eprintln!("{:>5} -> {:<5} kHz  {per_sec:>22.2}   {worst_chunk:>24.3}   {table_ms:>10.2}", khz(from), khz(to));
         worst_share = worst_share.max(worst_chunk / chunk_ms);
         if !cfg!(debug_assertions) {
-            assert!(per_sec < 100.0, "{from} -> {to}: under a tenth of a core ({per_sec} ms a second)");
+            assert!(per_sec < cost_limit, "{from} -> {to}: under a tenth of a core ({per_sec} ms a second)");
         }
     }
     eprintln!("worst chunk: {:.1}% of the time it plays for", worst_share * 100.0);

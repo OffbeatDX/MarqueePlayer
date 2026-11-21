@@ -113,18 +113,35 @@ struct Capture {
     samples: Arc<Mutex<Vec<f32>>>,
     opens: Arc<Mutex<Vec<u32>>>,
     until: Arc<AtomicUsize>,
+    /// Paced from here on: when it began, and the frames it held then.
+    pace: Arc<Mutex<Option<(Instant, usize)>>>,
 }
+
+/// How many times faster than it plays a paced device takes audio.
+const PACE: usize = 8;
 
 impl Default for Capture {
     fn default() -> Self {
-        Capture { samples: Arc::default(), opens: Arc::default(), until: Arc::new(AtomicUsize::new(usize::MAX)) }
+        Capture { samples: Arc::default(), opens: Arc::default(), until: Arc::new(AtomicUsize::new(usize::MAX)), pace: Arc::default() }
     }
 }
 
 impl Capture {
-    /// The frames it still takes before its mark.
+    /// The frames it still takes before its mark, and at its pace.
     fn room(&self) -> usize {
-        self.until.load(Ordering::Acquire).saturating_sub(self.samples.lock().unwrap().len() / 2)
+        let held = self.samples.lock().unwrap().len() / 2;
+        let paced = match *self.pace.lock().unwrap() {
+            Some((since, from)) => from + (since.elapsed().as_secs_f64() * (RATE * PACE) as f64) as usize,
+            None => usize::MAX,
+        };
+        self.until.load(Ordering::Acquire).min(paced).saturating_sub(held)
+    }
+
+    /// From now on, take audio at `PACE` times the speed it plays at instead of as fast as
+    /// it is decoded.
+    fn paced(&self) {
+        let held = self.samples.lock().unwrap().len() / 2;
+        *self.pace.lock().unwrap() = Some((Instant::now(), held));
     }
 }
 
@@ -177,7 +194,10 @@ fn play_through_engine_with(files: &[PathBuf], seek: Option<(usize, f64)>, cfg: 
     // the one after it (the queue would end there, which is not what is tested). So the
     // device takes nothing until the second track is named, and then stops one frame into
     // each track until the next one is named: at every track's start while each plays whole
-    // (no seek), else at the second's only.
+    // (no seek), else at the second's only. After a seek, where a later track starts in what
+    // the device has taken is not known (what it took before the seek varies), so from there
+    // it takes audio at a pace instead: a few times faster than it plays, which leaves this
+    // thread half a second and more to name each next track.
     let whole = seek.is_none();
     let starts: Vec<usize> = if files.len() > 1 {
         let mut at = 0;
@@ -216,6 +236,7 @@ fn play_through_engine_with(files: &[PathBuf], seek: Option<(usize, f64)>, cfg: 
                     && at == i && !seeked
                 {
                     seeked = true;
+                    cap.paced();
                     player.seek(secs);
                 }
                 if i > 0 || !preset {
