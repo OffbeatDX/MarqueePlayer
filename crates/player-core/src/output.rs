@@ -221,6 +221,12 @@ fn low_water(period: usize, rate: u32) -> usize {
     (period + period / 2).max(rate as usize / 100)
 }
 
+/// The longest a drain waits for the device to play out what it holds.
+const DRAIN_MAX: Duration = Duration::from_secs(2);
+/// A drain that counts what the device plays (`Device::replays_when_dry`) waits this much
+/// longer than the audio it held lasts.
+const DRAIN_SLACK: Duration = Duration::from_millis(250);
+
 /// A device held exclusively is let go after a pause this long, so other applications
 /// get their sound back; the resume reopens it.
 pub const RELEASE_AFTER: Duration = Duration::from_secs(3);
@@ -306,6 +312,13 @@ pub trait Device {
     /// that is coming. `None`: it is filled with silence whenever nothing is decoded.
     fn period(&mut self) -> Option<usize> {
         None
+    }
+    /// Run dry, the device plays its buffer again instead of silence (a WASAPI exclusive
+    /// stream: the hardware loops the buffer), and how little it holds may never read as
+    /// nothing. A drain keeps such a device fed with silence and counts what it plays,
+    /// instead of waiting for it to say it is empty (`DRAIN_MAX`, stuttering meanwhile).
+    fn replays_when_dry(&self) -> bool {
+        false
     }
     /// Short fades on pause, resume, stop and seek (see the module doc). On for real
     /// devices; an offline capture records the decoded stream exactly unless it asks.
@@ -706,7 +719,12 @@ impl Output {
         self.output_seq = seq;
         self.dev.configure(&cfg);
         if self.rate.is_some() {
+            let t = Instant::now();
+            let was_running = self.running;
             self.drain();
+            if was_running {
+                log::info!("output: new output settings; what the device held played out in {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+            }
             self.dev.release();
             self.rate = None;
         }
@@ -1272,13 +1290,48 @@ impl Output {
         self.cur.is_some()
     }
 
+    /// Let what the device holds play out, then stop it (before a reopen, or at the end).
     fn drain(&mut self) {
         if !self.running {
             return;
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while self.dev.queued() > 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(2));
+        let started = Instant::now();
+        let rate = self.rate.unwrap_or(48_000).max(1);
+        if self.dev.replays_when_dry() {
+            // Fed with silence while it plays out, so it never runs dry: what it plays is
+            // counted from how much less it holds after each wait. (Waiting for it to say
+            // nothing was left took the whole `DRAIN_MAX` on a device that never did, the
+            // buffer replaying meanwhile: two seconds of stutter on leaving exclusive mode.)
+            let mut left = self.dev.queued();
+            let deadline = started + (Duration::from_secs_f64(left as f64 / f64::from(rate)) + DRAIN_SLACK).min(DRAIN_MAX);
+            let mut held = left;
+            while left > 0 && Instant::now() < deadline {
+                let room = self.dev.available().unwrap_or(0);
+                if room > 0 {
+                    self.scratch.clear();
+                    self.scratch.resize(room * 2, 0.0);
+                    if self.dev.write(&self.scratch).is_err() {
+                        break;
+                    }
+                    held += room;
+                }
+                self.dev.wait(Duration::from_millis(2));
+                let now = self.dev.queued();
+                left = left.saturating_sub(held.saturating_sub(now));
+                held = now;
+            }
+            if left > 0 {
+                log::warn!("output: {:.0} ms of audio still to play after {:.0} ms; the device is stopped", ms(left as u64, rate), started.elapsed().as_secs_f64() * 1000.0);
+            }
+        } else {
+            let deadline = started + DRAIN_MAX;
+            while self.dev.queued() > 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let left = self.dev.queued();
+            if left > 0 {
+                log::warn!("output: the device still says {left} frames queued after {:.0} ms; it is stopped", started.elapsed().as_secs_f64() * 1000.0);
+            }
         }
         self.dev.stop();
         self.running = false;
@@ -1891,5 +1944,139 @@ mod tests {
         assert_eq!(got.len(), 480 * 2);
         assert!(got.iter().all(|&s| s == 0.0));
         assert!(out.late.is_some());
+    }
+
+    /// A push device played in real time, like a WASAPI exclusive stream: run dry, it plays
+    /// its buffer again (counted as `stale`), and a driver may never say it holds less than
+    /// `floor` frames while it runs (the reading that kept the old drain waiting).
+    #[derive(Default)]
+    struct Timed {
+        rate: u64,
+        buf: u64,
+        floor: u64,
+        replays: bool,
+        start: Option<Instant>,
+        played_before: u64,
+        played: u64,
+        written: u64,
+        /// The end of the last audio that was not silence.
+        music_end: u64,
+        stale: u64,
+        stopped_at: Option<u64>,
+    }
+
+    impl Timed {
+        fn advance(&mut self) {
+            if let Some(t) = self.start {
+                self.played = self.played_before + (t.elapsed().as_secs_f64() * self.rate as f64) as u64;
+            }
+            if self.played > self.written {
+                self.stale += self.played - self.written;
+                self.written = self.played;
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct TimedDev(Arc<Mutex<Timed>>);
+
+    impl TimedDev {
+        fn new(floor: u64, replays: bool) -> TimedDev {
+            TimedDev(Arc::new(Mutex::new(Timed { rate: 48_000, buf: 1920, floor, replays, ..Timed::default() })))
+        }
+    }
+
+    impl Device for TimedDev {
+        fn open(&mut self, _rate: u32) -> Result<(), String> {
+            Ok(())
+        }
+        fn wait(&mut self, timeout: Duration) {
+            std::thread::sleep(timeout.min(Duration::from_millis(1)));
+        }
+        fn available(&mut self) -> Result<usize, String> {
+            let q = self.queued() as u64;
+            let d = self.0.lock().unwrap();
+            Ok((d.buf - q) as usize)
+        }
+        fn queued(&mut self) -> usize {
+            let mut d = self.0.lock().unwrap();
+            d.advance();
+            let real = d.written - d.played;
+            let floor = if d.start.is_some() { d.floor } else { 0 };
+            real.max(floor).min(d.buf) as usize
+        }
+        fn write(&mut self, samples: &[f32]) -> Result<(), String> {
+            let mut d = self.0.lock().unwrap();
+            d.advance();
+            let n = (samples.len() / 2) as u64;
+            assert!(d.written - d.played + n <= d.buf, "overfilled");
+            if let Some(last) = samples.chunks(2).rposition(|f| f[0] != 0.0 || f[1] != 0.0) {
+                d.music_end = d.written + last as u64 + 1;
+            }
+            d.written += n;
+            Ok(())
+        }
+        fn start(&mut self) -> Result<(), String> {
+            let mut d = self.0.lock().unwrap();
+            d.played_before = d.played;
+            d.start = Some(Instant::now());
+            Ok(())
+        }
+        fn stop(&mut self) {
+            let mut d = self.0.lock().unwrap();
+            d.advance();
+            d.start = None;
+            d.stopped_at = Some(d.played);
+        }
+        fn flush(&mut self) {}
+        fn period(&mut self) -> Option<usize> {
+            Some(480)
+        }
+        fn replays_when_dry(&self) -> bool {
+            self.0.lock().unwrap().replays
+        }
+    }
+
+    /// Drain a `TimedDev` holding 40 ms of audio: how long it took, and the device after.
+    fn drain_timed(dev: &TimedDev) -> (Duration, Timed) {
+        let (mut out, _tx) = test_output_on(Box::new(dev.clone()), EqParams::default());
+        out.cur = Some(Cursor { chunk: chunk(ramp(0, 1920), false, false), offset: 0 });
+        out.fill().unwrap();
+        assert_eq!(dev.0.lock().unwrap().written, 1920, "the buffer filled");
+        out.dev.start().unwrap();
+        let t = Instant::now();
+        out.drain();
+        let took = t.elapsed();
+        assert!(!out.running);
+        let d = std::mem::take(&mut *dev.0.lock().unwrap());
+        (took, d)
+    }
+
+    /// Leaving exclusive mode (or a rate change, or the end of the queue) drains the stream
+    /// first. A driver that never says its buffer is empty kept the drain waiting its full
+    /// two seconds while the hardware looped the last 40 ms: the stutter heard on switching
+    /// exclusive mode off. The stream is now fed silence while what it held plays out, and
+    /// stopped once that is played: nothing replayed, nothing cut, in about 40 ms.
+    #[test]
+    fn a_drain_of_an_exclusive_stream_never_lets_it_replay_its_buffer() {
+        for floor in [0, 480] {
+            let dev = TimedDev::new(floor, true);
+            let (took, d) = drain_timed(&dev);
+            assert_eq!(d.stale, 0, "floor {floor}: the device never ran dry");
+            let stopped = d.stopped_at.unwrap();
+            assert!(stopped >= d.music_end, "floor {floor}: all of the audio played before the stop ({stopped} < {})", d.music_end);
+            assert!(took < Duration::from_millis(40 + 200), "floor {floor}: drained in {took:?}");
+        }
+    }
+
+    /// A device that plays silence when dry (shared mode, ALSA) is drained as before: waited
+    /// until it says it is empty, nothing written.
+    #[test]
+    fn a_drain_of_a_device_that_plays_silence_when_dry_writes_nothing() {
+        let dev = TimedDev::new(0, false);
+        let (took, d) = drain_timed(&dev);
+        assert_eq!(d.written.max(d.played), d.played, "nothing written after the audio");
+        assert!(d.stopped_at.unwrap() >= d.music_end);
+        assert!(took < Duration::from_millis(40 + 200), "drained in {took:?}");
     }
 }

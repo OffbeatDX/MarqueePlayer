@@ -420,7 +420,11 @@ apply, in software, and the equalizer while it is on; reducing to 16-bit adds TP
 gapless; a rate change reopens the device, as in shared mode, except into a track a crossfade
 brings in at another rate, which is converted to the device's format until the next pause (see
 [Crossfade](#crossfade)). Paused for 3 s, or stopped,
-the device is let go so other applications get their sound back. When the device accepts
+the device is let go so other applications get their sound back. Before the device is let
+go or reopened (exclusive mode switched off while playing, a rate change, the end of the
+queue), what it holds plays out while it is fed silence behind it: run dry, an exclusive
+stream plays its buffer again, and a driver that never said its buffer was empty made
+switching exclusive mode off stutter for two seconds (`Device::replays_when_dry`). When the device accepts
 no format, does not allow exclusive mode, or another application holds it, playback falls
 back to shared mode and Settings and the pill say why. The negotiation, fallback and sample
 conversion are unit-tested against a fake device; the WASAPI exclusive stream itself

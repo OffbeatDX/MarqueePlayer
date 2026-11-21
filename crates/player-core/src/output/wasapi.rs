@@ -18,10 +18,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wasapi::{
-    AudioClient, AudioRenderClient, Device as MmDevice, DeviceEnumerator, DeviceEventCallbacks, DeviceEventRegistration,
+    AudioClient, AudioClock, AudioRenderClient, Device as MmDevice, DeviceEnumerator, DeviceEventCallbacks, DeviceEventRegistration,
     DeviceState, Direction, Handle, SampleType, ShareMode, StreamMode, WasapiError, WaveFormat,
 };
 
@@ -66,6 +66,59 @@ struct Stream {
     poll: Duration,
     /// Frames between two refills: the engine's period (shared), the stream's (exclusive).
     period: usize,
+    /// The stream's clock (what it has played), for the start-up line.
+    clock: Option<AudioClock>,
+}
+
+/// How long after a stream first starts its health is said (`StartWatch`).
+const WATCH_FOR: Duration = Duration::from_secs(3);
+
+/// The first seconds of a newly opened stream, said once in the log: whether it played in
+/// real time (its clock against the wall clock), how often the output thread found it
+/// empty at a refill, and the longest time between two refills. A stream that stutters
+/// right after opening (shared mode coming back after exclusive) shows here.
+#[derive(Debug)]
+struct StartWatch {
+    started: Instant,
+    refills: u32,
+    dry: u32,
+    last: Option<Instant>,
+    longest: Duration,
+}
+
+impl StartWatch {
+    fn new(started: Instant) -> StartWatch {
+        StartWatch { started, refills: 0, dry: 0, last: None, longest: Duration::ZERO }
+    }
+
+    /// A refill at `now`, with `queued` frames still in the stream. The first one after the
+    /// start is not counted dry (nothing has been written since).
+    fn refill(&mut self, now: Instant, queued: u32) {
+        if let Some(last) = self.last {
+            self.longest = self.longest.max(now.saturating_duration_since(last));
+            if queued == 0 {
+                self.dry += 1;
+            }
+        }
+        self.refills += 1;
+        self.last = Some(now);
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) >= WATCH_FOR
+    }
+
+    /// The line, with `played` seconds by the stream's clock when it is known.
+    fn line(&self, now: Instant, mode: &str, played: Option<f64>) -> String {
+        let wall = now.saturating_duration_since(self.started).as_secs_f64();
+        let clock = played.map_or("its clock unknown".to_owned(), |p| format!("{p:.2} s played by its clock"));
+        format!(
+            "wasapi: {mode} stream, first {wall:.2} s: {clock}, empty at {} of {} refills, longest between two refills {:.0} ms",
+            self.dry,
+            self.refills,
+            self.longest.as_secs_f64() * 1000.0
+        )
+    }
 }
 
 #[derive(Default)]
@@ -87,6 +140,9 @@ pub struct WasapiDevice {
     info: Option<OutputInfo>,
     /// Exclusive mode: the device's sample format. `None`: shared, f32.
     converter: Option<Converter>,
+    /// Set by `open`: the next start begins a `StartWatch`.
+    fresh: bool,
+    watch: Option<StartWatch>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -197,7 +253,8 @@ impl WasapiDevice {
         let event = client.set_get_eventhandle().map_err(err)?;
         let render = client.get_audiorenderclient().map_err(err)?;
         let period = client.get_device_period().map_or(0, |(def, _)| frames(def, rate));
-        Ok((Stream { client, render, event: Some(event), poll: Duration::ZERO, period }, mix_rate))
+        let clock = client.get_audioclock().ok();
+        Ok((Stream { client, render, event: Some(event), poll: Duration::ZERO, period, clock }, mix_rate))
     }
 
     /// Exclusive mode at `rate`, in the best format the device takes. `Err` carries the
@@ -236,7 +293,8 @@ impl WasapiDevice {
             }
         }
         let render = client.get_audiorenderclient().map_err(err)?;
-        Ok((Stream { client, render, event: None, poll: poll_interval(used.1), period: frames(used.1, rate) }, fmt))
+        let clock = client.get_audioclock().ok();
+        Ok((Stream { client, render, event: None, poll: poll_interval(used.1), period: frames(used.1, rate), clock }, fmt))
     }
 }
 
@@ -277,6 +335,7 @@ impl Device for WasapiDevice {
         self.ensure_com();
         self.stream = None;
         self.converter = None;
+        self.watch = None;
         let enumerator = DeviceEnumerator::new().map_err(err)?;
         self.register_watch(&enumerator);
         // Anything reported before this open is already followed by it.
@@ -305,6 +364,7 @@ impl Device for WasapiDevice {
             info.mix_rate = mix_rate;
         }
         self.device_id = Some(id);
+        self.fresh = true;
         log::info!(
             "wasapi: opened {name} at {rate} Hz, {}{}",
             info.exclusive.as_deref().map_or("shared".to_owned(), |f| format!("exclusive {f}")),
@@ -326,7 +386,23 @@ impl Device for WasapiDevice {
 
     fn available(&mut self) -> Result<usize, String> {
         let s = self.stream.as_ref().ok_or("not open")?;
-        Ok(s.client.get_available_space_in_frames().map_err(err)? as usize)
+        let Some(w) = self.watch.as_mut() else {
+            return Ok(s.client.get_available_space_in_frames().map_err(err)? as usize);
+        };
+        let queued = s.client.get_current_padding().map_err(err)?;
+        let size = s.client.get_buffer_size().map_err(err)?;
+        let now = Instant::now();
+        w.refill(now, queued);
+        if w.due(now) {
+            let mode = if self.converter.is_some() { "exclusive" } else { "shared" };
+            let played = s.clock.as_ref().and_then(|c| {
+                let f = c.get_frequency().ok().filter(|&f| f > 0)?;
+                c.get_position().ok().map(|(p, _)| p as f64 / f as f64)
+            });
+            log::info!("{}", w.line(now, mode, played));
+            self.watch = None;
+        }
+        Ok(size.saturating_sub(queued) as usize)
     }
 
     fn queued(&mut self) -> usize {
@@ -355,13 +431,19 @@ impl Device for WasapiDevice {
     }
 
     fn start(&mut self) -> Result<(), String> {
-        self.stream.as_ref().ok_or("not open")?.client.start_stream().map_err(err)
+        self.stream.as_ref().ok_or("not open")?.client.start_stream().map_err(err)?;
+        if std::mem::take(&mut self.fresh) {
+            self.watch = Some(StartWatch::new(Instant::now()));
+        }
+        Ok(())
     }
 
     fn stop(&mut self) {
         if let Some(s) = &self.stream {
             let _ = s.client.stop_stream();
         }
+        // A stop (a pause, a drain, a cut) ends the first seconds early: not said.
+        self.watch = None;
     }
 
     fn route_changed(&mut self) -> bool {
@@ -392,6 +474,11 @@ impl Device for WasapiDevice {
 
     fn holds_device(&self) -> bool {
         self.converter.is_some() && self.stream.is_some()
+    }
+
+    /// Exclusive: run dry, the hardware plays its buffer again.
+    fn replays_when_dry(&self) -> bool {
+        self.holds_device()
     }
 
     fn latency(&mut self) -> Duration {
@@ -464,6 +551,24 @@ mod tests {
         assert_ne!(buffer, BUFFER_HNS.max(buffer * 4));
         // A reported buffer shorter than the period: the period shrinks to it.
         assert_eq!(aligned_retry(64, 48_000, 30_000), (13_333, 13_333));
+    }
+
+    #[test]
+    fn the_start_up_line_says_empty_refills_and_the_longest_gap() {
+        let t = Instant::now();
+        let mut w = StartWatch::new(t);
+        // The first refill after the start finds it empty (nothing written yet): not dry.
+        w.refill(t, 0);
+        w.refill(t + Duration::from_millis(10), 900);
+        w.refill(t + Duration::from_millis(210), 0);
+        w.refill(t + Duration::from_millis(220), 480);
+        assert!(!w.due(t + Duration::from_millis(2999)));
+        assert!(w.due(t + WATCH_FOR));
+        assert_eq!(
+            w.line(t + WATCH_FOR, "shared", Some(1.234)),
+            "wasapi: shared stream, first 3.00 s: 1.23 s played by its clock, empty at 1 of 4 refills, longest between two refills 200 ms"
+        );
+        assert!(w.line(t + WATCH_FOR, "exclusive", None).contains("its clock unknown"));
     }
 
     #[test]
