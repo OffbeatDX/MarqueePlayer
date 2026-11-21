@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
     // fit the monitor (zoom.rs).
     min-width: Chrome.min-width;
     min-height: Chrome.min-height;
-    background: Theme.bg;
+    background: Visualizer.native-underlay ? transparent : Theme.bg;
     default-font-family: Theme.font-family;
     default-font-size: Theme.font-body;
     in property <image> app-icon;
@@ -47,6 +47,14 @@ export component AppWindow inherits Window {
     public function focus-search() {
         search-page.focus-field();
     }
+
+    // The player bar uses the thumbnail. Only these views show the full-size playing cover.
+    in property <bool> window-shown;
+    out property <string> full-cover-stem: window-shown && !root.minimized && (Nav.page == Page.now-playing
+        || (Nav.page == Page.settings && SettingsView.section == 5 && SettingsView.filter == "" && Visualizer.ring))
+        ? Player.cover-stem : "";
+    callback full-cover-changed(string);
+    changed full-cover-stem => { self.full-cover-changed(self.full-cover-stem); }
 
     // Player bar auto-hide (Settings): while playing, the bar slides away and comes back
     // when the pointer reaches the bottom of the window. The pointer anywhere on the bar
@@ -66,6 +74,7 @@ export component AppWindow inherits Window {
     }
     // Whether the player bar is up (for the bench).
     out property <bool> bar-visible: Player.bar-up;
+    out property <length> seek-width: player-bar.seek-width;
     // Where the player bar and the caption buttons are, and what the bar needs (for the
     // interface size bench: everything inside the window at every size).
     out property <length> bar-top: bar-area.y;
@@ -163,12 +172,12 @@ export component AppWindow inherits Window {
             height: 100%;
             source: Backdrop.image;
             image-fit: cover;
-            visible: Backdrop.visible;
+            visible: Backdrop.visible && !Visualizer.native-underlay;
             opacity: Theme.backdrop-opacity;
         }
         Rectangle {
             background: @linear-gradient(180deg, Theme.backdrop-tint 0%, Theme.bg 70%);
-            visible: Backdrop.visible;
+            visible: Backdrop.visible && !Visualizer.native-underlay;
         }
 
         // Pages. The content shifts right only when the sidebar is pinned.

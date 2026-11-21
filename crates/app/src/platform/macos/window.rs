@@ -67,6 +67,23 @@ fn with_window<R>(f: impl FnOnce(&AppWindow, &winit::window::Window) -> R) -> Op
     app.window().with_winit_window(|w| f(&app, w))
 }
 
+/// The live surface, when AppKit has attached it to the window.
+pub fn renderer() -> Option<&'static str> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    unsafe extern "C" {
+        fn mp_macos_window_surface(view: *mut std::ffi::c_void) -> i32;
+    }
+    with_window(|_, window| {
+        let RawWindowHandle::AppKit(view) = window.window_handle().ok()?.as_raw() else { return None };
+        // SAFETY: winit keeps the NSView alive here, and this callback runs on its UI thread.
+        match unsafe { mp_macos_window_surface(view.ns_view.as_ptr()) } {
+            1 => Some(super::system::TILED_RENDERER),
+            2 => Some("Metal GPU window surface"),
+            _ => None,
+        }
+    }).flatten()
+}
+
 /// Once the winit window exists: keep the hooks, tell the UI the caption is the system's,
 /// report the zoomed state, follow the app terminating. The handle is 0 (macOS code finds the
 /// window through the app).

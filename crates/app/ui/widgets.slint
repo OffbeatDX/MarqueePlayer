@@ -454,23 +454,26 @@ export component AlbumTile inherits Rectangle {
                 }
             }
         }
-        Rectangle {
+        play-ta := TouchArea {
             x: parent.width - self.width - 10px;
             y: parent.height - self.height - 10px;
             width: 44px;
             height: 44px;
-            border-radius: 22px;
             visible: !root.group;
-            background: play-ta.has-hover ? Theme.accent.brighter(10%) : Theme.accent;
-            opacity: ta.has-hover || play-ta.has-hover || root.focused ? 1 : 0;
-            animate opacity { duration: Theme.dur-hover; }
-            drop-shadow-blur: 10px;
-            drop-shadow-color: #00000080;
-            play-ta := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.play(); }
+            mouse-cursor: pointer;
+            clicked => { root.play(); }
+            // Keep the hit area while faded out. A transparent composite would still
+            // render its shadow and icon into a Skia layer for every album.
+            private property <float> fade: ta.has-hover || self.has-hover || root.focused ? 1 : 0;
+            animate fade { duration: Theme.dur-hover; }
+            if play-ta.fade > 0: Rectangle {
+                border-radius: 22px;
+                background: play-ta.has-hover ? Theme.accent.brighter(10%) : Theme.accent;
+                opacity: play-ta.fade;
+                drop-shadow-blur: 10px;
+                drop-shadow-color: #00000080;
+                Icon { glyph: Icons.play; width: 24px; height: 24px; color: Theme.accent-text; }
             }
-            Icon { glyph: Icons.play; width: 24px; height: 24px; color: Theme.accent-text; }
         }
     }
     Rectangle {
@@ -689,6 +692,7 @@ export component TrackListRow inherits Rectangle {
     // The keyboard cursor of the row's list is here (the list has the focus).
     in property <bool> focused;
     out property <bool> hovered: ta.has-hover;
+    private property <bool> show-actions: ta.has-hover || root.focused;
     accessible-role: list-item;
     accessible-label: root.track.title + ", " + root.track.artist + (root.show-album ? ", " + root.track.album : "") + ", " + root.track.duration
         + (root.show-details && root.track.details != "" ? ", " + root.track.details : "") + (root.track.remote ? ", from the server" : "");
@@ -796,9 +800,8 @@ export component TrackListRow inherits Rectangle {
         HorizontalLayout {
             alignment: end;
             spacing: 2px;
-            opacity: ta.has-hover || root.focused ? 1 : 0;
-            IconButton { y: 8px; glyph: Icons.queue; size: 32px; icon-size: 18px; label: "Add to queue"; tabbable: false; clicked => { root.enqueue(false); } }
-            IconButton { y: 8px; glyph: Icons.plus; size: 32px; icon-size: 18px; label: "Play next"; tabbable: false; clicked => { root.enqueue(true); } }
+            IconButton { y: 8px; glyph: root.show-actions ? Icons.queue : ""; size: 32px; icon-size: 18px; label: "Add to queue"; tabbable: false; clicked => { root.enqueue(false); } }
+            IconButton { y: 8px; glyph: root.show-actions ? Icons.plus : ""; size: 32px; icon-size: 18px; label: "Play next"; tabbable: false; clicked => { root.enqueue(true); } }
         }
         // Technical details: quiet, right-aligned, one width for every row so they line up.
         if root.show-details: Text {
@@ -813,13 +816,12 @@ export component TrackListRow inherits Rectangle {
         }
         IconButton {
             y: 8px;
-            glyph: root.track.favourite ? Icons.heart : Icons.heart-outline;
+            glyph: root.track.favourite ? Icons.heart : root.show-actions ? Icons.heart-outline : "";
             size: 32px;
             icon-size: 18px;
             active: root.track.favourite;
             label: root.track.favourite ? "Remove from favourites" : "Add to favourites";
             tabbable: false;
-            opacity: root.track.favourite || ta.has-hover || root.focused ? 1 : 0;
             clicked => { root.favourite(); }
         }
         Text {

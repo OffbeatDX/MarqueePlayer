@@ -140,6 +140,32 @@ The runner (`crates/bench-runner`, never shipped):
 
 ## Measurement and test hooks
 
+Run `cargo xtask bench -- --only playback-cost` to measure ordinary playback. It plays the
+same stereo FLAC on Home, on Now Playing with the visualizer, with the window hidden, and
+after showing Home again. Each sample covers ten seconds after three seconds of warm-up.
+`bench-playback-cost.txt` reports CPU as a percentage of one core and process memory in MiB.
+On macOS the memory figure is physical footprint, which includes graphics allocations.
+Keep the window unobstructed during the visible phases and compare the same window size,
+renderer, audio device and saved settings between builds.
+
+For a representative Now Playing measurement, `viz-idle` can also play a saved queue.
+Use an isolated `MP_DATA_DIR` containing a database backup and its artwork cache, set
+`MP_BENCH_SAVED_QUEUE=1`, and give the profile the window dimensions, panel pins, and
+visualizer preset you want to reproduce. After a three-second warm-up the report includes
+audio progress, spectrum updates, process CPU and memory. Compositor interpolation can
+produce additional display frames between spectrum updates. Use an OS window recording
+when measuring the animation as displayed.
+
+To repeat the check in a production build, start a fresh instance with
+`--resume-playback`. It opens Now Playing and plays the restored queue at its
+saved position. Audio files passed on the command line take precedence.
+
+To check memory across track changes, use a pre-scanned queue with distinct 1200 px
+album covers. Start each build hidden with the same menu-bar settings. Let the queue
+advance, then compare the steady footprint on the first and last tracks. A single-track
+loop can reuse the same image throughout and miss artwork retained by the system media controls.
+The `covers` bench also checks that Now Playing follows rapid skips and clears its artwork.
+
 Environment variables, for development only. `MP_BENCH` and its companions, and the three that
 send requests to another host (`MP_LASTFM_API`, `MP_LISTENBRAINZ_API`, `MP_LRCLIB_API`), need a build with the `bench`
 feature (`--features bench`) or a test build; the rest work in every build:
@@ -151,7 +177,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_VOLUME=0` | Start at this volume |
 | `--minimized` (argument) | Start in the tray, the window made but not shown ("Start with Windows" passes it). Ignored without a tray |
 | `--version` (argument) | Print `Marquee Player <version>` and exit (the AppImage's launcher uses it to check the libraries load) |
-| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) need `SLINT_BACKEND=winit-skia-opengl` and a build with `--features bench-opengl` |
+| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|playback-cost\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) need `SLINT_BACKEND=winit-skia-opengl` and a build with `--features bench-opengl` |
 | `MP_BENCH_IDLE_SECS=<s>` | How long `idle-paused` / `idle-stopped` stay idle, hidden, before quitting (default 90) |
 | `MP_WINDOW=secondary` | Open the window maximized on a monitor other than the primary one, without ever taking the foreground or keyboard focus (also when shown again from the tray); click into it to use it. One monitor: normal placement, still never activated. Bench runs honour it too | On Linux (no monitor to keep clear under a headless compositor): the window opens maximized and never asks for the focus, and the benches size it themselves |
 | `MP_AUDIO=alsa` | Linux: play through ALSA's `default` device instead of PipeWire (the fallback where there is no PipeWire) |
@@ -160,6 +186,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_LISTENBRAINZ_API=<url>` | Bench and test builds only: send every ListenBrainz request to this API root instead, whatever Settings' server address says (a local mock). A release build ignores it: the user's own "Server address" is the supported way to send elsewhere |
 | `MP_LRCLIB_API=<url>` | Bench and test builds only: send lyrics lookups to this API root instead of `https://lrclib.net` (a local mock) |
 | `MP_BENCH_VIZ_SECS=<s>` | How long `viz-idle` lets the visualizer run before pausing and hiding (default 20; then `MP_BENCH_IDLE_SECS`, default 60) |
+| `MP_BENCH_SAVED_QUEUE=1` | With `MP_DATA_DIR`, use that profile's restored queue for `viz-idle`. The default uses the Spectrum fixture album. |
 | `MP_BENCH_EDITION=installed\|installed-all` | Bench builds only: act as the installed edition (for you, for everyone) without any registration: the installer's mutex and quit event, the Default apps button, About's line |
 | `MP_BENCH_DETAILS=off` | With `details`: the same views with the setting off (`off-*` snapshots), and no name prompts |
 | `MP_BENCH_TRAY_SECS=<s>` | How long `tray` plays with the tray animation off, then on (default 30 each) |
