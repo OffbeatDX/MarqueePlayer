@@ -25,7 +25,7 @@ pub const HAS_SKIA_OPENGL: bool = false;
 
 /// Core Animation composites Slint's retained software tiles and the native visualizer.
 pub const TILED_RENDERER: &str = "Core Animation compositor, software-rendered UI tiles";
-pub const RENDERERS: &[(&str, &str)] = &[("software", TILED_RENDERER), ("skia", "Skia (Metal)")];
+pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (Metal)"), ("software", TILED_RENDERER)];
 
 /// A headless Mac or a machine without a Metal device can still open the tiled player.
 pub fn has_metal_device() -> bool {

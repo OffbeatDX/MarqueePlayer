@@ -554,7 +554,8 @@ pub fn toggle_visualizer(st: &Rc<State>) {
 /// Skia's dual-source-blend shaders fail to link ("all must have location qualifiers"),
 /// and the draws that need them, the backdrop blur of a moving panel among them, are
 /// silently dropped. Linux: Skia through wgpu (Vulkan), else Skia on OpenGL (EGL or GLX:
-/// GPUs and drivers without Vulkan), else software. macOS: retained software tiles on Core Animation, else Skia on Metal.
+/// GPUs and drivers without Vulkan), else software. macOS tries Skia on Metal first,
+/// then retained software tiles on Core Animation.
 /// Returns whether glass is available.
 /// `SLINT_BACKEND` still wins when set (`winit-skia-opengl` for the frame-timing bench,
 /// whose rendering notifier the wgpu surface does not call; on Windows that renderer is

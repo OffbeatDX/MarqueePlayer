@@ -168,16 +168,16 @@ The owner's decisions for the port, and how the code carries them out:
 - **Files**: the folder watcher is an FSEvents stream per watched folder (`library::dirwatch`,
   `fsevents.rs`; it reports real paths, given back under the path asked for). File names are
   compared as the file system does, case and Unicode normalisation ignored. Tag editing keeps a
-  file's extended attributes, as on Linux.
+  file's extended attributes, as on Linux. The scanner checks the AppleDouble signature
+  on audio filenames starting with `._` so it skips Finder metadata and keeps genuine tracks.
 - **The Finder, links, the clipboard** (`platform/macos/shell.rs`): "Show in Finder"
   (`open -R`), folders and web pages with `open`, the general pasteboard for Copy and Paste.
-- **Rendering.** The default uses retained software tiles at the display's native scale
-  and pre-blurred album art behind the transport. `SLINT_BACKEND=winit-software` selects
-  it explicitly. `SLINT_BACKEND=winit-skia` selects Skia on Metal with live backdrop blur.
-  During playback, Core Animation can draw the spectrum beneath the Metal window contents.
-  The glass samples the moving backdrop while the controls stay sharp. When a sidebar
-  slides across the page or a menu opens, Skia draws the full scene together. Settings → About
-  reports the window surface in use.
+- **Rendering.** macOS defaults to Skia on Metal with live backdrop blur. Core Animation
+  can draw the moving spectrum beneath the controls. When a menu opens or a sidebar
+  slides, Skia draws the whole scene so the glass follows the animation.
+  For lower memory use, launch with `SLINT_BACKEND=winit-software`. This selects
+  retained tiles at the display's native scale and pre-blurred album art behind the
+  transport. Settings → About reports the window surface in use.
 - **Fonts** use San Francisco unless `theme.toml`'s `font_family` names another.
 - **Words**: "Show in Finder", "Exclusive mode" (not available), "Open at login"
   (`platform::Words`).
@@ -223,20 +223,28 @@ so the same renderer's CPU percentage varies between runs.
 
 The Metal comparison below used the same machine, passage and window, seven seconds of
 warm-up and a fresh process per 32-second sample. The first row is commit `86c160e`
-with Metal explicitly selected. The other three rows ran the same revised release binary.
+with Metal explicitly selected. The other three rows ran the same revised release binary
+(`ed09a22`), which still selected tiled rendering by default.
 
 | Renderer and visualizer | CPU, % of one core | Median physical footprint |
 | --- | ---: | ---: |
 | Previous Metal, Classic | 49.65% | 683.3 MiB |
 | Metal with Core Animation, Classic | 5.23% | 686.4 MiB |
-| Tiled default, Classic | 4.06% | 132.3 MiB |
+| Tiled, Classic | 4.06% | 132.3 MiB |
 | Metal with Core Animation, Ripples at Full | 7.83% | 820.5 MiB |
 
 All three revised runs reported zero audio underruns. A window capture of Ripples
 at Full showed 58.4 distinct updates per second in the area around the cover. On
 this Mac most of Metal's memory cost persisted even without a moving visualizer.
-The CPU improvement and the remaining footprint are why Metal is available as an
-override and the tiled renderer remains the default.
+
+On a copy of an existing library and its artwork cache, two startup scans tried to read
+tags from 3,535 AppleDouble files and took 275–282 ms. With the signature check, both
+scans finished in 107–112 ms, reported zero tag reads and preserved all 3,536 tracks.
+
+The previous installed build logged four Core Audio underruns at startup. After the scanner
+fix, two launches with Ripples at Full selected Metal automatically and logged zero
+startup underruns. The installed player resumed its 44-track queue and scanned the same
+3,536 files in 0.2 seconds, with no tags re-read.
 
 Remaining platform checks include the following.
 
