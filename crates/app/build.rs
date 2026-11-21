@@ -11,7 +11,7 @@ fn main() {
     println!("cargo:rustc-env=APP_VERSION={}", version.text);
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        let sources = ["src/platform/macos/artwork.m", "src/platform/macos/spectrum.m", "src/platform/macos/particles.m"];
+        let sources = ["src/platform/macos/artwork.m", "src/platform/macos/spectrum.m", "src/platform/macos/particles.m", "src/platform/macos/transport.m"];
         let mut build = cc::Build::new();
         if std::env::var_os("CARGO_FEATURE_BENCH").is_some() {
             build.define("MP_BENCH", None);

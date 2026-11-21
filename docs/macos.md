@@ -173,8 +173,10 @@ The owner's decisions for the port, and how the code carries them out:
 - **The Finder, links, the clipboard** (`platform/macos/shell.rs`): "Show in Finder"
   (`open -R`), folders and web pages with `open`, the general pasteboard for Copy and Paste.
 - **Rendering.** macOS defaults to Skia on Metal with live backdrop blur. Core Animation
-  can draw the moving spectrum beneath the controls. When a menu opens or a sidebar
-  slides, Skia draws the whole scene so the glass follows the animation.
+  can draw the moving spectrum beneath the controls, including behind a stationary menu
+  or submenu. Skia draws the whole scene while sidebars slide. During steady playback,
+  the elapsed time and seek fill can update independently of the rest of the window.
+  The ordinary slider handles hovering, dragging and keyboard input.
   For lower memory use, launch with `SLINT_BACKEND=winit-software`. This selects
   retained tiles at the display's native scale and pre-blurred album art behind the
   transport. Settings → About reports the window surface in use.
@@ -234,8 +236,8 @@ with Metal explicitly selected. The other three rows ran the same revised releas
 | Metal with Core Animation, Ripples at Full | 7.83% | 820.5 MiB |
 
 All three revised runs reported zero audio underruns. A window capture of Ripples
-at Full showed 58.4 distinct updates per second in the area around the cover. On
-this Mac most of Metal's memory cost persisted even without a moving visualizer.
+at Full showed 58.4 distinct updates per second in the area around the cover. In that
+build, most of Metal's memory cost persisted even without a moving visualizer.
 
 On a copy of an existing library and its artwork cache, two startup scans tried to read
 tags from 3,535 AppleDouble files and took 275–282 ms. With the signature check, both
@@ -245,6 +247,29 @@ The previous installed build logged four Core Audio underruns at startup. After 
 fix, two launches with Ripples at Full selected Metal automatically and logged zero
 startup underruns. The installed player resumed its 44-track queue and scanned the same
 3,536 files in 0.2 seconds, with no tags re-read.
+
+A 48-second comparison replayed the same menus and page changes in two muted copies
+of the 44-track queue on the M4 Max. Both used the same Metal executable, a fixed
+audio passage, pinned sidebars and full-rate Ripples. The control used the previous
+full-window painting for the transport and open menus. CPU is a percentage of one
+core and memory is the macOS physical footprint.
+
+| Workload | CPU before → after | Median footprint before → after |
+| --- | ---: | ---: |
+| Open menu over cover art | 34.0% → 5.8% | 1,017 → 572 MiB |
+| Open submenu | 34.2% → 4.3% | 958 → 480 MiB |
+| Changing pages | 12.8% → 9.2% | 1,002 → 932 MiB |
+| Menus, page changes and playback combined | 20.0% → 7.4% | 963 → 573 MiB |
+
+Across the sequence, peak CPU over one second fell from 36.1% to 17.3%. Peak
+footprint fell from 1,034 to 992 MiB. Page transitions still use the full Metal
+surface. Both runs advanced the audio playhead and reported zero underruns.
+
+Four 31-second launches compared the signed releases on the same Ripples passage and
+queue. After seven seconds of warm-up, the two control runs at `c1190b6` averaged
+9.26% and 9.29% CPU, with median footprints of 815 and 882 MiB. The two revised runs
+averaged 5.96% and 6.07% CPU, with median footprints of 288 and 406 MiB. All four
+selected Metal automatically and reported zero underruns.
 
 Remaining platform checks include the following.
 

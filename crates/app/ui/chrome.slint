@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Page } from "types.slint";
-import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer, Visualizer } from "stores.slint";
+import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer, Visualizer, ProgressPaint } from "stores.slint";
 import { Icon, Icons, IconButton, Cover, Slider, ArtistLinks, LinkText, FocusRing, FocusTarget } from "widgets.slint";
 import { QueueList } from "lists.slint";
 import { AutoFlickable, AutoscrollBlock } from "autoscroll.slint";
@@ -304,10 +304,23 @@ export component Sidebar inherits Rectangle {
     }
 }
 
+// Shared with the small offscreen clock that paints the same text on macOS.
+export component ElapsedText inherits Text {
+    horizontal-alignment: right;
+    vertical-alignment: center;
+}
+
 // Always-visible transport at the bottom, over the blurred art.
 export component PlayerBar inherits Rectangle {
     height: Theme.bar-height;
     out property <length> seek-width: seek.width;
+    in property <bool> paint-progress-externally;
+    out property <bool> steady-seek: seek.resting && seek.enabled;
+    out property <ProgressPaint> progress-paint: {
+        fill: seek.fill-frame,
+        clock: { x: elapsed.absolute-position.x, y: elapsed.absolute-position.y, width: elapsed.width, height: elapsed.height },
+        elapsed: Player.position-text, family: Theme.font-family, font-size: elapsed.font-size, ink: Theme.text, dim: Theme.text-dim,
+    };
     // The seek or volume slider is being dragged (or has not caught up with its release).
     out property <bool> dragging: seek.active || volume.active;
     // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
@@ -426,17 +439,19 @@ export component PlayerBar inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 10px;
-                Text {
+                elapsed := ElapsedText {
                     width: 44px;
                     // While dragging and until the seek lands: the target, not the old position.
-                    text: seek.active ? floor(seek.shown-value * Player.duration / 60) + ":" + (mod(floor(seek.shown-value * Player.duration), 60) < 10 ? "0" : "") + mod(floor(seek.shown-value * Player.duration), 60) : Player.position-text;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
+                    private property <string> shown-time: seek.active ? floor(seek.shown-value * Player.duration / 60) + ":" + (mod(floor(seek.shown-value * Player.duration), 60) < 10 ? "0" : "") + mod(floor(seek.shown-value * Player.duration), 60) : Player.position-text;
+                    // Keep the same line metrics and accessibility while Core Animation paints it.
+                    text: root.paint-progress-externally ? "0:00" : self.shown-time;
+                    accessible-label: self.shown-time;
                     font-size: Theme.font-small;
-                    color: Theme.text-dim;
+                    color: root.paint-progress-externally ? transparent : Theme.text-dim;
                 }
                 // Live scrub: audio follows the thumb while dragging (throttled in Rust).
                 seek := Slider {
+                    external-fill: root.paint-progress-externally;
                     enabled: Player.has-track && Player.duration > 0;
                     value: Player.duration > 0 ? Player.position / Player.duration : 0;
                     // Arrived when within 0.4 s of the target.

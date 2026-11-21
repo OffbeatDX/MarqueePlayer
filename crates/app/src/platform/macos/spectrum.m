@@ -4,22 +4,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
 #import <CoreImage/CoreImage.h>
+#import <dispatch/dispatch.h>
 #import "particles.h"
 
 bool mp_macos_has_metal_device(void) {
     return MTLCreateSystemDefaultDevice() != nil;
-}
-
-// Inspect only the window surface. Metal layers nested inside the visualizer draw
-// individual effects and do not change how Slint draws the window.
-int mp_macos_window_surface(void *rawView) {
-    CALayer *root = ((__bridge NSView *)rawView).layer;
-    if ([root isKindOfClass:CAMetalLayer.class] && ((CAMetalLayer *)root).device) return 2;
-    for (CALayer *layer in root.sublayers) {
-        if ([layer.name isEqualToString:@"MarqueeSlintForeground"]) return 1;
-        if ([layer isKindOfClass:CAMetalLayer.class] && ((CAMetalLayer *)layer).device) return 2;
-    }
-    return 0;
 }
 
 typedef struct { float position; uint32_t argb; } MPStop;
@@ -28,7 +17,7 @@ typedef struct { float x, width, height, radius, cap, reflection; } MPBar;
 enum { Bloom, Fill, Glow, Line, Caps, Reflection, Ripples = Reflection+6,
        SparksGlow, SparksOld, Sparks, FrontGlow, Front, LayerCount };
 typedef struct { float x, y, w, h; } MPRect;
-typedef struct { float blur, left, right, bar; MPRect pill; } MPGlass;
+typedef struct { float blur, left, right, bar; MPRect pill, menu, submenu; float menu_radius; } MPGlass;
 
 @interface MPPathMask : CAShapeLayer
 @property(nonatomic) size_t sampleCount;
@@ -57,6 +46,13 @@ typedef struct { float blur, left, right, bar; MPRect pill; } MPGlass;
 
 static MPBarScene *scene;
 
+static CIFilter *glassBlur(void) {
+    static CIFilter *blur;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ blur = [CIFilter filterWithName:@"CIGaussianBlur"]; });
+    return blur;
+}
+
 static NSColor *color(uint32_t argb) {
     return [NSColor colorWithSRGBRed:((argb >> 16) & 255) / 255.0
                               green:((argb >> 8) & 255) / 255.0
@@ -73,8 +69,9 @@ static CAGradientLayer *maskedGradient(CALayer *parent) {
 
 // Called on the UI thread. The foreground may be recreated on hide or renderer change.
 // 0 = incompatible surface, 1 = same scene, 2 = new scene needing its brushes and art.
-int mp_spectrum_attach(void *rawView) {
+int mp_spectrum_attach(void *rawView, bool menuOpen, bool glass) {
     NSView *view = (__bridge NSView *)rawView;
+    if ((menuOpen && view.inLiveResize) || (glass && !glassBlur())) return 0;
     CALayer *root = view.layer;
     if (scene && scene.superlayer == root && scene.foreground.superlayer == root && root) return 1;
     [scene removeFromSuperlayer];
@@ -253,15 +250,18 @@ void mp_spectrum_glass(MPGlass panes) {
             CGRectMake(0, 0, left, h - bar), CGRectMake(w - right, 0, right, h - bar),
             CGRectMake(0, h - bar, w, bar),
             CGRectMake(p * panes.pill.x, p * panes.pill.y, p * panes.pill.w, p * panes.pill.h),
+            CGRectMake(p * panes.menu.x, p * panes.menu.y, p * panes.menu.w, p * panes.menu.h),
+            CGRectMake(p * panes.submenu.x, p * panes.submenu.y, p * panes.submenu.w, p * panes.submenu.h),
         };
-        NSMutableArray<CALayer *> *layers = [NSMutableArray arrayWithCapacity:4];
-        for (unsigned i = 0; i < 4; i++) {
+        NSMutableArray<CALayer *> *layers = [NSMutableArray arrayWithCapacity:6];
+        for (unsigned i = 0; i < sizeof(boxes)/sizeof(boxes[0]); i++) {
             if (CGRectIsEmpty(boxes[i])) continue;
             CALayer *pane = [CALayer layer];
             pane.frame = boxes[i];
             pane.masksToBounds = YES;
             if (i == 3) pane.cornerRadius = boxes[i].size.height / 2;
-            CIFilter *blur = [CIFilter filterWithName:@"CIGaussianBlur"];
+            if (i >= 4) pane.cornerRadius = panes.menu_radius * p;
+            CIFilter *blur = [glassBlur() copy];
             [blur setValue:@(panes.blur * p * scene.superlayer.contentsScale) forKey:kCIInputRadiusKey];
             pane.backgroundFilters = @[blur];
             [scene addSublayer:pane];

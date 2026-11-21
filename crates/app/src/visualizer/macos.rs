@@ -11,7 +11,7 @@ use super::{
     Look, Stage, Viz, Where, brush, draw,
     look::{ColourBy, Colours, Style},
 };
-use crate::{AppWindow, Backdrop, Nav, Player, Theme, Visualizer};
+use crate::{AppWindow, Backdrop, MenuStore, Nav, Player, StageBounds, Theme, Visualizer};
 
 #[repr(C)]
 struct Stop {
@@ -30,7 +30,7 @@ struct Bar {
 }
 
 unsafe extern "C" {
-    fn mp_spectrum_attach(view: *mut c_void) -> i32;
+    fn mp_spectrum_attach(view: *mut c_void, menu_open: bool, glass: bool) -> i32;
     fn mp_spectrum_remove();
     fn mp_spectrum_backdrop(base: u32, tint: u32, opacity: f32, rgb: *const u8, width: u32, height: u32);
     fn mp_spectrum_gradient(reflection: bool, stops: *const Stop, count: usize, angle: f32);
@@ -189,8 +189,9 @@ pub(super) fn present(z: &mut Viz, app: &AppWindow, look: &Look, stage: &Stage, 
     let Ok(RawWindowHandle::AppKit(view)) = handle.window_handle().map(|h| h.as_raw()) else {
         return false;
     };
+    let menu = app.global::<MenuStore>();
     // SAFETY: AppKit's NSView comes from the live main-thread Slint window.
-    let attached = unsafe { mp_spectrum_attach(view.ns_view.as_ptr()) };
+    let attached = unsafe { mp_spectrum_attach(view.ns_view.as_ptr(), menu.get_open(), glass) };
     if attached == 0 {
         return false;
     }
@@ -221,7 +222,10 @@ pub(super) fn present(z: &mut Viz, app: &AppWindow, look: &Look, stage: &Stage, 
         left: if nav.get_sidebar_pinned() { theme.get_sidebar_width() } else { 0.0 },
         right: if nav.get_queue_pinned() { theme.get_queue_width() } else { 0.0 },
         bar: if app.get_bar_visible() { theme.get_bar_height() } else { 0.0 },
-        pill: Rect { x: pill.x, y: pill.y, w: pill.width, h: pill.height },
+        pill: pill.into(),
+        menu: if menu.get_open() { menu.get_main_frame().into() } else { Rect::default() },
+        submenu: if menu.get_open() && menu.get_sub_of() >= 0 { menu.get_sub_frame().into() } else { Rect::default() },
+        menu_radius: theme.get_radius_card(),
     };
     if z.native.glass != Some(panes) {
         // SAFETY: the scene owns the filters; it copies scalar layout values synchronously.
@@ -314,12 +318,18 @@ const FRONT_GLOW: usize = 15;
 const FRONT: usize = 16;
 
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Default, PartialEq)]
 struct Rect {
     x: f32,
     y: f32,
     w: f32,
     h: f32,
+}
+
+impl From<StageBounds> for Rect {
+    fn from(frame: StageBounds) -> Self {
+        Self { x: frame.x, y: frame.y, w: frame.width, h: frame.height }
+    }
 }
 
 #[repr(C)]
@@ -330,6 +340,9 @@ struct Glass {
     right: f32,
     bar: f32,
     pill: Rect,
+    menu: Rect,
+    submenu: Rect,
+    menu_radius: f32,
 }
 
 #[repr(C)]
