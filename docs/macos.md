@@ -271,6 +271,11 @@ queue. After seven seconds of warm-up, the two control runs at `c1190b6` average
 averaged 5.96% and 6.07% CPU, with median footprints of 288 and 406 MiB. All four
 selected Metal automatically and reported zero underruns.
 
+After installation, the signed release resumed the listener's queue with full-rate
+Ripples. Over two minutes it averaged 5.94% CPU, peaked at 8.77% over one second,
+and used a median 466 MiB with a peak of 889 MiB. Core Audio reported zero
+underruns and zero lost frames from launch through 130 seconds.
+
 Remaining platform checks include the following.
 
 - CI builds and the full workspace suite on the supported Mac architectures;
