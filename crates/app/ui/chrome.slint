@@ -119,6 +119,8 @@ export component Sidebar inherits Rectangle {
         y: 0;
         x: root.open ? 0px : -Theme.sidebar-width - 24px;
         animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        // Keep the slide, then exclude the offscreen glass and its children from rendering.
+        visible: root.open || self.x > -Theme.sidebar-width - 24px;
         width: Theme.sidebar-width;
         height: root.height - root.bar-room;
         // A middle press on the panel leaves the page under it alone.
@@ -296,6 +298,7 @@ export component Sidebar inherits Rectangle {
 // Always-visible transport at the bottom, over the blurred art.
 export component PlayerBar inherits Rectangle {
     height: Theme.bar-height;
+    out property <length> seek-width: seek.width;
     // The seek or volume slider is being dragged (or has not caught up with its release).
     out property <bool> dragging: seek.active || volume.active;
     // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
@@ -310,6 +313,8 @@ export component PlayerBar inherits Rectangle {
             source: Backdrop.image;
             image-fit: cover;
             visible: Backdrop.visible;
+            // With live glass requested, match the strength of the backdrop it would sample.
+            opacity: Theme.glass-blur > 0px ? Theme.backdrop-opacity : 1;
         }
         Rectangle { background: Theme.bar-tint; }
     }
@@ -575,6 +580,7 @@ export component QueueSidebar inherits Rectangle {
         y: 0;
         x: root.open ? root.width - Theme.queue-width : root.width + 24px;
         animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        visible: root.open || self.x < root.width + 24px;
         width: Theme.queue-width;
         height: root.height;
         AutoscrollBlock { }

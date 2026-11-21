@@ -9,11 +9,9 @@ watching). Windows and Linux are unchanged by it.
 without a Mac. What could be checked there was: the release tool's macOS code type-checks
 for `aarch64-apple-darwin` and its pure parts (Info.plist, the `.icns` container, reading
 `otool`'s output) are unit-tested on Windows; the workflows pass `actionlint` and
-`shellcheck`. Nothing of it has been built, run or heard on a Mac yet: the first run of the
-Desktop workflow with macOS chosen, and of the Release workflow, is the first build. Where
-this page says how something behaves on macOS, that is how the code was written to behave;
-it is **to be confirmed on a Mac** unless [What was tested](#what-was-tested-and-what-was-not)
-says otherwise.
+`shellcheck`. The player has since been built and tested with Core Audio on Apple Silicon.
+The playback results and the remaining platform checks are listed under
+[What was tested](#what-was-tested-and-what-was-not).
 
 ## Building
 
@@ -157,6 +155,7 @@ The owner's decisions for the port, and how the code carries them out:
   a click opens its menu, as every status item's does, with the same menu as on the other
   systems; there is no click-to-play, middle button or wheel on it. Closing the window keeps
   the app in the menu bar when that is set; clicking the Dock icon brings the window back.
+  The macOS menu-bar icon stays static during playback.
 - **Open at login through a LaunchAgent** (`platform/macos/integration.rs`):
   `~/Library/LaunchAgents/app.marqueeplayer.MarqueePlayer.plist`, which starts the bundle's
   executable in the menu bar. System Settings > General > Login Items lists it as a background
@@ -172,8 +171,11 @@ The owner's decisions for the port, and how the code carries them out:
   file's extended attributes, as on Linux.
 - **The Finder, links, the clipboard** (`platform/macos/shell.rs`): "Show in Finder"
   (`open -R`), folders and web pages with `open`, the general pasteboard for Copy and Paste.
-- **Rendering**: Skia on Metal. **Fonts**: the system's UI font (San Francisco) unless
-  `theme.toml`'s `font_family` names another.
+- **Rendering** uses Slint's software renderer at the display's native scale. Core Animation
+  composites the changed tiles in an sRGB window. macOS color-manages the result for the
+  display. The transport uses the album's pre-blurred artwork.
+  Set `SLINT_BACKEND=winit-skia` to use Metal and live backdrop blur.
+- **Fonts** use San Francisco unless `theme.toml`'s `font_family` names another.
 - **Words**: "Show in Finder", "Exclusive mode" (not available), "Open at login"
   (`platform::Words`).
 - **Test windows** (`MP_WINDOW=secondary`, `platform/macos/devwindow.rs`) open on the second
@@ -201,14 +203,27 @@ Tested, on Windows:
 - the two workflows with `actionlint` 1.7.7 and `shellcheck` 0.10, and their shell steps
   (choosing the systems, comparing the numbers) run in bash with made-up inputs.
 
-Not tested, because there was no Mac: everything that runs on macOS. To be confirmed on the
-first CI runs and on a Mac, roughly in this order:
+On an Apple M4 Max running macOS 26.7, a local release build played stereo FLAC through
+Core Audio with Home, the visualizer and the hidden window. In a pre-scanned queue of
+44 distinct 1200 px album covers, with menu-bar animation off in both builds, physical
+footprint peaked at 403 MiB in beta 2026.11.20.2. Two optimized runs peaked at 186 and
+109 MiB. Fifteen seconds into the last track the beta held 259 MiB and the optimized
+runs held 80 and 48 MiB.
+The audio log reported zero underruns. See the [playback benchmark](testing.md#measurement-and-test-hooks).
 
-- that the workspace builds for macOS at all (C dependencies: libopus through CMake, SQLite;
-  Skia's prebuilt download; the objc2 code) and its tests and clippy pass there;
+A separate 32-second comparison used the same local stereo FLAC passage, 44-track queue,
+pinned sidebars and Classic visualizer in a 1440 × 900 point Retina window. The preceding
+beta averaged 35.5% of one core with a median physical footprint of 787 MiB. The tiled
+renderer with the Core Animation spectrum averaged 3.1% and 142 MiB. Retired instructions
+fell from 1.75 billion to 107 million per second. macOS adjusts CPU clock speed with load,
+so the same renderer's CPU percentage varies between runs.
+
+Remaining platform checks include the following.
+
+- CI builds and the full workspace suite on the supported Mac architectures;
 - the release's steps: rustc making the `.dSYM` (`split-debuginfo = packed`) and cargo putting
   it in `target/dist/`, `strip`, `codesign`, `hdiutil` on a CI runner, the minimum-OS check;
-- the app itself: the window and its traffic lights, Core Audio playback and device changes,
-  Now Playing and the media keys, the status item, Open at login, Finder's Open With and the
+- the app itself: the window's traffic lights, audio device changes, hardware media keys,
+  status-item menu interactions, Open at login, Finder's Open With and the
   Dock, the folder watcher, tag editing, the icon in the Dock and Finder, first launch through
   Gatekeeper on macOS 15.
