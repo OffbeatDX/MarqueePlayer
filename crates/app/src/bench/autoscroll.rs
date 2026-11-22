@@ -86,13 +86,13 @@ thread_local! {
     static HZ: Cell<f64> = const { Cell::new(3.0e9) };
 }
 
-fn move_to(app: &AppWindow, x: f32, y: f32) {
+pub(super) fn move_to(app: &AppWindow, x: f32, y: f32) {
     POINTER.with(|p| p.set((x, y)));
     send(app, Input::Move(x, y));
 }
 
 /// Press and release (a click) of `b` at the pointer; returns whether each was kept.
-fn click(app: &AppWindow, b: Button) -> (bool, bool) {
+pub(super) fn click(app: &AppWindow, b: Button) -> (bool, bool) {
     let (x, y) = POINTER.with(Cell::get);
     (send(app, Input::Press(b, x, y)), send(app, Input::Release(b, x, y)))
 }

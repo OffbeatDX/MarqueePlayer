@@ -4,8 +4,11 @@
 //! comment). The bench runner (`crates/bench-runner`) runs every mode with its data.
 //!
 //!
-//! - `MP_BENCH=grid`: open All albums and scroll it at constant speed for 10 s, then
-//!   report frame intervals and render times.
+//! - `MP_BENCH=grid`: open All albums and scroll it at constant speed for 10 s, then to its
+//!   end and back by the middle button (autoscroll) at 6,000 and 12,000 px/s; report frame
+//!   intervals and render times for each, and check that a tile reads its album a few
+//!   times, not once for every cover loaded while it is on screen. `MP_BENCH_GRID_PAGE=genres`:
+//!   the Genres page instead; `MP_BENCH_GRID_SIZE=2560x1392`: the window that size first.
 //! - `MP_BENCH=sidebar`: slide the sidebar in and out 10 times; report frame times
 //!   during the slides, and compare snapshots with it open and closed to check that
 //!   the content does not reflow.
@@ -204,8 +207,11 @@ fn report(name: &str, frames: &[(Instant, Duration)]) -> String {
     let median = percentile(&intervals, 0.5);
     let long = intervals.iter().filter(|&&i| i > median * 1.5).count();
     let span = frames.last().zip(frames.first()).map_or(0.0, |(l, f)| (l.0 - f.0).as_secs_f64());
+    // Frames that would miss a 144 Hz or a 240 Hz display's next refresh on their own (the
+    // bench's window is on a 60 Hz one, where neither shows).
+    let over = |ms: f64| render.iter().filter(|&&r| r > ms).count();
     format!(
-        "{name}: {} frames in {span:.2} s ({:.1} fps)\n  frame interval ms: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}\n  intervals > 1.5x median: {long} ({:.2}%)\n  render (CPU, before->after) ms: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}\n",
+        "{name}: {} frames in {span:.2} s ({:.1} fps)\n  frame interval ms: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}\n  intervals > 1.5x median: {long} ({:.2}%)\n  render (CPU, before->after) ms: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}\n  render over 4 ms: {} frames, over 6.9 ms: {}; {:.0} ms in all\n",
         frames.len(),
         frames.len() as f64 / span.max(1e-9),
         median,
@@ -217,6 +223,9 @@ fn report(name: &str, frames: &[(Instant, Duration)]) -> String {
         percentile(&render, 0.95),
         percentile(&render, 0.99),
         render.last().copied().unwrap_or(0.0),
+        over(4.0),
+        over(6.9),
+        render.iter().sum::<f64>(),
     )
 }
 
@@ -371,23 +380,43 @@ fn stop_recording(frames: &Rc<RefCell<Frames>>) -> Vec<(Instant, Duration)> {
     std::mem::take(&mut f.frames)
 }
 
+/// See `MP_BENCH=grid` above.
 fn grid(frames: Rc<RefCell<Frames>>, scroller: Rc<Timer>) {
+    // `MP_BENCH_GRID_PAGE=genres`: the Genres page instead (the same grid, other tiles).
+    let genres = std::env::var("MP_BENCH_GRID_PAGE").as_deref() == Ok("genres");
+    let scroll = move |app: &AppWindow| if genres { app.global::<Nav>().get_page_scroll() } else { app.global::<Grid>().get_content_y() };
+    let scroll_to = move |app: &AppWindow, y: f32| if genres { app.global::<Nav>().set_page_scroll(y) } else { app.global::<Grid>().set_content_y(y) };
     let f1 = frames.clone();
     let f2 = frames.clone();
     let s1 = scroller.clone();
-    run_steps(vec![
-        (1500, Box::new(|st, _| views::go(st, Page::Albums))),
+    let text: Rc<RefCell<String>> = Rc::default();
+    let (t2, t3) = (text.clone(), text.clone());
+    let reads: Rc<Cell<usize>> = Rc::default();
+    let r1 = reads.clone();
+    // `MP_BENCH_GRID_SIZE=2560x1392`: the window that size (physical pixels) first, for the
+    // columns and rows of a larger monitor than the one the bench's window opens on.
+    let size: Option<(i32, i32)> = std::env::var("MP_BENCH_GRID_SIZE").ok().and_then(|v| {
+        let (w, h) = v.split_once('x')?;
+        Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+    });
+    let mut steps: Vec<Step> = vec![
+        (1500, Box::new(move |st, _| {
+            if let Some((w, h)) = size {
+                crate::platform::devwindow::resize_client(st.hwnd.get(), w, h);
+            }
+            views::go(st, if genres { Page::Genres } else { Page::Albums });
+        })),
         (2000, Box::new(move |_, app| {
             snapshot(app, "grid-top");
             start_recording(&f1);
+            r1.set(crate::covers::row_reads());
             let weak = app.as_weak();
             let start = Instant::now();
             // 2400 px/s: brisk wheel-flick speed, so new rows (and cover loads) keep
             // arriving every frame.
             s1.start(TimerMode::Repeated, Duration::from_millis(1), move || {
                 if let Some(app) = weak.upgrade() {
-                    let y = -(start.elapsed().as_secs_f32() * 2400.0);
-                    app.global::<Grid>().set_content_y(y);
+                    scroll_to(&app, -(start.elapsed().as_secs_f32() * 2400.0));
                 }
             });
         })),
@@ -395,16 +424,64 @@ fn grid(frames: Rc<RefCell<Frames>>, scroller: Rc<Timer>) {
             scroller.stop();
             let data = stop_recording(&f2);
             snapshot(app, "grid-scrolled");
-            let n = app.global::<Grid>().get_count();
-            let mut text = format!("albums in grid: {n}\n{}", report("grid scroll 2400 px/s", &data));
-            verdict(&mut text, "the grid lists the library's albums", n > 300, n);
-            verdict(&mut text, "the grid scrolled", app.global::<Grid>().get_content_y() < -1000.0, app.global::<Grid>().get_content_y());
-            write_report("grid", &text);
+            let n = if genres { app.global::<crate::Browse>().get_groups_count() } else { app.global::<Grid>().get_count() };
+            let size = app.window().size();
+            let mut text = format!("{} in grid: {n}, window {} x {}\n{}", if genres { "genres" } else { "albums" }, size.width, size.height, report("grid scroll 2400 px/s", &data));
+            if !genres {
+                verdict(&mut text, "the grid lists the library's albums", n > 300, n);
+            }
+            verdict(&mut text, "the grid scrolled", scroll(app) < -1000.0, scroll(app));
+            // A tile reads its album as it comes on screen and again when its cover has
+            // loaded, not once more for every other cover that loads meanwhile: that had
+            // every tile on screen laid out again on each frame a cover came in, and the
+            // grid stutter on a large window.
+            let theme = app.global::<crate::Theme>();
+            let row_h = theme.get_cover_size() + 50.0 + 24.0;
+            let viewport = size.to_logical(app.window().scale_factor()).height - (theme.get_page_top() + 56.0);
+            let passed = grid_max_scroll(app, n.max(0) as usize).min(24_000.0) + viewport;
+            let tiles = (((passed / row_h).ceil() as usize) * grid_cols(app)).clamp(1, n.max(1) as usize);
+            let per_tile = (crate::covers::row_reads() - reads.get()) as f64 / tiles as f64;
+            verdict(&mut text, "a tile reads its album a few times, not at every cover loaded", per_tile <= 3.0, format!("{per_tile:.1} reads a tile ({tiles} tiles)"));
+            *t2.borrow_mut() = text;
+            scroll_to(app, 0.0);
         })),
-        (500, Box::new(|_, _| {
-            let _ = slint::quit_event_loop();
-        })),
-    ]);
+    ];
+    // Then by the middle button (`autoscroll.rs`), down to the end and back up, at two
+    // speeds: the pointer 374 px from the anchor (6,000 px/s on the default curve) and
+    // 560 px (the fastest, 12,000). Rows come and go several times faster than above.
+    for (offset, half) in [(374.0, 4600), (560.0, 2600)] {
+        let (f1, f2, text) = (frames.clone(), frames.clone(), text.clone());
+        steps.push((1000, Box::new(move |_, app| {
+            let w = app.window().size().to_logical(app.window().scale_factor()).width;
+            autoscroll::move_to(app, w / 2.0, 300.0);
+            autoscroll::click(app, crate::autoscroll::Button::Middle);
+            autoscroll::move_to(app, w / 2.0, 300.0 + offset);
+            start_recording(&f1);
+        })));
+        steps.push((half, Box::new(move |_, app| {
+            let w = app.window().size().to_logical(app.window().scale_factor()).width;
+            let v = app.global::<crate::Autoscroll>().get_vy();
+            let y = scroll(app);
+            // (A grid of a few tiles, the fixtures' genres, has nowhere to go.)
+            let n = if genres { app.global::<crate::Browse>().get_groups_count() } else { app.global::<Grid>().get_count() };
+            let far = grid_max_scroll(app, n.max(0) as usize) > 1000.0;
+            verdict(&mut text.borrow_mut(), "the middle button scrolled the grid", y < -1000.0 || !far, format!("at {y:.0}, {v:.0} px/s"));
+            autoscroll::move_to(app, w / 2.0, 300.0 - offset);
+        })));
+        let text = t3.clone();
+        steps.push((half, Box::new(move |_, app| {
+            let data = stop_recording(&f2);
+            let v = app.global::<crate::Autoscroll>().get_vy().abs();
+            text.borrow_mut().push_str(&report(&format!("grid autoscroll {v:.0} px/s, down and back"), &data));
+            autoscroll::click(app, crate::autoscroll::Button::Middle);
+            scroll_to(app, 0.0);
+        })));
+    }
+    steps.push((500, Box::new(move |_, _| {
+        write_report("grid", &t3.borrow());
+        let _ = slint::quit_event_loop();
+    })));
+    run_steps(steps);
 }
 
 fn sidebar(frames: Rc<RefCell<Frames>>, keepalive: Rc<Timer>) {
