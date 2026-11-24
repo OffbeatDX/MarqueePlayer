@@ -589,8 +589,7 @@ fn shelf_seed(st: &State, index: usize) -> i64 {
 }
 
 fn new_seed() -> i64 {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    (t as i64) ^ ((t >> 64) as i64)
+    crate::playback::seed() as i64
 }
 
 /// A new shuffle for the random shelf at `index`.
