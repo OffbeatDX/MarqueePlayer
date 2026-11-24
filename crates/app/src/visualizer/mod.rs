@@ -144,7 +144,7 @@ thread_local! {
 
 /// Read once per run (a change in the system's setting applies at the next start).
 /// `MP_REDUCED_MOTION=1` (or 0) stands in for that setting, for tests and the bench.
-fn reduced() -> bool {
+pub(crate) fn reduced() -> bool {
     REDUCED.with(|r| {
         if let Some(v) = r.get() {
             return v;

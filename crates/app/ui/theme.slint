@@ -74,6 +74,8 @@ export global Theme {
     in-out property <bool> viz-peaks: true;
 
     // ---- Motion ------------------------------------------------------------
+    // True when the OS asks for reduced motion (or MP_REDUCED_MOTION=1).
+    in-out property <bool> reduced-motion: false;
     in-out property <duration> dur-hover: 120ms;
     in-out property <duration> dur-sidebar: 220ms;
     // Page change: the new page fades up and slides in this long. 0 turns it off.

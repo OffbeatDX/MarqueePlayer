@@ -177,6 +177,7 @@ fn run() {
         ))
     });
     app.global::<Theme>().set_glass_supported(glass);
+    app.global::<Theme>().set_reduced_motion(visualizer::reduced());
     // Linux: no decorations from the system (Slint asks again for them whenever the window's
     // properties change, unless the window says `no-frame`).
     app.global::<Chrome>().set_frameless(cfg!(target_os = "linux"));

@@ -38,6 +38,8 @@ struct Ids {
     big: i64,
     small: i64,
     smart: i64,
+    long_pl: i64,
+    marquee_start: Vec<[u8; 4]>,
     queue_before: Vec<i64>,
 }
 
@@ -70,9 +72,28 @@ fn check_shuffled(st: &State, app: &AppWindow, r: &mut String, how: &str, id: i6
 }
 
 /// The middle of the Shuffle button of the sidebar's first playlist (chrome.slint: the
-/// panel's padding, its head, eight items, the PLAYLISTS heading; 232 px wide).
+/// panel's horizontal padding (8 px), its head, eight items, the PLAYLISTS heading; 232 px wide).
 fn sidebar_shuffle_at() -> (f32, f32) {
-    (232.0 - 14.0 - 32.0 + 14.0, 478.0)
+    (232.0 - 8.0 - 31.0 + 14.0, 478.0)
+}
+
+/// Pixels inside a logical rectangle of the window (for checking whether a scrolling
+/// label moved).
+fn region_pixels(app: &AppWindow, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<[u8; 4]> {
+    let Ok(buf) = app.window().take_snapshot() else { return Vec::new() };
+    let s = app.window().scale_factor();
+    let (w, h) = (buf.width(), buf.height());
+    let (px0, py0) = ((x0 * s).max(0.0) as u32, (y0 * s).max(0.0) as u32);
+    let (px1, py1) = (((x1 * s) as u32).min(w), ((y1 * s) as u32).min(h));
+    let slice = buf.as_slice();
+    let mut out = Vec::new();
+    for py in (py0..py1).step_by(2) {
+        for px in (px0..px1).step_by(2) {
+            let p = slice[(py * w + px) as usize];
+            out.push([p.r, p.g, p.b, p.a]);
+        }
+    }
+    out
 }
 
 fn write_list(path: &Path, paths: &[String]) {
@@ -184,11 +205,45 @@ pub fn run(report: String, big: i64) {
             other => verdict(&mut r, "the sidebar's first playlist is an ordinary one", false, format!("{:?}", other.map(|p| p.name))),
         }
         app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 300.0) });
-        app.global::<crate::Nav>().set_sidebar_pinned(false);
         crate::playback::set_shuffle(st, false);
         if !st.player.is_paused() {
             crate::playback::toggle_play(st);
         }
+        // Long-named playlist in the sidebar: hovering scrolls the overflowing text.
+        let long_pl = query::create_playlist_with(&st.db, "Future Funk & City Pop Classics", &[]).unwrap();
+        IDS.with(|i| i.borrow_mut().long_pl = long_pl);
+        views::playlists_changed(st);
+    }));
+    // Hover the long playlist (row 1: 42 px below row 0); wait 150 ms (still in dwell).
+    step(&mut steps, 200, Box::new(|_, app, _| {
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(90.0, 520.0) });
+    }));
+    step(&mut steps, 150, Box::new(|_, app, _| {
+        snapshot(app, "sidebar-marquee-0-start");
+        let px = region_pixels(app, 48.0, 506.0, 156.0, 534.0);
+        IDS.with(|i| i.borrow_mut().marquee_start = px);
+    }));
+    // Past the 450 ms dwell and well into the scroll: pixels in the text slot must differ.
+    step(&mut steps, 1300, Box::new(|_, app, r| {
+        snapshot(app, "sidebar-marquee-1-mid");
+        let start = IDS.with(|i| i.borrow().marquee_start.clone());
+        let mid = region_pixels(app, 48.0, 506.0, 156.0, 534.0);
+        let diff = start.iter().zip(mid.iter()).filter(|(a, b)| a != b).count();
+        verdict(&mut r.borrow_mut(), "hovering a truncated playlist name scrolls it", !start.is_empty() && diff > 20, format!("{diff} pixels moved of {}", start.len()));
+    }));
+    // End pause, then move pointer away and clean up the temporary playlist.
+    step(&mut steps, 2200, Box::new(|_, app, _| {
+        snapshot(app, "sidebar-marquee-2-end");
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 300.0) });
+    }));
+    step(&mut steps, 250, Box::new(|st, app, _| {
+        snapshot(app, "sidebar-marquee-3-reset");
+        let long_pl = IDS.with(|i| i.borrow().long_pl);
+        if long_pl > 0 {
+            let _ = query::delete_playlist(&st.db, long_pl);
+            views::playlists_changed(st);
+        }
+        app.global::<crate::Nav>().set_sidebar_pinned(false);
     }));
 
     // ---- Import: four files at once ------------------------------------------------------

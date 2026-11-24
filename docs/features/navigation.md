@@ -145,7 +145,10 @@ A playlist's page has Play and Shuffle beside them, as an album's and a smart pl
 then Rename, Export… and Delete; its menu (right-click it in the sidebar or on the Playlists
 page) has Play, Shuffle, Add to queue, Open and the two exports. In the sidebar, pointing at a
 playlist (ordinary or smart) shows a Play and a Shuffle button at its right, the menu's two
-without opening it; a click on them does not open the playlist. Shuffle is the album's
+without opening it; a click on them does not open the playlist. When a sidebar item's name is too
+long for the remaining width, lingering on it (or focusing it with the keyboard) smoothly scrolls
+the name to its end, pauses so the ending can be read, fades back to the start and repeats (under
+reduced motion it stays still and shows a tooltip instead). Shuffle is the album's
 (`playback::shuffle_tracks`): the queue becomes the playlist's tracks, shuffle turns on (the
 player bar's mode, see `Queue`), and play starts from a random one; a track that cannot be
 played, or whose file is gone, is skipped as in any queue. The page's button shuffles the
