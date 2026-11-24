@@ -2,8 +2,9 @@
 //!
 //! - Shuffle for an ordinary playlist: the page's Shuffle (`Actions.shuffle-in`), then the
 //!   sidebar menu's Shuffle (the playlist's context menu, its entry activated as a click
-//!   does): the queue holds the playlist's tracks, shuffle is on, the order is not the
-//!   playlist's.
+//!   does), then the sidebar's Shuffle and Play buttons (`Actions.play-playlist`): the
+//!   queue holds the playlist's tracks, shuffle is on, the order is not the playlist's
+//!   (Play: it is, from the first track).
 //! - Name clashes, every answer given through the prompt's own callback (`Actions.clash-
 //!   choose`, what its buttons call) or its keys: four playlist files imported at once
 //!   (Keep both; a file without a clash comes in unasked; Replace for the rest), one again
@@ -17,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use library::query;
-use slint::{ComponentHandle, Model};
+use slint::platform::{PointerEventButton, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, Model};
 
 use crate::bench::{Step, menu_labels, run_steps, snapshot, verdict};
 use crate::state::State;
@@ -65,6 +67,12 @@ fn check_shuffled(st: &State, app: &AppWindow, r: &mut String, how: &str, id: i6
     verdict(r, &format!("{how}: shuffle is on"), st.queue.borrow().shuffled() && app.global::<Player>().get_shuffle(), st.queue.borrow().shuffled());
     verdict(r, &format!("{how}: not in the playlist's order"), got != want, format!("first queued {:?}, first listed {:?}", got.first(), want.first()));
     verdict(r, &format!("{how}: the current track is the queue's first"), current.is_some() && current == got.first().copied(), format!("{current:?}"));
+}
+
+/// The middle of the Shuffle button of the sidebar's first playlist (chrome.slint: the
+/// panel's padding, its head, eight items, the PLAYLISTS heading; 232 px wide).
+fn sidebar_shuffle_at() -> (f32, f32) {
+    (232.0 - 14.0 - 32.0 + 14.0, 478.0)
 }
 
 fn write_list(path: &Path, paths: &[String]) {
@@ -131,6 +139,53 @@ pub fn run(report: String, big: i64) {
         let before = IDS.with(|i| i.borrow().queue_before.clone());
         verdict(&mut r, "a second shuffle is another order", queue_ids(st) != before, "");
         verdict(&mut r, "the menu closed", !app.global::<crate::MenuStore>().get_open(), "");
+        // The sidebar's buttons on the playlist (shown on hover): Shuffle, then Play.
+        crate::playback::set_shuffle(st, false);
+        app.global::<Actions>().invoke_play_playlist(big as i32, true);
+        check_shuffled(st, app, &mut r, "the sidebar's Shuffle button", big);
+        crate::playback::set_shuffle(st, false);
+        app.global::<Actions>().invoke_play_playlist(big as i32, false);
+        let (want, got) = (track_ids(st, big), queue_ids(st));
+        let current = st.queue.borrow().current().map(|i| i.track.id);
+        verdict(&mut r, "the sidebar's Play button: the playlist in its order, from its first track", got == want && current == want.first().copied(), format!("{} queued, current {current:?}", got.len()));
+        if !st.player.is_paused() {
+            crate::playback::toggle_play(st);
+        }
+    }));
+
+    // ---- The sidebar's buttons, by the pointer ------------------------------------------
+    // The first playlist of the sidebar (pinned open), from the Home page: the pointer on
+    // its Shuffle button, a snapshot, then a click there. (In-app pointer events.)
+    step(&mut steps, 300, Box::new(|st, app, _| {
+        crate::playback::set_shuffle(st, false);
+        let nav = app.global::<crate::Nav>();
+        nav.set_sidebar_pinned(true);
+        nav.invoke_go(crate::Page::Home);
+    }));
+    // Once the sidebar has slid in.
+    step(&mut steps, 500, Box::new(|_, app, _| {
+        let (x, y) = sidebar_shuffle_at();
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y) });
+    }));
+    step(&mut steps, 500, Box::new(|st, app, r| {
+        snapshot(app, "sidebar-playlist-hover");
+        let first = app.global::<crate::Playlists>().get_list().row_data(0);
+        let (x, y) = sidebar_shuffle_at();
+        let position = LogicalPosition::new(x, y);
+        app.window().dispatch_event(WindowEvent::PointerPressed { position, button: PointerEventButton::Left });
+        app.window().dispatch_event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
+        let mut r = r.borrow_mut();
+        match first {
+            Some(p) if !p.smart => {
+                check_shuffled(st, app, &mut r, &format!("a click on the Shuffle button of {:?} in the sidebar", p.name.as_str()), i64::from(p.id));
+                let page = app.global::<crate::Nav>().get_page();
+                verdict(&mut r, "the click did not open the playlist", page == crate::Page::Home, format!("{page:?}"));
+            }
+            other => verdict(&mut r, "the sidebar's first playlist is an ordinary one", false, format!("{:?}", other.map(|p| p.name))),
+        }
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 300.0) });
+        app.global::<crate::Nav>().set_sidebar_pinned(false);
+        crate::playback::set_shuffle(st, false);
         if !st.player.is_paused() {
             crate::playback::toggle_play(st);
         }

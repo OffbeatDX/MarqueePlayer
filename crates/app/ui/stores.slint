@@ -940,6 +940,8 @@ export global Actions {
     // A hero shelf (by its place in the settings) features its album at this index.
     callback hero-select(int, int);
     callback open-playlist(int);
+    // A playlist in the sidebar, ordinary or smart: play it from its first track, or shuffled.
+    callback play-playlist(int, bool /* shuffled */);
 
     // Albums.
     callback play-album(int);

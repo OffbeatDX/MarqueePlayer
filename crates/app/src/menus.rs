@@ -585,6 +585,21 @@ fn close(app: &AppWindow) {
     app.global::<MenuStore>().set_open(false);
 }
 
+/// Play playlist `id` as stored, from its first track or shuffled (a menu's Play and
+/// Shuffle, the sidebar's buttons). A smart one: its tracks are worked out first.
+pub fn play_playlist(st: &Rc<State>, id: i64, shuffle: bool) {
+    if crate::playlists::smart::is_smart(st, id) {
+        crate::playlists::smart::act(st, id, crate::playlists::smart::Act::Play { shuffle });
+        return;
+    }
+    let tracks = query::playlist_tracks(&st.db, id).unwrap_or_default();
+    if shuffle {
+        playback::shuffle_tracks(st, tracks);
+    } else {
+        playback::play_tracks(st, tracks, 0);
+    }
+}
+
 pub fn activate(st: &Rc<State>, i: i32, sub: i32) {
     let Some(app) = st.app.upgrade() else { return };
     let Some((entry, playlist)) = OPEN.with(|o| {
@@ -675,21 +690,13 @@ pub fn activate(st: &Rc<State>, i: i32, sub: i32) {
         Act::RemoveFromPlaylist(i) => a.invoke_playlist_remove(i),
         Act::QueuePlay(i) => a.invoke_queue_play(i),
         Act::QueueRemove(i) => a.invoke_queue_remove(i),
-        Act::PlayPlaylist(id) if crate::playlists::smart::is_smart(st, id) => crate::playlists::smart::act(st, id, crate::playlists::smart::Act::Play { shuffle: false }),
-        Act::ShufflePlaylist(id) if crate::playlists::smart::is_smart(st, id) => crate::playlists::smart::act(st, id, crate::playlists::smart::Act::Play { shuffle: true }),
+        Act::PlayPlaylist(id) => play_playlist(st, id, false),
+        Act::ShufflePlaylist(id) => play_playlist(st, id, true),
         Act::EnqueuePlaylist(id) if crate::playlists::smart::is_smart(st, id) => crate::playlists::smart::act(st, id, crate::playlists::smart::Act::Enqueue),
         Act::EditSmart(id) => crate::playlists::smart::open_edit(st, id),
         Act::RenameSmart => crate::playlists::smart::start_rename(st),
         Act::DuplicateSmart(id) => crate::playlists::smart::duplicate(st, Some(id)),
         Act::FreezeSmart(id) => crate::playlists::smart::freeze(st, id),
-        Act::PlayPlaylist(id) => {
-            let tracks = query::playlist_tracks(&st.db, id).unwrap_or_default();
-            playback::play_tracks(st, tracks, 0);
-        }
-        Act::ShufflePlaylist(id) => {
-            let tracks = query::playlist_tracks(&st.db, id).unwrap_or_default();
-            playback::shuffle_tracks(st, tracks);
-        }
         Act::EnqueuePlaylist(id) => {
             let tracks = query::playlist_tracks(&st.db, id).unwrap_or_default();
             playback::enqueue(st, tracks, false);

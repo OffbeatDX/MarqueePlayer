@@ -864,6 +864,9 @@ fn wire(app: &AppWindow) {
     a.on_open_playlist(|id| {
         state::with(|st| views::open_playlist(st, i64::from(id)));
     });
+    a.on_play_playlist(|id, shuffle| {
+        state::with(|st| menus::play_playlist(st, i64::from(id), shuffle));
+    });
 
     // Albums.
     a.on_play_album(|id| {

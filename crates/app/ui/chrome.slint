@@ -13,12 +13,17 @@ component NavItem inherits Rectangle {
     in property <bool> tabbable: true;
     // A playlist: albums and tracks dropped on it are added to it.
     in property <int> drop-playlist: -1;
+    // A playlist: Play and Shuffle at its right while the pointer is on it.
+    in property <bool> playable;
+    callback play();
+    callback shuffle();
+    private property <bool> actions-shown: root.playable && (ta.has-hover || play-btn.has-hover || shuffle-btn.has-hover);
     callback clicked();
     callback context-requested(length, length);
     height: 40px;
     border-radius: Theme.radius-control;
     background: drop.has-drag && root.drop-playlist >= 0 ? Theme.accent.with-alpha(0.3)
-        : current ? Theme.accent.with-alpha(0.16) : ta.has-hover ? Theme.hover : transparent;
+        : current ? Theme.accent.with-alpha(0.16) : ta.has-hover || root.actions-shown ? Theme.hover : transparent;
     accessible-role: button;
     accessible-label: root.text + (root.current ? ", current page" : "");
     accessible-action-default => { root.clicked(); }
@@ -56,6 +61,8 @@ component NavItem inherits Rectangle {
     }
     HorizontalLayout {
         padding-left: 12px;
+        // The name is cut short of the buttons while they show.
+        padding-right: root.actions-shown ? 66px : 0px;
         spacing: 14px;
         Icon { y: (parent.height - self.height) / 2; glyph: root.glyph; color: root.current ? Theme.accent : Theme.text-dim; }
         Text {
@@ -67,6 +74,34 @@ component NavItem inherits Rectangle {
             overflow: elide;
             accessible-role: none;
         }
+    }
+    // Over the row's own area, so a click on one does not open the playlist. Not reached
+    // with Tab (they only show on hover): the row's menu has both.
+    play-btn := IconButton {
+        x: parent.width - 62px;
+        y: (parent.height - self.height) / 2;
+        visible: root.playable;
+        opacity: root.actions-shown ? 1 : 0;
+        glyph: Icons.play;
+        size: 28px;
+        icon-size: 18px;
+        tooltip: "Play";
+        label: "Play " + root.text;
+        tabbable: false;
+        clicked => { root.play(); }
+    }
+    shuffle-btn := IconButton {
+        x: parent.width - 32px;
+        y: (parent.height - self.height) / 2;
+        visible: root.playable;
+        opacity: root.actions-shown ? 1 : 0;
+        glyph: Icons.shuffle;
+        size: 28px;
+        icon-size: 16px;
+        tooltip: "Shuffle";
+        label: "Shuffle " + root.text;
+        tabbable: false;
+        clicked => { root.shuffle(); }
     }
     FocusRing { shown: fs.has-focus; radius: Theme.radius-control; inset: true; }
 }
@@ -200,6 +235,9 @@ export component Sidebar inherits Rectangle {
                             tabbable: root.open;
                             // A smart playlist takes no drops: its tracks come from its rules.
                             drop-playlist: p.smart ? -1 : p.id;
+                            playable: true;
+                            play => { Actions.play-playlist(p.id, false); }
+                            shuffle => { Actions.play-playlist(p.id, true); }
                             current: (Nav.page == Page.playlist || Nav.page == Page.smart || Nav.page == Page.smart-edit) && Playlists.current-id == p.id;
                             clicked => { Nav.sidebar-forced = false; Actions.open-playlist(p.id); }
                             context-requested(x, y) => { Actions.menu-request("playlist", "", 0, p.id, x, y); }
