@@ -266,7 +266,8 @@ pub fn split(look: &Look, h: f32, reflect_here: bool) -> (f32, f32) {
 /// What was heard of the beat this frame (`beat::Tracker`), for what moves with it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pulse {
-    /// A beat to show: its strength (to 1), 0 for none.
+    /// A kick told: its strength (to 1), 0 for none. The looks are given only what of it
+    /// falls where the music's beat is (`beat_hit`).
     pub hit: f32,
     /// A snare, a clap: its strength (to 1), 0 for none. Sparks, no ripple.
     pub snap: f32,
@@ -350,7 +351,8 @@ impl Draw {
         p.refl_h = refl;
         let strips = look.colour_by == ColourBy::Frequency && !matches!(look.colours, Colours::Accent);
         let dt = std::mem::take(&mut self.dt);
-        let heard = self.heard.take();
+        // Every look moves with the music's beat, not with every low note told as a kick.
+        let heard = self.heard.take().map(|h| Pulse { hit: beat_hit(&h), ..h });
         if look.style != Style::Radial {
             self.ripples = Ripples::default();
         }
@@ -588,7 +590,8 @@ const RIPPLE_LULL: f32 = 2.4;
 /// While the music has no beat to go by, a hit weaker than this is not taken for a kick
 /// (music without any has its low notes' wavering told as weak ones, a few a second).
 const RIPPLE_SURE: f32 = 0.55;
-/// With a beat to go by, what sends a ripple depends on where in the beat it is. A kick is
+/// With a beat to go by, what counts as one (what sends a ripple, punches the contour, bursts
+/// the sparks and moves the other looks: `beat_hit`) depends on where in the beat it is. A kick is
 /// told this long after it started (seconds); it is on the beat, or on the half beat,
 /// within this share of a beat. On the beat: any kick told, or an onset of the low notes
 /// this many times the usual (`GRID_LOW.0`: a kick the tracker missed under a bass line,
@@ -605,6 +608,42 @@ const GRID_LOW: (f32, f32) = (3.0, 3.0);
 /// the beat (the low notes waver: one that only leads up to the kick is not it).
 const GRID_EARLY: f32 = 0.05;
 const GRID_HIT: f32 = 0.75;
+
+/// What of a hit heard is the music's beat, for every look that moves with it (its strength
+/// to 1, 0 for none). Without a tempo to go by: a hit that is surely a kick. With one: it
+/// depends on where in the beat it is (`GRID_NEAR`); on the beat a low notes' onset with no
+/// kick told counts as a soft one, harder the stronger.
+fn beat_hit(h: &Pulse) -> f32 {
+    let hit = h.hit.clamp(0.0, 1.0);
+    if h.period <= 0.0 {
+        return if hit >= RIPPLE_SURE { hit } else { 0.0 };
+    }
+    let (past, to_half) = beat_place(h);
+    if past.abs() <= GRID_NEAR {
+        if hit > 0.0 {
+            hit
+        } else if h.low >= GRID_LOW.0 && past >= -GRID_EARLY {
+            (0.3 + 0.08 * (h.low - GRID_LOW.0)).min(0.7)
+        } else {
+            0.0
+        }
+    } else if to_half <= GRID_NEAR && hit >= GRID_HIT && h.low >= GRID_LOW.1 {
+        hit
+    } else {
+        0.0
+    }
+}
+
+/// Where in the beat what is told now started (it is told `RIPPLE_LATE` after): how far past
+/// the beat (before it: negative), and how far from the half beat, in shares of a beat. On
+/// the beat while no tempo is known.
+fn beat_place(h: &Pulse) -> (f32, f32) {
+    if h.period <= 0.0 {
+        return (0.0, 0.5);
+    }
+    let at = (h.phase - RIPPLE_LATE / h.period).rem_euclid(1.0);
+    (if at < 0.5 { at } else { at - 1.0 }, (at - 0.5).abs())
+}
 /// How a ripple's way out is made up. The throw: the share of the way the kick that sent
 /// it throws it (the hardest kick's; a soft one's is 0.6 of that), dying away over this
 /// share of the way's time, and how long after it left the low notes still say how hard the
@@ -993,7 +1032,7 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
         Some(h) => (h.hit.clamp(0.0, 1.0), h.snap.clamp(0.0, 1.0), h.period, h.bright),
         None => (if topped { 0.7 } else { 0.0 }, 0.0, 0.0, 0.0),
     };
-    let (phase, onset, on_beat) = heard.map_or((0.0, 0.0, false), |h| (h.phase, h.low, h.beat));
+    let on_beat = heard.is_some_and(|h| h.beat);
     rip.punch = if dt > 0.0 { (rip.punch * (-dt / 0.13).exp()).max(hit) } else { 0.0 };
     // The kick's jump on top, all round; then bent toward the contour's reach, never past
     // it (`shape`).
@@ -1059,28 +1098,9 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
     let (most, life) = ripple_room(&g);
     let lane = life / most as f32;
     if dt > 0.0 {
-        // Where in the beat what is told now started: how far past the beat (before it:
-        // negative), and from the half beat.
-        let at = if period > 0.0 { (phase - RIPPLE_LATE / period).rem_euclid(1.0) } else { 0.0 };
-        let (past, to_half) = (if at < 0.5 { at } else { at - 1.0 }, (at - 0.5).abs());
-        // What is a kick to the ripples. Without a beat to go by: a hit that is surely one.
-        // With one: it depends on where in the beat it is.
-        let hit = if period <= 0.0 {
-            if hit >= RIPPLE_SURE { hit } else { 0.0 }
-        } else if past.abs() <= GRID_NEAR {
-            // An onset of the low notes with no kick told: a soft one, harder the stronger.
-            if hit > 0.0 {
-                hit
-            } else if onset >= GRID_LOW.0 && past >= -GRID_EARLY {
-                (0.3 + 0.08 * (onset - GRID_LOW.0)).min(0.7)
-            } else {
-                0.0
-            }
-        } else if to_half <= GRID_NEAR && hit >= GRID_HIT && onset >= GRID_LOW.1 {
-            hit
-        } else {
-            0.0
-        };
+        // How far past the beat what is told now started (the hit is already the beat's,
+        // `beat_hit`; a snare's ring goes by this too).
+        let (past, _) = heard.map_or((0.0, 0.5), |h| beat_place(&h));
         // The kick itself told a moment after its onset sent the ripple: the ripple is the
         // kick's, thrown as hard.
         if hit > 0.0
@@ -1318,7 +1338,7 @@ fn rand(seed: &mut u32) -> f32 {
     (*seed >> 8) as f32 / (1u32 << 24) as f32
 }
 
-/// The beat for a look this frame: as heard (a kick's strength, a snap's), or, nobody
+/// The beat for a look this frame: as heard (a beat's strength, `beat_hit`; a snap's), or, nobody
 /// listening, a rise in `level` told when it tops out; nothing in a still frame.
 fn beat_of(heard: Option<Pulse>, own: &mut Beat, level: f32, dt: f32) -> (f32, f32, f32) {
     match heard {
@@ -2711,6 +2731,49 @@ mod tests {
                 p = d.draw(&l, &s, true, &silent, &silent).clone();
             }
             assert!(all(&p).is_empty() && p.line.is_empty(), "{style:?}");
+        }
+    }
+
+    #[test]
+    fn every_look_moves_with_the_music_s_beat_not_with_every_kick_told() {
+        let s = stage(800.0, 800.0);
+        for style in [Style::Radial, Style::Bonfire, Style::Saturn, Style::Galaxy, Style::Swarm, Style::Eclipse] {
+            let l = look(style);
+            let (_, bands) = layout(&l, &s);
+            let sound: Vec<f32> = (0..bands).map(|i| 0.3 + 0.5 * ((i as f32) * 0.3).sin().abs()).collect();
+            // A second of music with nothing told, then one frame of this.
+            let last = |heard: Pulse| {
+                let mut d = Draw::default();
+                for _ in 0..60 {
+                    d.tick(1.0 / 60.0);
+                    d.pulse(Pulse { period: 0.5, phase: 0.3, ..Pulse::default() });
+                    d.draw(&l, &s, true, &sound, &sound);
+                }
+                d.tick(1.0 / 60.0);
+                d.pulse(heard);
+                d.draw(&l, &s, true, &sound, &sound).clone()
+            };
+            let none = last(Pulse { period: 0.5, phase: 0.3, ..Pulse::default() });
+            // A bass line's note: as hard as a kick, but off the beat and off the half beat.
+            for phase in [0.3, 0.8] {
+                assert_eq!(last(Pulse { hit: 1.0, period: 0.5, phase, low: 9.0, ..Pulse::default() }), none, "{style:?}: a hit at {phase} of the beat");
+            }
+            // A weak hit while no tempo is known.
+            let unsure = last(Pulse { hit: 0.44, ..Pulse::default() });
+            assert_eq!(unsure, last(Pulse::default()), "{style:?}: a weak hit, no tempo");
+            // A kick on the beat, or a firm one on the half beat that the low notes bear out.
+            for (phase, low) in [(0.05, 0.0), (0.55, 4.0)] {
+                let on = last(Pulse { hit: 1.0, period: 0.5, phase, low, ..Pulse::default() });
+                assert!(on != none, "{style:?}: a kick at {phase} of the beat");
+                if style != Style::Bonfire {
+                    assert!(none.punch == 0.0 && on.punch >= 0.99 && on.pulse >= 0.99, "{style:?}: {} at {phase} of the beat", on.punch);
+                }
+            }
+            // An onset of the low notes on the beat with no kick told: a soft one.
+            let soft = last(Pulse { period: 0.5, phase: 0.06, low: 4.0, ..Pulse::default() });
+            if style != Style::Bonfire {
+                assert!((soft.punch - 0.38).abs() < 0.01, "{style:?}: {}", soft.punch);
+            }
         }
     }
 
