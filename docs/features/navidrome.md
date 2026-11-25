@@ -1,4 +1,59 @@
-# Navidrome
+# Music servers
+
+The desktop player connects to one music server at a time. Open **Settings > Library > Server**
+or choose **Connect a server** on an empty Home page.
+
+## Plex Media Server
+
+1. Choose **Plex**. On the **Sign in with Plex** tab, select **Continue in browser**.
+2. In your browser, sign in to the Plex account that can play your music and authorize Marquee Player.
+3. Return to Marquee. If your account has one server, Marquee connects to it automatically.
+   If you have several, choose **Connect** beside the server that hosts your music. If a server
+   is unreachable, you can retry it or choose another from the list.
+4. If the server shares several music libraries with you, choose **Use library** beside the
+   one you want. Marquee selects a sole music library automatically. The selected library's
+   albums and tracks appear in search and alongside your local music.
+
+For a manual connection, open the **Connect manually** tab. Enter the address of the Plex Media Server, such as
+`http://192.168.1.10:32400`, and paste a Plex access token in the separate token field.
+Choose **Connect**, then choose a music library if prompted.
+[How to find a Plex access token](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/).
+
+Marquee streams the original audio file by default. For remote listening, open
+**Settings > Playback > Music from the server > Streaming quality** and choose an MP3
+target of 96, 128, 192 or 320 kbps. This setting also applies to Subsonic servers.
+Matched files play from your folders. Favourites, playlists and play counts
+are kept in Marquee. Use **Sync now** to pick up changes, or choose a different library
+under **Music library** to change what Marquee syncs. Marquee remembers your choice after
+a restart. **Sign out** removes the connection, downloaded tracks and server-only entries from Marquee.
+
+**What is kept of the sign-in.** The access token for the chosen server, in `navidrome.json`
+(sealed with DPAPI on Windows; on Linux and macOS the file is the user's alone, mode 0600), and
+nothing else of the account: the token Plex hands over in the browser lives for the one request
+that lists your servers. For a server shared with you that token opens that server only. For a
+server you own, Plex as a rule gives your account's own token as the server's: it opens
+everything your Plex account does, so treat the file as you would the account's password. The
+token is sent in a header, only to the server it was given for (and only after that server has
+shown the machine identifier Plex named), never in an address and never to the log.
+
+**Sign out** deletes the token from this computer; it does not tell Plex. Marquee Player stays
+listed among your account's devices: to revoke it, open Plex's web app, **Settings > Authorized
+devices**, and remove "Marquee Player" there. One device is listed however often you connect,
+in the browser or manually (one identifier per installation, kept in the settings).
+
+**Away from home.** Marquee tries the server's addresses in order: encrypted before plain,
+direct before Plex's relay, your own network before the internet (plain http only to an address
+on your own network). The relay is the last resort, for a server that cannot be reached
+directly: the audio then passes through Plex's servers, which limit its bitrate, so an
+original lossless file may stall there. Choose an MP3 target under **Streaming quality**, or
+enable Remote Access on the server so that a direct address works.
+
+**When the library is read again.** At start and when the window comes back after hours away,
+Marquee asks the server when the chosen library was last scanned or changed, and lists nothing
+when that is as the last complete sync saw it; **Sync now** always lists. (A server that dates
+neither is listed every time.)
+
+## Navidrome
 
 Settings > Library > Server adds the music on a Navidrome server (or another Subsonic or
 OpenSubsonic server) to the library, beside the music folders: folders only (as before), the
@@ -76,7 +131,7 @@ address without the scheme (`https://music.example.org/nd` as `music.example.org
 `Server.host`, one property for every row, also while signed out with its music still shown); a
 screen reader hears "from the server". The cloud takes no click and changes no row's height.
 
-**Connect Navidrome** on the empty home page (shown while no server is signed in) opens Settings >
+**Connect a server** on the empty home page (shown while no server is signed in) opens Settings >
 Library with the sign-in card in view and the address field focused.
 
 **What a track only on the server cannot do** (there is no file here): Show in Explorer is not

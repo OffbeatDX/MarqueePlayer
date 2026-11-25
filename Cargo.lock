@@ -2826,6 +2826,7 @@ dependencies = [
  "block2 0.6.2",
  "crossbeam-channel",
  "discord-ipc",
+ "http-client",
  "image",
  "ksni",
  "lastfm",
