@@ -59,7 +59,7 @@ fn svg(id: usize, p: &Paths, b: &Brushes, g: &Halo) -> String {
     let bloom = paint(&mut defs, &format!("bloom{id}"), &b.bloom, g);
     let _ = write!(body, "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"{reach:.1}\" fill=\"{bloom}\" opacity=\"{:.3}\"/>", g.cx, g.cy, 0.4 + 0.6 * p.pulse.clamp(0.0, 1.0));
     fill("fill", &p.fill, &b.fill, &mut defs, &mut body);
-    stroke("glow", &p.line, &b.glow, b.glow_width, &mut defs, &mut body);
+    stroke("glow", &p.line, &b.glow, b.glow_width * (1.0 + p.glow), &mut defs, &mut body);
     stroke("line", &p.line, &b.line, b.line_width, &mut defs, &mut body);
     stroke("ripples", &p.ripples, &b.ripples, b.ripple_width, &mut defs, &mut body);
     stroke("rings", &p.rings, &b.rings, b.ring_width, &mut defs, &mut body);
@@ -121,6 +121,7 @@ fn halo_trace() {
         let heard = tracker.update(&window, rate, dt);
         d.pulse(Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low });
         d.tick(dt);
+        d.level(analyzer.level_slide_db());
         let (lv, pk) = (analyzer.levels().to_vec(), analyzer.peaks().to_vec());
         d.draw(&look, &stage, true, &lv, &pk);
         let low = (bands / 8).max(1);

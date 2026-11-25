@@ -670,6 +670,11 @@ fn set_paths(g: &Visualizer, p: &draw::Paths) {
     if (g.get_pulse() - pulse).abs() > 0.004 {
         g.set_pulse(pulse);
     }
+    // The line's glow widened with the bass (the eclipse's rim).
+    let glow = 1.0 + p.glow.clamp(0.0, 1.0);
+    if (g.get_glow_swell() - glow).abs() > 0.01 {
+        g.set_glow_swell(glow);
+    }
 }
 
 fn set_brushes(g: &Visualizer, b: &Brushes) {
@@ -848,6 +853,8 @@ fn frame(st: &Rc<State>) {
         }
         let g = app.global::<Visualizer>();
         z.draw.tick(dt);
+        // How loud the music is against its loudest lately (the auto level's slide).
+        z.draw.level(z.analyzer.level_slide_db());
         match draw_mode() {
             DrawMode::Full => {
                 let (lv, pk) = (z.analyzer.levels().to_vec(), z.analyzer.peaks().to_vec());
