@@ -88,7 +88,8 @@ opacity = 0.4
 height = 200
 bar_width = 10
 bar_gap = 4
-# Classic: the mirrored reflection under the bars, between them and the player bar: its
+# Classic: the mirrored reflection under the bars (behind the page, under the player bar,
+# seen through its glass, and no taller than the bar): its
 # height as a share of the bars' (0 turns it off), and its alpha where it meets them as a
 # share of theirs (0 to 1); it fades out below.
 reflection = 0.45

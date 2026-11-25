@@ -1,7 +1,7 @@
 import { Theme } from "theme.slint";
 import { Page } from "types.slint";
 import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer } from "stores.slint";
-import { Icon, Icons, IconButton, Cover, Slider, ArtistLinks, LinkText, FocusRing, FocusTarget } from "widgets.slint";
+import { Icon, Icons, IconButton, Cover, Slider, ArtistLinks, LinkText, FocusRing, FocusTarget, MarqueeText } from "widgets.slint";
 import { QueueList } from "lists.slint";
 import { AutoFlickable, AutoscrollBlock } from "autoscroll.slint";
 
@@ -13,12 +13,19 @@ component NavItem inherits Rectangle {
     in property <bool> tabbable: true;
     // A playlist: albums and tracks dropped on it are added to it.
     in property <int> drop-playlist: -1;
+    // A playlist: Play and Shuffle at its right while the pointer is on it.
+    in property <bool> playable;
+    callback play();
+    callback shuffle();
+    private property <bool> hovered: ta.has-hover || play-btn.has-hover || shuffle-btn.has-hover;
+    private property <bool> actions-shown: root.playable && root.hovered;
     callback clicked();
     callback context-requested(length, length);
     height: 40px;
     border-radius: Theme.radius-control;
     background: drop.has-drag && root.drop-playlist >= 0 ? Theme.accent.with-alpha(0.3)
-        : current ? Theme.accent.with-alpha(0.16) : ta.has-hover ? Theme.hover : transparent;
+        : current ? Theme.accent.with-alpha(0.16) : root.hovered ? Theme.hover : transparent;
+    animate background { duration: Theme.dur-hover; }
     accessible-role: button;
     accessible-label: root.text + (root.current ? ", current page" : "");
     accessible-action-default => { root.clicked(); }
@@ -45,6 +52,8 @@ component NavItem inherits Rectangle {
             Focus.drop-playlist = -1;
         }
     }
+    // The row's content and action buttons sit inside its TouchArea so moving the pointer
+    // onto Play or Shuffle never drops the row's hover (same pattern as TrackRow).
     ta := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
@@ -53,19 +62,53 @@ component NavItem inherits Rectangle {
                 root.context-requested(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
             }
         }
-    }
-    HorizontalLayout {
-        padding-left: 12px;
-        spacing: 14px;
-        Icon { y: (parent.height - self.height) / 2; glyph: root.glyph; color: root.current ? Theme.accent : Theme.text-dim; }
-        Text {
-            text: root.text;
-            vertical-alignment: center;
-            font-size: Theme.font-body;
-            font-weight: root.current ? 700 : 500;
-            color: root.current ? Theme.text : Theme.text-dim;
-            overflow: elide;
-            accessible-role: none;
+        HorizontalLayout {
+            padding-left: 10px;
+            // The name is cut short of the buttons while they show, with symmetric breathing room otherwise.
+            padding-right: root.actions-shown ? 64px : 10px;
+            spacing: 10px;
+            Icon {
+                y: (parent.height - self.height) / 2;
+                glyph: root.glyph;
+                color: root.current ? Theme.accent : root.hovered ? Theme.text : Theme.text-dim;
+            }
+            MarqueeText {
+                text: root.text;
+                font-size: Theme.font-body;
+                font-weight: root.current ? 700 : 500;
+                text-color: root.current || root.hovered ? Theme.text : Theme.text-dim;
+                active: root.tabbable && (root.hovered || fs.has-focus);
+            }
+        }
+        // Over the row's own area, so a click on one does not open the playlist. Not reached
+        // with Tab (they only show on hover): the row's menu has both.
+        play-btn := IconButton {
+            x: parent.width - 60px;
+            y: (parent.height - self.height) / 2;
+            visible: root.playable;
+            opacity: root.actions-shown ? 1 : 0;
+            animate opacity { duration: Theme.dur-hover; }
+            glyph: Icons.play;
+            size: 28px;
+            icon-size: 18px;
+            tooltip: "Play";
+            label: "Play " + root.text;
+            tabbable: false;
+            clicked => { root.play(); }
+        }
+        shuffle-btn := IconButton {
+            x: parent.width - 31px;
+            y: (parent.height - self.height) / 2;
+            visible: root.playable;
+            opacity: root.actions-shown ? 1 : 0;
+            animate opacity { duration: Theme.dur-hover; }
+            glyph: Icons.shuffle;
+            size: 28px;
+            icon-size: 16px;
+            tooltip: "Shuffle";
+            label: "Shuffle " + root.text;
+            tabbable: false;
+            clicked => { root.shuffle(); }
         }
     }
     FocusRing { shown: fs.has-focus; radius: Theme.radius-control; inset: true; }
@@ -146,10 +189,14 @@ export component Sidebar inherits Rectangle {
                 }
             }
             VerticalLayout {
-                padding: 14px;
+                padding-top: 14px;
+                padding-bottom: 14px;
+                padding-left: 8px;
+                padding-right: 8px;
                 spacing: 4px;
                 HorizontalLayout {
                     padding-left: 10px;
+                    padding-right: 2px;
                     padding-bottom: 14px;
                     height: 48px;
                     Text {
@@ -183,7 +230,11 @@ export component Sidebar inherits Rectangle {
                 NavItem { glyph: Icons.expand; text: "Now playing"; tabbable: root.open; current: Nav.page == Page.now-playing; clicked => { Nav.sidebar-forced = false; Nav.go(Page.now-playing); } }
                 NavItem { glyph: Icons.settings; text: "Settings"; tabbable: root.open; current: Nav.page == Page.settings || Nav.page == Page.shelves; clicked => { Nav.sidebar-forced = false; Nav.go(Page.settings); } }
                 Rectangle { height: 14px; }
-                pl-head := Text { text: "PLAYLISTS"; font-size: Theme.font-small; font-weight: 700; color: drop-new.has-drag ? Theme.accent : Theme.text-dim; letter-spacing: 1px; }
+                pl-head := HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    Text { text: "PLAYLISTS"; font-size: Theme.font-small; font-weight: 700; color: drop-new.has-drag ? Theme.accent : Theme.text-dim; letter-spacing: 1px; }
+                }
                 playlists := AutoFlickable {
                     vertical-stretch: 1;
                     autoscroll-layer: 2;
@@ -200,6 +251,9 @@ export component Sidebar inherits Rectangle {
                             tabbable: root.open;
                             // A smart playlist takes no drops: its tracks come from its rules.
                             drop-playlist: p.smart ? -1 : p.id;
+                            playable: true;
+                            play => { Actions.play-playlist(p.id, false); }
+                            shuffle => { Actions.play-playlist(p.id, true); }
                             current: (Nav.page == Page.playlist || Nav.page == Page.smart || Nav.page == Page.smart-edit) && Playlists.current-id == p.id;
                             clicked => { Nav.sidebar-forced = false; Actions.open-playlist(p.id); }
                             context-requested(x, y) => { Actions.menu-request("playlist", "", 0, p.id, x, y); }
@@ -208,8 +262,8 @@ export component Sidebar inherits Rectangle {
                 }
                 // A sync with the server (no scan running): the same line (server/mod.rs).
                 if !Library.scanning && Server.busy: VerticalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
+                    padding-left: 10px;
+                    padding-right: 10px;
                     padding-top: 8px;
                     spacing: 4px;
                     accessible-role: text;
@@ -249,8 +303,8 @@ export component Sidebar inherits Rectangle {
                 // A scan in progress: quiet, at the foot of the sidebar. Settings has the
                 // details.
                 if Library.scanning: VerticalLayout {
-                    padding-left: 12px;
-                    padding-right: 12px;
+                    padding-left: 10px;
+                    padding-right: 10px;
                     padding-top: 8px;
                     spacing: 4px;
                     accessible-role: text;

@@ -37,7 +37,9 @@
 //!    Unicode form ignored, accents not; "Various Artists" and its spellings are one), and only
 //!    when it is plainly the same release: not when both have release ids and they differ, not
 //!    when both have a year and it differs (a reissue, a remaster, a deluxe edition of another
-//!    year), only when their tracks agree (no disc and track number where both have a track and
+//!    year; unless both the edition's year and the original year are known on both sides and
+//!    agree, `same_edition`: a server gives the original year where a file's date is its
+//!    edition's), only when their tracks agree (no disc and track number where both have a track and
 //!    the two disagree on title and duration, and at least half of the smaller side's tracks
 //!    matched: a local copy of part of an album is that album), and only when exactly one local
 //!    album passes and no other server album holds it. When in doubt, two rows: a wrong merge
@@ -730,6 +732,19 @@ fn by_files(tx: &Connection, rid: &str, k: &Kept, mb: Option<&str>, files: &mut 
     Ok((m.conflicts == 0 && matched * 2 >= local.len().min(songs.len())).then_some(album))
 }
 
+/// A later edition whose two dates both agree, when the years the two sides show do not: a
+/// server (Navidrome) gives an album's original year as its year, while a file's DATE is its
+/// edition's (a deluxe edition of 2025 of an album of 2021: the server says 2021, the files
+/// 2025). Like is compared with like: the edition's year (the server's release date; the local
+/// release date, else its date) and the original year (the server's original date, else its
+/// year; the local original date). Both must be known on both sides and equal, so a reissue
+/// the server only gives one year for stays apart, as before.
+fn same_edition(a: &RemoteAlbum, date: Option<&str>, original: Option<&str>, release: Option<&str>) -> bool {
+    let edition = (year(a.release_date.as_deref()), year(release).or(year(date)));
+    let first = (year(a.original_date.as_deref()).or(year(a.date.as_deref())), year(original));
+    matches!(edition, (Some(x), Some(y)) if x == y) && matches!(first, (Some(x), Some(y)) if x == y)
+}
+
 /// The local album server album `k` is, if one plainly is (see the module doc).
 fn find_local_album(tx: &Connection, rid: &str, k: &Kept, files: &mut Option<LocalFiles>) -> rusqlite::Result<Option<i64>> {
     let a = &k.album;
@@ -760,9 +775,18 @@ fn find_local_album(tx: &Connection, rid: &str, k: &Kept, files: &mut Option<Loc
     let songs: Vec<&RemoteSong> = k.songs.iter().map(|s| &s.song).collect();
     let mut passed = Vec::new();
     for id in ids {
-        let Some((key, title, artist, adate)) = tx
-            .prepare_cached("SELECT key, title, album_artist, date FROM albums WHERE id = ?1")?
-            .query_row([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)))
+        let Some((key, title, artist, adate, aoriginal, arelease)) = tx
+            .prepare_cached("SELECT key, title, album_artist, date, original_date, release_date FROM albums WHERE id = ?1")?
+            .query_row([id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                ))
+            })
             .optional()?
         else {
             continue;
@@ -777,6 +801,7 @@ fn find_local_album(tx: &Connection, rid: &str, k: &Kept, files: &mut Option<Loc
         }
         if let (Some(y1), Some(y2)) = (year(adate.as_deref()), year(date.as_deref()))
             && y1 != y2
+            && !same_edition(a, adate.as_deref(), aoriginal.as_deref(), arelease.as_deref())
         {
             continue;
         }

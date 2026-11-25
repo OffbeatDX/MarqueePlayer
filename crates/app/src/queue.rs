@@ -364,21 +364,48 @@ impl Queue {
         self.touch();
         let start = self.current.map_or(0, |c| c + 1);
         let tail = &mut self.items[start..];
-        let mut x = seed | 1;
+        // Fisher-Yates: every order as likely as any other. The numbers are splitmix64's
+        // (good for any seed, zero or a small count included).
+        let mut state = seed;
         for i in (1..tail.len()).rev() {
-            // xorshift64
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            let j = (x % (i as u64 + 1)) as usize;
-            tail.swap(i, j);
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            tail.swap(i, below(z ^ (z >> 31), i + 1));
         }
     }
+}
+
+/// `x` (64 random bits) as an index below `n`: its high bits scaled, not a remainder
+/// (which takes the low bits and favours small indexes). The bias left is under n / 2^64.
+pub fn below(x: u64, n: usize) -> usize {
+    ((u128::from(x) * n as u128) >> 64) as usize
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Seeds that differ little (a clock's, counted in hundreds) still give every order of
+    /// a short queue about as often, and `below` every index.
+    #[test]
+    fn shuffle_is_even_for_poor_seeds() {
+        let mut orders = std::collections::HashMap::new();
+        let mut starts = [0usize; 10];
+        let runs = 24_000u64;
+        for k in 0..runs {
+            let mut q = Queue::default();
+            q.replace((1..=5).map(t).collect(), 0);
+            q.set_shuffle(true, k * 100);
+            *orders.entry(q.items().iter().map(|i| i.track.id).collect::<Vec<_>>()).or_insert(0u64) += 1;
+            starts[below(k.wrapping_mul(0x9E37_79B9_7F4A_7C15), 10)] += 1;
+        }
+        // 24 orders of the four after the current one, 1000 each on average.
+        assert_eq!(orders.len(), 24);
+        assert!(orders.values().all(|&n| (850..1150).contains(&n)), "{:?}", orders.values().collect::<Vec<_>>());
+        assert!(starts.iter().all(|&n| (2300..2500).contains(&n)), "{starts:?}");
+    }
 
     fn t(id: i64) -> Track {
         Track {

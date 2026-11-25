@@ -286,6 +286,7 @@ export global TrackPage {
 }
 
 export global AlbumPage {
+    in-out property <[int]> heading-counts;
     in-out property <AlbumCard> album;
     in-out property <string> info;
     // The album's format ("FLAC · 16-bit / 44.1 kHz", "Mixed formats"), shown with the
@@ -576,6 +577,10 @@ export global Visualizer {
     // The ring's ripples: the contours that left the cover on a beat, on their way out.
     in-out property <string> ripples;
     in-out property <brush> ripples-brush;
+    // The ring's snare rings: thin and quick, gone well inside the ripples' way.
+    in-out property <string> rings;
+    in-out property <brush> rings-brush;
+    in-out property <length> rings-width: 1.5px;
     // Sparks (the ring's, the bonfire's): the young ones' dots, the old ones', and the soft
     // discs of light round them.
     in-out property <string> sparks;
@@ -605,6 +610,14 @@ export global Visualizer {
     in-out property <float> pulse: 0.4;
     in-out property <length> line-width: 2px;
     in-out property <length> glow-width;
+    // How much wider than that the glow is drawn now (the eclipse's rim, with the bass).
+    in-out property <float> glow-swell: 1.0;
+    // How much thicker than that the line is drawn now (bars and the line, with the beat).
+    in-out property <float> line-swell: 1.0;
+    // How much brighter the area and its reflection are drawn now: 0 as their brushes are,
+    // above brighter (the bars on the beat, when MP_BARS_WITH=flash asks for it), below
+    // fainter (the line's area when it is quiet).
+    in-out property <float> fill-light: 0.0;
     in-out property <length> top-h;
     in-out property <length> refl-h;
     // Drawing (between the first frame and coming to rest), and the preview's still frame.
@@ -616,6 +629,9 @@ export global Visualizer {
     // The halo's hub on the stage shown (the cover it surrounds: its half size), which the
     // stage lays out (VisualizerStage.hub).
     in-out property <length> stage-hub;
+    // The most room the reflection has at the stage's foot (VisualizerStage.refl-room):
+    // behind the page, what lies under the player bar; below 0, the look's share.
+    in-out property <length> stage-refl-room: -1px;
     // The look drawn is the halo (the ring style), around the cover's round shape or, with
     // `square`, its rounded square (visualizer/mod.rs, MP_HALO_SHAPE).
     in-out property <bool> ring;
@@ -644,8 +660,6 @@ export global Visualizer {
         { name: "Bonfire", hint: "Sparks rising from a glowing line along the foot" },
         { name: "Halo", hint: "A glowing ring around the cover, in its colours" },
         { name: "Saturn", hint: "A tilted ring of dust in orbit round the cover" },
-        { name: "Galaxy", hint: "Two spiral arms of dust turning round the cover" },
-        { name: "Swarm", hint: "Dust in a whirl round the cover" },
         { name: "Eclipse", hint: "A glow at the cover's rim, flares on the beat" },
     ];
     // The user's presets: how many; the one the look is ("" for none); the one it was chosen
@@ -935,11 +949,14 @@ export global Actions {
     // ("track" or "album", its id; 0 for a file from outside) where they stand in the
     // credit as shown, the rest plain text.
     pure callback artist-links(string, int, string) -> [ArtistLink];
+    pure callback first-track-at([int], length, length, length) -> int;
     // An artist tile of the Artists page (or a search's artists in full), by its place.
     callback open-artist-at(int);
     // A hero shelf (by its place in the settings) features its album at this index.
     callback hero-select(int, int);
     callback open-playlist(int);
+    // A playlist in the sidebar, ordinary or smart: play it from its first track, or shuffled.
+    callback play-playlist(int, bool /* shuffled */);
 
     // Albums.
     callback play-album(int);

@@ -2,8 +2,9 @@
 //!
 //! - Shuffle for an ordinary playlist: the page's Shuffle (`Actions.shuffle-in`), then the
 //!   sidebar menu's Shuffle (the playlist's context menu, its entry activated as a click
-//!   does): the queue holds the playlist's tracks, shuffle is on, the order is not the
-//!   playlist's.
+//!   does), then the sidebar's Shuffle and Play buttons (`Actions.play-playlist`): the
+//!   queue holds the playlist's tracks, shuffle is on, the order is not the playlist's
+//!   (Play: it is, from the first track).
 //! - Name clashes, every answer given through the prompt's own callback (`Actions.clash-
 //!   choose`, what its buttons call) or its keys: four playlist files imported at once
 //!   (Keep both; a file without a clash comes in unasked; Replace for the rest), one again
@@ -17,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use library::query;
-use slint::{ComponentHandle, Model};
+use slint::platform::{PointerEventButton, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, Model};
 
 use crate::bench::{Step, menu_labels, run_steps, snapshot, verdict};
 use crate::state::State;
@@ -36,6 +38,8 @@ struct Ids {
     big: i64,
     small: i64,
     smart: i64,
+    long_pl: i64,
+    marquee_start: Vec<[u8; 4]>,
     queue_before: Vec<i64>,
 }
 
@@ -65,6 +69,31 @@ fn check_shuffled(st: &State, app: &AppWindow, r: &mut String, how: &str, id: i6
     verdict(r, &format!("{how}: shuffle is on"), st.queue.borrow().shuffled() && app.global::<Player>().get_shuffle(), st.queue.borrow().shuffled());
     verdict(r, &format!("{how}: not in the playlist's order"), got != want, format!("first queued {:?}, first listed {:?}", got.first(), want.first()));
     verdict(r, &format!("{how}: the current track is the queue's first"), current.is_some() && current == got.first().copied(), format!("{current:?}"));
+}
+
+/// The middle of the Shuffle button of the sidebar's first playlist (chrome.slint: the
+/// panel's horizontal padding (8 px), its head, eight items, the PLAYLISTS heading; 232 px wide).
+fn sidebar_shuffle_at() -> (f32, f32) {
+    (232.0 - 8.0 - 31.0 + 14.0, 478.0)
+}
+
+/// Pixels inside a logical rectangle of the window (for checking whether a scrolling
+/// label moved).
+fn region_pixels(app: &AppWindow, x0: f32, y0: f32, x1: f32, y1: f32) -> Vec<[u8; 4]> {
+    let Ok(buf) = app.window().take_snapshot() else { return Vec::new() };
+    let s = app.window().scale_factor();
+    let (w, h) = (buf.width(), buf.height());
+    let (px0, py0) = ((x0 * s).max(0.0) as u32, (y0 * s).max(0.0) as u32);
+    let (px1, py1) = (((x1 * s) as u32).min(w), ((y1 * s) as u32).min(h));
+    let slice = buf.as_slice();
+    let mut out = Vec::new();
+    for py in (py0..py1).step_by(2) {
+        for px in (px0..px1).step_by(2) {
+            let p = slice[(py * w + px) as usize];
+            out.push([p.r, p.g, p.b, p.a]);
+        }
+    }
+    out
 }
 
 fn write_list(path: &Path, paths: &[String]) {
@@ -131,9 +160,90 @@ pub fn run(report: String, big: i64) {
         let before = IDS.with(|i| i.borrow().queue_before.clone());
         verdict(&mut r, "a second shuffle is another order", queue_ids(st) != before, "");
         verdict(&mut r, "the menu closed", !app.global::<crate::MenuStore>().get_open(), "");
+        // The sidebar's buttons on the playlist (shown on hover): Shuffle, then Play.
+        crate::playback::set_shuffle(st, false);
+        app.global::<Actions>().invoke_play_playlist(big as i32, true);
+        check_shuffled(st, app, &mut r, "the sidebar's Shuffle button", big);
+        crate::playback::set_shuffle(st, false);
+        app.global::<Actions>().invoke_play_playlist(big as i32, false);
+        let (want, got) = (track_ids(st, big), queue_ids(st));
+        let current = st.queue.borrow().current().map(|i| i.track.id);
+        verdict(&mut r, "the sidebar's Play button: the playlist in its order, from its first track", got == want && current == want.first().copied(), format!("{} queued, current {current:?}", got.len()));
         if !st.player.is_paused() {
             crate::playback::toggle_play(st);
         }
+    }));
+
+    // ---- The sidebar's buttons, by the pointer ------------------------------------------
+    // The first playlist of the sidebar (pinned open), from the Home page: the pointer on
+    // its Shuffle button, a snapshot, then a click there. (In-app pointer events.)
+    step(&mut steps, 300, Box::new(|st, app, _| {
+        crate::playback::set_shuffle(st, false);
+        let nav = app.global::<crate::Nav>();
+        nav.set_sidebar_pinned(true);
+        nav.invoke_go(crate::Page::Home);
+    }));
+    // Once the sidebar has slid in.
+    step(&mut steps, 500, Box::new(|_, app, _| {
+        let (x, y) = sidebar_shuffle_at();
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(x, y) });
+    }));
+    step(&mut steps, 500, Box::new(|st, app, r| {
+        snapshot(app, "sidebar-playlist-hover");
+        let first = app.global::<crate::Playlists>().get_list().row_data(0);
+        let (x, y) = sidebar_shuffle_at();
+        let position = LogicalPosition::new(x, y);
+        app.window().dispatch_event(WindowEvent::PointerPressed { position, button: PointerEventButton::Left });
+        app.window().dispatch_event(WindowEvent::PointerReleased { position, button: PointerEventButton::Left });
+        let mut r = r.borrow_mut();
+        match first {
+            Some(p) if !p.smart => {
+                check_shuffled(st, app, &mut r, &format!("a click on the Shuffle button of {:?} in the sidebar", p.name.as_str()), i64::from(p.id));
+                let page = app.global::<crate::Nav>().get_page();
+                verdict(&mut r, "the click did not open the playlist", page == crate::Page::Home, format!("{page:?}"));
+            }
+            other => verdict(&mut r, "the sidebar's first playlist is an ordinary one", false, format!("{:?}", other.map(|p| p.name))),
+        }
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 300.0) });
+        crate::playback::set_shuffle(st, false);
+        if !st.player.is_paused() {
+            crate::playback::toggle_play(st);
+        }
+        // Long-named playlist in the sidebar: hovering scrolls the overflowing text.
+        let long_pl = query::create_playlist_with(&st.db, "Future Funk & City Pop Classics", &[]).unwrap();
+        IDS.with(|i| i.borrow_mut().long_pl = long_pl);
+        views::playlists_changed(st);
+    }));
+    // Hover the long playlist (row 1: 42 px below row 0); wait 150 ms (still in dwell).
+    step(&mut steps, 200, Box::new(|_, app, _| {
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(90.0, 520.0) });
+    }));
+    step(&mut steps, 150, Box::new(|_, app, _| {
+        snapshot(app, "sidebar-marquee-0-start");
+        let px = region_pixels(app, 48.0, 506.0, 156.0, 534.0);
+        IDS.with(|i| i.borrow_mut().marquee_start = px);
+    }));
+    // Past the 450 ms dwell and well into the scroll: pixels in the text slot must differ.
+    step(&mut steps, 1300, Box::new(|_, app, r| {
+        snapshot(app, "sidebar-marquee-1-mid");
+        let start = IDS.with(|i| i.borrow().marquee_start.clone());
+        let mid = region_pixels(app, 48.0, 506.0, 156.0, 534.0);
+        let diff = start.iter().zip(mid.iter()).filter(|(a, b)| a != b).count();
+        verdict(&mut r.borrow_mut(), "hovering a truncated playlist name scrolls it", !start.is_empty() && diff > 20, format!("{diff} pixels moved of {}", start.len()));
+    }));
+    // End pause, then move pointer away and clean up the temporary playlist.
+    step(&mut steps, 2200, Box::new(|_, app, _| {
+        snapshot(app, "sidebar-marquee-2-end");
+        app.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(700.0, 300.0) });
+    }));
+    step(&mut steps, 250, Box::new(|st, app, _| {
+        snapshot(app, "sidebar-marquee-3-reset");
+        let long_pl = IDS.with(|i| i.borrow().long_pl);
+        if long_pl > 0 {
+            let _ = query::delete_playlist(&st.db, long_pl);
+            views::playlists_changed(st);
+        }
+        app.global::<crate::Nav>().set_sidebar_pinned(false);
     }));
 
     // ---- Import: four files at once ------------------------------------------------------

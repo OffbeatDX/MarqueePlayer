@@ -15,22 +15,13 @@
 //! - **Snaps.** The same for the sound's sharp end (the energy of its sample-to-sample
 //!   change): a snare, a clap, a rim shot; a hi-hat under a snare is too quiet to be one.
 //!   Shown as sparks, not as beats; and they help find the tempo.
-//! - **Tempo.** The kicks and snaps of the last seconds, each a point on a circle turned
-//!   once per candidate beat: for the right period they pile up on one side
-//!   (`|Σ w e^(2πi t/P)|`), and where they pile up is the beat's phase. Kicks between the
-//!   beats (a hip-hop bar's second kick, half a beat late) are counted on the circle turned
-//!   twice and four times per beat, for less. Half the period fits as well, so a period is
-//!   also judged by how many of its beats have something on them, and by how usual it is
-//!   (84 to 152 a minute: of a tempo and its double, the one in that range), and by
-//!   whether what was heard comes round again four beats later, as a bar does. Kept steady: a small change is eased in, a large one must be
-//!   heard twice. Let go four seconds after the last kick.
-//! - **Beats without a kick.** With the tempo known, a beat whose kick is missing (a bar's
-//!   one left out, a kick under a loud bass) is still told, softer, as long as a kick was
-//!   heard lately: a breakdown is not filled with beats nobody played.
+//! - **The tempo and the beats** are not read off the kicks (a bass line's notes are told
+//!   as kicks, a kick under a rolling bass is missed): `meter::Meter` hears them in
+//!   everything that starts, and tells each beat as it happens.
 //!
 //! No allocation after the first frames, a few thousand multiplications a frame.
 
-use std::collections::VecDeque;
+use crate::visualizer::meter::{Meter, Metered};
 
 /// The kick band's frequencies (Hz).
 const KICK_HZ: [f32; 5] = [45.0, 58.0, 72.0, 90.0, 110.0];
@@ -55,26 +46,32 @@ const MOST: f32 = 4.5;
 /// Below these energies nothing is a kick (about -62 dBFS) or a snap.
 const FLOOR: f32 = 6e-7;
 const SNAP_FLOOR: f32 = 2e-7;
-/// How long a kick or snap counts toward the tempo (seconds), and how many are kept.
-const MEMORY: f64 = 8.0;
-const KEPT: usize = 64;
-/// The tempos considered (beats a minute).
-const BPM: (f32, f32) = (68.0, 184.0);
+/// How long after it started a kick is told (seconds: the window filling, a frame).
+const TOLD: f32 = 0.025;
 
 /// What was heard this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Heard {
-    /// A beat to show: a kick's strength (0.3 to 1), or a beat told from the tempo alone
-    /// (softer); 0 for none.
+    /// A kick: its strength (0.3 to 1); 0 for none.
     pub hit: f32,
-    /// It was a kick (not a beat told from the tempo).
+    /// It was a kick (as `hit` says: kept for what reads it by name).
     pub kick: bool,
     /// A snare, a clap: its strength (0.3 to 1), 0 for none.
     pub snap: f32,
-    /// The beat's length in seconds, 0 while no tempo is known.
+    /// The beat's length in seconds, 0 while the music has no beat to speak of (`Meter`).
     pub period: f32,
     /// Where in the beat this frame is (0 at the beat, toward 1 before the next).
     pub phase: f32,
+    /// One of the music's beats fell in this frame (told as it happens, kick or no kick).
+    pub beat: bool,
+    /// The low notes' onset in this frame over what is usual lately (`Metered::low`).
+    pub low: f32,
+    /// How bright the sound is now: the energy of its sample-to-sample change over its
+    /// energy above 300 Hz (the low notes left out of it: a kick's body under a clap is
+    /// not what tells the clap). A snare's or a clap's noise is bright for as long as it
+    /// lasts (0.1 to 1.2); a kick's sharp edge only for a few milliseconds; a plucked or
+    /// sung note, a pad, are not (under 0.05).
+    pub bright: f32,
 }
 
 impl Heard {
@@ -154,6 +151,60 @@ impl Riser {
     }
 }
 
+/// Whether the beat is on the meter's pulse or halfway between two. The meter hears
+/// everything that starts, and what it tells is a pulse the music keeps: an open hat or a
+/// bass note on every half beat can outweigh the kicks in it, and the pulse is then halfway
+/// between the beats. The kicks say, when they say it plainly. (They do not say whether the
+/// pulse is the beat or twice it: a slow song's eighth notes are as steady as its beats,
+/// and the slow tracks of a real library were told at twice their tempo. Counting the
+/// drums on the even and the odd pulses was tried and went back and forth within a song,
+/// which is worse than a pulse twice as fast.)
+#[derive(Default)]
+struct Count {
+    /// How much kick has lately fallen on the pulses, and halfway between them.
+    on: f32,
+    half: f32,
+    halfway: bool,
+    /// The meter's phase last frame.
+    before: f32,
+}
+
+impl Count {
+    /// A frame: what the meter said and the kick told (0: none). Where in the beat the
+    /// frame is, and whether a beat fell in it.
+    fn step(&mut self, m: &Metered, kick: f32) -> (f32, bool) {
+        if m.period <= 0.0 {
+            *self = Count::default();
+            return (0.0, false);
+        }
+        if kick > 0.0 {
+            // Where the kick started (it is told a frame or two after).
+            let at = (m.phase - TOLD / m.period).rem_euclid(1.0);
+            (self.on, self.half) = (self.on * 0.85, self.half * 0.85);
+            if (at - 0.5).abs() <= 0.15 {
+                self.half += kick;
+            } else if at <= 0.15 || at >= 0.85 {
+                self.on += kick;
+            }
+            // The meter is believed unless the kicks plainly say otherwise: four in five of
+            // the last several halfway between its pulses (where a bass line plays on the
+            // beats and between them alike, the kicks told fall on both sides, and say
+            // nothing). As soon as they do not, it is believed again.
+            if self.half > 3.0 && self.half > 4.0 * self.on {
+                self.halfway = true;
+            } else if self.on > self.half {
+                self.halfway = false;
+            }
+        }
+        let before = std::mem::replace(&mut self.before, m.phase);
+        if self.halfway {
+            ((m.phase + 0.5) % 1.0, before < 0.5 && m.phase >= 0.5 && m.phase < 1.0)
+        } else {
+            (m.phase, m.beat)
+        }
+    }
+}
+
 pub struct Tracker {
     /// Seconds listened to.
     now: f64,
@@ -161,25 +212,15 @@ pub struct Tracker {
     window: Vec<f32>,
     low: Riser,
     high: Riser,
-    /// The kicks and snaps kept for the tempo: when, how much each counts, and whether it
-    /// was a kick.
-    heard: VecDeque<(f64, f32, bool)>,
-    /// The tempo: the beat's length (0: none), a beat's time, and how well it fits.
-    period: f32,
-    origin: f64,
-    fit: f32,
-    /// A different tempo heard once, waiting to be heard again.
-    other: f32,
-    /// Until the tempo is worked out again.
-    wait: f32,
-    /// The last beat counted (its number from `origin`), and when a beat was last shown.
-    counted: i64,
-    shown: f64,
+    /// The tempo and the beats.
+    meter: Meter,
+    /// The meter tells a pulse: on the beat, or halfway between two (`Count`).
+    count: Count,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
-        Tracker { now: 0.0, window: Vec::new(), low: Riser::default(), high: Riser::default(), heard: VecDeque::with_capacity(KEPT + 1), period: 0.0, origin: 0.0, fit: 0.0, other: 0.0, wait: 0.0, counted: 0, shown: -9.0 }
+        Tracker { now: 0.0, window: Vec::new(), low: Riser::default(), high: Riser::default(), meter: Meter::default(), count: Count::default() }
     }
 }
 
@@ -187,7 +228,9 @@ impl Tracker {
     /// Forget everything (the visualizer stopped, another track).
     pub fn reset(&mut self) {
         let window = std::mem::take(&mut self.window);
-        *self = Tracker { window, ..Tracker::default() };
+        let mut meter = std::mem::take(&mut self.meter);
+        meter.reset();
+        *self = Tracker { window, meter, ..Tracker::default() };
     }
 
     /// A frame with nothing playing: time passes, nothing is heard.
@@ -196,8 +239,9 @@ impl Tracker {
         self.now += f64::from(dt);
         self.low.rest(dt);
         self.high.rest(dt);
-        if self.low.since > 3.0 {
-            self.period = 0.0;
+        // A pause of some seconds: what comes after need not go on in time with what was.
+        if self.low.since > 3.0 && self.meter.period() > 0.0 {
+            self.meter.reset();
         }
         Heard::default()
     }
@@ -207,58 +251,22 @@ impl Tracker {
     pub fn update(&mut self, samples: &[f32], rate: u32, dt: f32) -> Heard {
         let dt = dt.clamp(0.0, 0.25);
         self.now += f64::from(dt);
-        let (low, high) = self.energies(samples, rate);
+        let (low, high, bright) = self.energies(samples, rate);
         let kick = self.low.step(low, FLOOR, dt);
         let snap = self.high.step(high, SNAP_FLOOR, dt);
-        for (strength, is_kick) in [(kick, true), (snap * 0.6, false)] {
-            if strength > 0.0 {
-                self.heard.push_back((self.now, strength, is_kick));
-                if self.heard.len() > KEPT {
-                    self.heard.pop_front();
-                }
-            }
-        }
-        while self.heard.front().is_some_and(|k| self.now - k.0 > MEMORY) {
-            self.heard.pop_front();
-        }
-        self.wait -= dt;
-        if self.wait <= 0.0 {
-            self.wait = 0.3;
-            self.tempo();
-        }
-        // The beat's clock: a beat counted when its time comes.
-        let (mut phase, mut tick) = (0.0, false);
-        if self.period > 0.0 {
-            let at = (self.now - self.origin) / f64::from(self.period);
-            let n = at.floor() as i64;
-            phase = (at - at.floor()) as f32;
-            tick = n != self.counted;
-            self.counted = n;
-        }
-        // What to show: a kick, unless a beat was just shown for it (the tempo told it a
-        // moment early); or a beat without a kick, when a kick was heard lately.
-        let near = f64::from(self.period) * 0.3;
-        let mut hit = 0.0;
-        if kick > 0.0 {
-            if self.period == 0.0 || self.now - self.shown > near {
-                hit = kick;
-            }
-        } else if tick && self.fit > 0.6 && self.now - self.shown > f64::from(self.period) * 0.7 && self.low.since < self.period * 1.6 && self.low.rise < RISE * 0.5 {
-            hit = 0.45;
-        }
-        if hit > 0.0 {
-            self.shown = self.now;
-        }
-        Heard { hit, kick: kick > 0.0, snap, period: self.period, phase }
+        let m = self.meter.update(samples, rate, dt);
+        let (phase, beat) = self.count.step(&m, kick);
+        Heard { hit: kick, kick: kick > 0.0, snap, period: m.period, phase, beat, low: m.low, bright }
     }
 
     /// In the newest `WINDOW` of `samples`: the energy at the kick band's frequencies (a
-    /// full-scale sine at one of them: 1), and the energy of the sample-to-sample change
-    /// (the sound's sharp end: a snare's, a clap's).
-    fn energies(&mut self, samples: &[f32], rate: u32) -> (f32, f32) {
+    /// full-scale sine at one of them: 1), the energy of the sample-to-sample change
+    /// (the sound's sharp end: a snare's, a clap's), and how bright the sound is
+    /// (`Heard::bright`).
+    fn energies(&mut self, samples: &[f32], rate: u32) -> (f32, f32, f32) {
         let n = ((rate as f32 * WINDOW) as usize).min(samples.len());
         if n < 64 {
-            return (0.0, 0.0);
+            return (0.0, 0.0, 0.0);
         }
         if self.window.len() != n {
             self.window = (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect();
@@ -282,122 +290,19 @@ impl Tracker {
         // The newer half only: a snap is short, and half the window tells it sooner.
         let recent = &src[n / 2..];
         let high = recent.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).sum::<f32>() / recent.len() as f32;
-        (low, high)
-    }
-
-    /// The tempo that what was heard keeps, if it keeps one.
-    fn tempo(&mut self) {
-        // No kick for four seconds: whatever tempo was held has stopped being played (a
-        // breakdown, the track's end); it is found again from the next kicks.
-        let last_kick = self.heard.iter().rev().find(|k| k.2).map(|k| k.0);
-        if last_kick.is_none_or(|t| self.now - t > 4.0) {
-            (self.period, self.fit, self.other) = (0.0, 0.0, 0.0);
-            return;
-        }
-        if self.heard.len() < 4 || self.heard.iter().filter(|k| k.2).count() < 2 {
-            return;
-        }
-        let now = self.now;
-        let weight = |k: &(f64, f32, bool)| f64::from(k.1) * (-(now - k.0) / 5.0).exp();
-        let total: f64 = self.heard.iter().map(weight).sum::<f64>().max(1e-9);
-        let kicks: f64 = self.heard.iter().filter(|k| k.2).map(weight).sum::<f64>().max(1e-9);
-        let (first, last) = (self.heard.front().unwrap().0, self.heard.back().unwrap().0);
-        let mut on = [0.0f32; 64];
-        let mut best = (0.0f32, 0.0f32, 0.0f32, 0.0f64);
-        let mut bpm = BPM.0;
-        while bpm <= BPM.1 {
-            let p = 60.0 / f64::from(bpm);
-            // How well what was heard lies on the beats, on the half beats, on the quarters;
-            // and the kicks alone on the beats.
-            let mut z = [(0.0f64, 0.0f64); 3];
-            let mut zk = (0.0f64, 0.0f64);
-            for k in &self.heard {
-                let (a, w) = (std::f64::consts::TAU * (k.0 / p), weight(k));
-                for (i, turns) in [1.0, 2.0, 4.0].iter().enumerate() {
-                    z[i].0 += w * (a * turns).cos();
-                    z[i].1 += w * (a * turns).sin();
-                }
-                if k.2 {
-                    zk.0 += w * a.cos();
-                    zk.1 += w * a.sin();
-                }
+        // The sound above 300 Hz (one pole, run over the whole window from rest, the newer
+        // half counted: no state between frames here either).
+        let k = (-std::f32::consts::TAU * 300.0 / rate as f32).exp();
+        let (mut y, mut before, mut body) = (0.0f32, src[0], 0.0f32);
+        for (i, &x) in src.iter().enumerate() {
+            y = k * (y + x - before);
+            before = x;
+            if i >= n / 2 {
+                body += y * y;
             }
-            let size = |v: (f64, f64), of: f64| ((v.0 * v.0 + v.1 * v.1).sqrt() / of) as f32;
-            // The beats are where the kicks are (hats between them do not make the tempo
-            // twice as fast), or, when the kicks are off the beat as often as on it, where
-            // everything together is.
-            let (by_kicks, by_all) = (size(zk, kicks), size(z[0], total));
-            let on_beat = if by_kicks >= by_all { zk } else { z[0] };
-            let align = 0.55 * by_kicks.max(by_all) + 0.3 * size(z[1], total) + 0.15 * size(z[2], total);
-            // A beat's time: where they pile up on the circle turned once per beat.
-            let origin = on_beat.1.atan2(on_beat.0) / std::f64::consts::TAU * p;
-            // How many of the period's beats have something on them: a kick, or (for less)
-            // a snap.
-            let beats = (((last - first) / p).round() as usize + 1).clamp(1, on.len());
-            on[..beats].fill(0.0);
-            let base = ((first - origin) / p).round();
-            for k in &self.heard {
-                let at = (k.0 - origin) / p;
-                let i = at.round() - base;
-                if (at - at.round()).abs() < 0.17 && i >= 0.0 && (i as usize) < beats {
-                    on[i as usize] = on[i as usize].max(if k.2 { 1.0 } else { 0.6 });
-                }
-            }
-            let kept = on[..beats].iter().sum::<f32>() / beats as f32;
-            // Whether it comes round again a bar later (four beats): what was heard, and the
-            // same kind of thing four beats before or after it. A tempo that only happens to
-            // put things on a grid does not repeat.
-            let bar = 4.0 * p;
-            let (mut again, mut could) = (0.0f64, 0.0f64);
-            for k in &self.heard {
-                let (before, after) = (k.0 - bar, k.0 + bar);
-                if before < first - 0.08 && after > last + 0.08 {
-                    continue;
-                }
-                let w = weight(k);
-                could += w;
-                if self.heard.iter().any(|j| j.2 == k.2 && ((j.0 - before).abs() < 0.07 || (j.0 - after).abs() < 0.07)) {
-                    again += w;
-                }
-            }
-            let repeats = if could > 0.0 { (again / could) as f32 } else { 0.5 };
-            let fit = align * kept.powf(0.7) * (0.35 + 0.65 * repeats);
-            // As usual as any from 84 to 152 a minute; less so the farther outside (twice or
-            // half a tempo fits the same kicks: the one in that range is the one meant).
-            let outside = if bpm < 84.0 { (84.0 / bpm).log2() } else if bpm > 152.0 { (bpm / 152.0).log2() } else { 0.0 };
-            let usual = (-0.5 * (outside / 0.22).powi(2)).exp();
-            if fit * usual > best.0 {
-                best = (fit * usual, fit, p as f32, origin);
-            }
-            bpm += 0.5;
         }
-        let (_, fit, period, origin) = best;
-        if fit < 0.36 {
-            // No tempo in this: the one held is let go once it has stopped fitting.
-            self.fit *= 0.7;
-            if self.fit < 0.3 {
-                self.period = 0.0;
-            }
-            return;
-        }
-        if self.period > 0.0 && ((period - self.period) / self.period).abs() < 0.04 {
-            // The same tempo, heard a little differently: eased in.
-            self.period += (period - self.period) * 0.35;
-            self.other = 0.0;
-        } else if self.period == 0.0 || (self.other > 0.0 && ((period - self.other) / self.other).abs() < 0.04) {
-            // A tempo where there was none, or another one heard twice.
-            self.period = period;
-            self.other = 0.0;
-        } else {
-            self.other = period;
-            return;
-        }
-        self.fit = fit;
-        // A beat's time near now, on the held period's grid through the phase heard.
-        let p = f64::from(self.period);
-        self.origin = origin + ((self.now - origin) / p).floor() * p;
-        // The count carries on from the new origin without telling a beat twice.
-        self.counted = ((self.now - self.origin) / p).floor() as i64;
+        let bright = high / (body / recent.len() as f32 + 1e-9);
+        (low, high, bright)
     }
 }
 
@@ -468,39 +373,81 @@ mod tests {
     }
 
     #[test]
-    fn the_tempo_is_found_and_kept() {
-        for bpm in [84.0, 100.0, 120.0, 128.0, 140.0, 174.0] {
-            let sound = track(bpm, 12.0, 0.8, &[]);
+    fn the_tempo_is_the_meters_and_the_phase_is_small_at_a_kick() {
+        for bpm in [100.0, 120.0, 128.0, 140.0, 174.0] {
+            // (With a little hiss under it: where nothing else is as high as the hats, each
+            // counts for as much as a kick, and every half beat is as good a beat.)
+            let mut sound = track(bpm, 14.0, 0.8, &[]);
+            let mut seed = 0x0f1e_2d3cu32;
+            for s in sound.iter_mut() {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                *s += 0.02 * ((seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0);
+            }
             let heard = listen(&sound, 60.0);
             let at = |secs: f32| heard.iter().find(|h| h.0 >= secs).unwrap().1;
-            assert!((at(6.0).bpm() - bpm).abs() < 2.0, "{bpm}: {} after 6 s", at(6.0).bpm());
-            assert!((at(11.5).bpm() - bpm).abs() < 1.5, "{bpm}: {} after 11.5 s", at(11.5).bpm());
-            // The phase is 0 at the beats: right after a kick it is small.
+            assert!((at(13.5).bpm() - bpm).abs() < bpm * 0.015, "{bpm}: {} after 13.5 s", at(13.5).bpm());
             let last = heard.iter().rev().find(|h| h.1.kick).unwrap();
             assert!(last.1.phase < 0.2 || last.1.phase > 0.9, "{bpm}: phase {} at a kick", last.1.phase);
+            // A beat told for each one played, kick or no kick.
+            let beats = heard.iter().filter(|h| h.1.beat && h.0 > 8.0).count() as f32;
+            assert!((beats - 6.0 * bpm / 60.0).abs() <= 1.5, "{bpm}: {beats} beats in six seconds");
         }
     }
 
     #[test]
-    fn a_missing_kick_is_still_a_beat_and_a_breakdown_is_not() {
-        // Beats 12 and 16 without their kick: told from the tempo, softer, once each.
-        let sound = track(120.0, 12.0, 0.8, &[12, 16]);
-        let heard = listen(&sound, 60.0);
-        for b in [12.0f32, 16.0] {
-            let near: Vec<&(f32, Heard)> = heard.iter().filter(|h| h.1.hit > 0.0 && (h.0 - b * 0.5).abs() < 0.12).collect();
-            assert!(near.len() == 1 && !near[0].1.kick && near[0].1.hit < 0.6, "beat {b}: {near:?}");
+    fn the_kicks_say_whether_the_beat_is_on_the_pulse_or_halfway() {
+        let m = |phase: f32, beat: bool| Metered { beat, period: 0.35, phase, low: 0.0, sure: 1.0 };
+        // Twenty-four pulses, twenty frames each, a kick where `kick_at` says: where in the
+        // beat the kicks of the last eight are told, and how many beats are.
+        let run = |kick_at: &dyn Fn(usize) -> Option<f32>| {
+            let mut c = Count::default();
+            let mut out = (0.0, 0);
+            for pulse in 0..24usize {
+                for step in 0..20 {
+                    let phase = step as f32 / 20.0;
+                    let kick = kick_at(pulse).is_some_and(|at| (phase - at).abs() < 0.001);
+                    let (ph, beat) = c.step(&m(phase, step == 0), if kick { 0.9 } else { 0.0 });
+                    if pulse >= 16 {
+                        out = (if kick { ph } else { out.0 }, out.1 + usize::from(beat));
+                    }
+                }
+            }
+            out
+        };
+        // Kicks just after every pulse: the pulse is the beat.
+        let (at_kick, beats) = run(&|_| Some(0.1));
+        assert!((at_kick - 0.1).abs() < 0.01 && beats == 8, "{at_kick} {beats}");
+        // Kicks halfway between the pulses: the beat is there.
+        let (at_kick, beats) = run(&|_| Some(0.6));
+        assert!((at_kick - 0.1).abs() < 0.01 && beats == 8, "{at_kick} {beats}");
+        // Kicks on the pulses and halfway alike (a bass line told as kicks): the meter is
+        // believed.
+        let (at_kick, beats) = run(&|p| Some(if p % 2 == 0 { 0.1 } else { 0.6 }));
+        assert!(((at_kick - 0.1).abs() < 0.01 || (at_kick - 0.6).abs() < 0.01) && beats == 8, "{at_kick} {beats}");
+        let mut c = Count::default();
+        for pulse in 0..24usize {
+            for step in 0..20 {
+                let phase = step as f32 / 20.0;
+                let kick = (phase - if pulse % 2 == 0 { 0.1 } else { 0.6 }).abs() < 0.001;
+                c.step(&m(phase, step == 0), if kick { 0.9 } else { 0.0 });
+                assert!(!c.halfway, "pulse {pulse}");
+            }
         }
-        // Every other beat shown is a kick, one per beat.
-        let shown = heard.iter().filter(|h| h.1.hit > 0.0).count();
-        assert!((22..=25).contains(&shown), "{shown}");
-        // The kicks stop at 6 s: one beat more at the most, then nothing.
-        let skip: Vec<usize> = (12..40).collect();
-        let sound = track(120.0, 12.0, 0.8, &skip);
+    }
+
+    #[test]
+    fn a_missing_kick_is_no_kick_and_the_beat_goes_on() {
+        // Beats 16 and 20 without their kick: no kick is told there, a beat is.
+        let sound = track(120.0, 14.0, 0.8, &[16, 20]);
         let heard = listen(&sound, 60.0);
-        let after = heard.iter().filter(|h| h.1.hit > 0.0 && h.0 > 6.2).count();
-        assert!(after <= 1, "{after} beats shown in the breakdown");
-        assert!(heard.iter().find(|h| h.0 >= 8.0).unwrap().1.period > 0.0, "the tempo is held a while (the kicks may come back in time)");
-        assert_eq!(heard.last().unwrap().1.period, 0.0, "and let go four seconds after the last kick");
+        for b in [16.0f32, 20.0] {
+            let near: Vec<&(f32, Heard)> = heard.iter().filter(|h| (h.0 - b * 0.5).abs() < 0.1).collect();
+            assert!(near.iter().all(|h| h.1.hit == 0.0) && near.iter().filter(|h| h.1.beat).count() == 1, "beat {b}");
+        }
+        let kicks = heard.iter().filter(|h| h.1.hit > 0.0).count();
+        assert!((25..=27).contains(&kicks), "{kicks}");
     }
 
     /// A hip-hop bar: kicks on the one and half a beat after the three, snares (noise) on
@@ -536,8 +483,8 @@ mod tests {
         for bpm in [88.0, 96.0] {
             let heard = listen(&hiphop(bpm, 14.0), 60.0);
             let at = |secs: f32| heard.iter().find(|h| h.0 >= secs).unwrap().1;
-            assert!((at(8.0).bpm() - bpm).abs() < 2.5, "{bpm}: {} after 8 s", at(8.0).bpm());
-            assert!((at(13.5).bpm() - bpm).abs() < 2.0, "{bpm}: {} after 13.5 s", at(13.5).bpm());
+            let told = at(13.5).bpm();
+            assert!((told - bpm).abs() < 2.0 || (told - 2.0 * bpm).abs() < 4.0, "{bpm}: {told} after 13.5 s");
             // The snares are snaps, not kicks: two a bar, on the two and the four.
             // (After the first bars: until a snare has been heard, a hat is the sharpest thing.)
             let bars = 11.0 / (240.0 / bpm);
@@ -553,7 +500,6 @@ mod tests {
         let sound = track(120.0, 8.0, 0.0, &[]);
         let heard = listen(&sound, 60.0);
         assert!(heard.iter().filter(|h| h.1.hit > 0.0).count() <= 1, "{:?}", heard.iter().filter(|h| h.1.hit > 0.0).collect::<Vec<_>>());
-        assert_eq!(heard.last().unwrap().1.period, 0.0);
         let heard = listen(&vec![0.0; RATE as usize * 3], 60.0);
         assert!(heard.iter().all(|h| h.1 == Heard::default()));
         // Paused: nothing, and what was held is let go.
@@ -563,11 +509,11 @@ mod tests {
             let end = ((i as f32 / 60.0) * RATE as f32) as usize;
             tr.update(&sound[end.saturating_sub(8192)..end.max(1)], RATE, 1.0 / 60.0);
         }
-        assert!(tr.period > 0.0);
+        assert!(tr.meter.period() > 0.0);
         for _ in 0..240 {
             assert_eq!(tr.rest(1.0 / 60.0), Heard::default());
         }
-        assert_eq!(tr.period, 0.0);
+        assert_eq!(tr.meter.period(), 0.0);
     }
 
     #[test]
@@ -587,5 +533,49 @@ mod tests {
         }
         let kicks = listen(&sound, 60.0).iter().filter(|h| h.1.kick && h.0 > 2.0).count();
         assert!((11..=13).contains(&kicks), "{kicks} kicks in 6 s at 120");
+    }
+
+    #[test]
+    fn a_claps_noise_stays_bright_a_kicks_edge_and_a_plucked_note_do_not() {
+        // The track's kicks, each with a sharp edge (noise gone in a few milliseconds); a
+        // clap on every other one (noise for a tenth of a second); a plucked note an eighth
+        // of a second after each kick (the track's hats are on the half beats).
+        let mut sound = track(120.0, 8.0, 0.8, &[]);
+        let mut seed = 0x0bad_5eedu32;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+        };
+        for (i, s) in sound.iter_mut().enumerate() {
+            let t = i as f32 / RATE as f32;
+            let (beat, ph) = ((t / 0.5).floor() as usize, t % 0.5);
+            let n = noise();
+            *s += 0.5 * (-ph / 0.003).exp() * n;
+            if beat % 2 == 1 {
+                *s += 0.3 * (-ph / 0.06).exp() * n;
+            }
+            let note = (t + 0.375) % 0.5;
+            *s += 0.4 * (-note / 0.15).exp() * (std::f32::consts::TAU * 330.0 * note).sin();
+        }
+        let heard = listen(&sound, 60.0);
+        // How bright the sound is a frame or two after a moment has been told (itself a
+        // frame after it happened).
+        let after = |at: f32| {
+            let v: Vec<f32> = heard.iter().filter(|h| h.0 > at + 0.025 && h.0 < at + 0.055).map(|h| h.1.bright).collect();
+            v.iter().sum::<f32>() / v.len().max(1) as f32
+        };
+        let (mut claps, mut edges, mut notes) = (f32::MAX, 0.0f32, 0.0f32);
+        for beat in 4..15 {
+            let t = beat as f32 * 0.5;
+            if beat % 2 == 1 {
+                claps = claps.min(after(t));
+            } else {
+                edges = edges.max(after(t));
+            }
+            notes = notes.max(after(t + 0.125));
+        }
+        assert!(claps > 0.1 && edges < 0.04 && notes < 0.04, "claps {claps}, kicks' edges {edges}, notes {notes}");
     }
 }
