@@ -7,8 +7,9 @@
 //! The stage is split in two: the top box, where the bars rise from its bottom edge (the
 //! baseline), and under it the reflection's box. Paths are in each box's logical pixels.
 //!
-//! - Bars: rounded bars, caps above them, a scaled mirror below.
-//! - Line: a smooth curve (Catmull-Rom as cubic Béziers) over a filled area.
+//! - Bars: rounded bars, caps above them, a scaled mirror below; the low ones take the kick.
+//! - Line: a smooth curve (Catmull-Rom as cubic Béziers) over a filled area; its low end
+//!   takes the kick, and it thickens with the beat.
 //! - Ring, around the round cover, in five kinds: Ripples (the spectrum as a glowing
 //!   contour, the two halves mirrored; each beat sends the contour out as a ripple and
 //!   throws sparks off it), Saturn (a tilted
@@ -25,7 +26,7 @@ use std::fmt::Write as _;
 use slint::private_unstable_api::re_exports::{ConicGradientBrush, GradientStop, LinearGradientBrush, RadialGradientBrush};
 use slint::{Brush, Color};
 
-use crate::visualizer::look::{ColourBy, Colours, Detail, Look, Style};
+use crate::visualizer::look::{ColourBy, Colours, Detail, Look, Motion, Style};
 
 /// Reflection strips for a gradient across (each its own alpha; see `Paths::refl`).
 pub const STRIPS: usize = 6;
@@ -79,6 +80,13 @@ pub struct Paths {
     /// How much wider than its brush says the line's glow is drawn now (0: as it says; the
     /// eclipse's rim widens with the bass).
     pub glow: f32,
+    /// How much thicker than its brush says the line is drawn now (0: as it says; 1: twice:
+    /// the line style with the beat).
+    pub swell: f32,
+    /// How much brighter the area and its reflection are drawn now (0: as their brushes say;
+    /// above: brighter, the bars with the beat; below: fainter, the line's area in a quiet
+    /// passage). The page raises or lowers the brushes' alpha by it.
+    pub light: f32,
     /// The ring's ripples: the contours that left the cover on a beat, on their way out.
     pub ripples: String,
     /// The ring's snare rings: thin, quick, gone well before the ripples' way ends.
@@ -309,6 +317,51 @@ pub struct Draw {
     hit_since: Option<f32>,
     /// How loud the music is against its loudest lately (`level`).
     loud: Loud,
+    /// Bars and the line: the last beat's strength, dying away in about an eighth of a second
+    /// (what lifts the low notes, `KICK_FADE`), and dying away over the beat (what brightens
+    /// the bars and thickens the line, `LIT_FADE`).
+    kick: f32,
+    lit: f32,
+}
+
+/// Bars and the line: the share of the bands, from the lowest, that take the kick; how much a
+/// full kick adds to the lowest one's level (less further up, none past that share; shaped
+/// like any level, so nothing pins to the top); how much it kicks every peak cap up; and how
+/// fast it dies away (seconds: mostly gone in an eighth of a second).
+const KICK_SPAN: f32 = 0.2;
+const KICK_LIFT: f32 = 0.35;
+const KICK_CAP: f32 = 0.04;
+const KICK_FADE: f32 = 0.05;
+/// What a beat does to the whole of them, dying away over this share of a beat (between 0.06
+/// and 0.2 s; without a tempo, 0.1 s), so it has settled before the next: the bars' area and
+/// reflection that much brighter at a full beat (`Paths::light`), the line that much thicker
+/// (`Paths::swell`: 2 px to 4 px).
+const LIT_FADE: f32 = 0.22;
+const LIT_BARS: f32 = 0.3;
+const LIT_LINE: f32 = 1.0;
+/// The line's area this much fainter as quiet as the looks get (`Loud`), as its brush says
+/// as loud as the loudest lately: a drop looks fuller than a breakdown.
+const LINE_QUIET: f32 = 0.45;
+
+/// What a kick adds to band `i` of `bands` (0 the lowest), at the kick's strength now.
+fn lift(kick: f32, bands: usize, i: usize) -> f32 {
+    if kick <= 0.0 {
+        return 0.0;
+    }
+    let u = i as f32 / (bands as f32 * KICK_SPAN).max(1.0);
+    if u >= 1.0 { 0.0 } else { KICK_LIFT * kick * (1.0 - u * u * (3.0 - 2.0 * u)) }
+}
+
+/// Band `i`'s level and peak as drawn, with what the kick adds (`lift`) and the caps kicked
+/// up by `cap`: a lifted bar carries its cap with it. Without either, exactly as without the
+/// kick.
+fn kicked(levels: &[f32], peaks: &[f32], i: usize, up: f32, cap: f32) -> (f32, f32) {
+    if up <= 0.0 && cap <= 0.0 {
+        return (get(levels, i), get(peaks, i));
+    }
+    let l = levels.get(i).copied().unwrap_or(0.0).max(0.0) + up;
+    let pk = peaks.get(i).copied().unwrap_or(0.0).max(l) + cap;
+    (shape(l), shape(pk))
 }
 
 /// How loud the music is now against the loudest it has lately been, 0..1: the auto level
@@ -373,6 +426,7 @@ impl Draw {
         self.heard = None;
         self.hit_since = None;
         self.loud = Loud::default();
+        (self.kick, self.lit) = (0.0, 0.0);
     }
 
     /// How far the analysis' auto level has slid its scale (dB, `Analyzer::level_slide_db`):
@@ -416,7 +470,7 @@ impl Draw {
         p.caps.clear();
         p.line.clear();
         p.refl.iter_mut().for_each(String::clear);
-        (p.pulse, p.punch, p.glow) = (0.0, 0.0, 0.0);
+        (p.pulse, p.punch, p.glow, p.swell, p.light) = (0.0, 0.0, 0.0, 0.0, 0.0);
         p.ripples.clear();
         p.rings.clear();
         p.sparks.clear();
@@ -441,9 +495,37 @@ impl Draw {
             self.eclipse = Eclipse::default();
             self.sparks_of = look.style.beats().then_some(look.style);
         }
+        // Bars and the line take the beat too (not with Smooth motion: Calm, and the default
+        // where Windows' animations are off, do not jump). A still frame moves nothing.
+        let flat = matches!(look.style, Style::Bars | Style::Line) && look.motion != Motion::Smooth;
+        if flat && dt > 0.0 {
+            let (hit, period) = heard.map_or((0.0, 0.0), |h| (h.hit, h.period));
+            let fade = if period > 0.0 { (LIT_FADE * period).clamp(0.06, 0.2) } else { 0.1 };
+            self.kick = (self.kick * (-dt / KICK_FADE).exp()).max(hit);
+            self.lit = (self.lit * (-dt / fade).exp()).max(hit);
+            // Gone, not a trace kept forever: at rest the frame is exactly as without them.
+            if self.kick < 0.005 {
+                self.kick = 0.0;
+            }
+            if self.lit < 0.005 {
+                self.lit = 0.0;
+            }
+        } else {
+            (self.kick, self.lit) = (0.0, 0.0);
+        }
+        let kick = self.kick;
         match look.style {
-            Style::Bars => bars(p, look, stage, levels, peaks, strips),
-            Style::Line => line(p, look, stage, levels, peaks, strips),
+            Style::Bars => {
+                bars(p, look, stage, levels, peaks, strips, kick);
+                p.light = LIT_BARS * self.lit;
+            }
+            Style::Line => {
+                line(p, look, stage, levels, peaks, strips, kick);
+                p.swell = LIT_LINE * self.lit;
+                if flat && dt > 0.0 {
+                    p.light = -LINE_QUIET * (1.0 - loud);
+                }
+            }
             Style::Radial => radial(p, &mut self.ripples, &mut self.sparks, (dt, heard), look, stage, levels),
             Style::Bonfire => bonfire(p, &mut self.sparks, (dt, heard), look, stage, levels),
             Style::Saturn => saturn(p, &mut self.saturn, (dt, heard, loud), look, stage, levels),
@@ -479,7 +561,9 @@ fn strip_bounds(refl_h: f32, k: usize) -> (f32, f32) {
     (refl_h * k as f32 / STRIPS as f32, refl_h * (k + 1) as f32 / STRIPS as f32)
 }
 
-fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool) {
+/// Bars, the low ones lifted by `kick` (the last beat's strength, dying away: `lift`), every
+/// cap kicked up a little with it.
+fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
     let (n, bands) = layout(look, stage);
     let mirror = look.mirror;
     let (bw0, gap) = bar_size(look, stage);
@@ -495,7 +579,7 @@ fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
         // for hundreds of them, and an edge on a pixel needs none.
         let xa = (x0 + slot as f32 * (bw + gap)).round();
         let (x, bw) = (xa, ((x0 + slot as f32 * (bw + gap) + bw).round() - xa).max(1.0));
-        let l = get(levels, i);
+        let (l, pk) = kicked(levels, peaks, i, lift(kick, bands, i), KICK_CAP * kick);
         let bh = (l * room).round();
         if bh >= 1.0 {
             let top = h - bh;
@@ -526,7 +610,6 @@ fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
                 }
             }
         }
-        let pk = get(peaks, i);
         // A cap only where there is something to cap: 2 px tall, just above the bar.
         if look.peaks && pk * room >= 8.0 {
             let y = (h - pk * room - 3.0).max(0.0).round();
@@ -556,14 +639,15 @@ fn curve(out: &mut String, pts: &[(f32, f32)], lo: f32, hi: f32) {
     }
 }
 
-fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool) {
+/// The line, its low end lifted by `kick` as the bars are (`lift`).
+fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
     let (n, bands) = layout(look, stage);
     let h = p.top_h;
     let room = (h - 3.0).max(1.0);
     let w = stage.w;
     let dx = w / (n.max(2) - 1) as f32;
     // A light smoothing across neighbours: the line reads as one shape, not a comb.
-    let raw: Vec<f32> = order(bands, look.mirror).map(|i| get(levels, i)).collect();
+    let raw: Vec<f32> = order(bands, look.mirror).map(|i| kicked(levels, peaks, i, lift(kick, bands, i), 0.0).0).collect();
     let smooth = |v: &[f32], k: usize| {
         let a = v[k.saturating_sub(1)];
         let c = v[(k + 1).min(v.len() - 1)];
@@ -581,7 +665,7 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
     let _ = write!(p.fill, "L{w:.1} {h:.1}Z");
     if look.peaks {
         for (k, i) in order(bands, look.mirror).enumerate() {
-            let pk = get(peaks, i);
+            let pk = kicked(levels, peaks, i, lift(kick, bands, i), 0.0).1;
             if pk * room >= 8.0 && pk > lv[k] + 0.02 {
                 let (x, y) = (k as f32 * dx, h - pk * room - 2.0);
                 let _ = write!(p.caps, "M{:.1} {y:.1}H{:.1}V{:.1}H{:.1}Z", x - 1.5, x + 1.5, y + 2.0, x - 1.5);
@@ -3247,5 +3331,232 @@ mod tests {
                 let _ = brushes(&l, &s, p.top_h, p.refl_h, &stops, 0.8);
             }
         }
+    }
+
+    /// A hash of what was drawn (FNV-1a), to hold a frame to the very bytes it had.
+    fn hash(parts: &[&str]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in parts {
+            for b in p.bytes().chain(std::iter::once(0)) {
+                h = (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// Classic and Prism at rest (beats heard, none of them a hit) draw what they drew before
+    /// bars and the line took the beat, byte for byte: the hashes are of the frames as that
+    /// build drew them.
+    #[test]
+    fn classic_at_rest_is_drawn_as_it_was() {
+        let t = ThemeViz::default();
+        for (preset, want) in [(Preset::Classic, 0xe771_be8d_560f_d8c4_u64), (Preset::Prism, 0x52c1_cb3c_90b4_00e8)] {
+            let l = preset.look(&t);
+            let s = stage(1840.0, 290.0);
+            let (_, bands) = layout(&l, &s);
+            let mut d = Draw::default();
+            let mut all = Vec::new();
+            for f in 0..12 {
+                let levels: Vec<f32> = (0..bands).map(|i| 0.2 + 0.6 * ((i as f32) * 0.21 + f as f32 * 0.4).sin().abs()).collect();
+                let peaks: Vec<f32> = levels.iter().map(|v| v + 0.07).collect();
+                d.tick(1.0 / 60.0);
+                d.pulse(Pulse { period: 0.5, phase: (f as f32 / 30.0).fract(), ..Pulse::default() });
+                d.level(-2.0);
+                let p = d.draw(&l, &s, true, &levels, &peaks).clone();
+                assert!(p.light == 0.0 && p.swell == 0.0, "{preset:?}: the brushes as they are");
+                all.push(hash(&[&p.fill, &p.caps, &p.line, &p.refl[0], &p.refl[1], &p.refl[2], &p.refl[3], &p.refl[4], &p.refl[5]]).to_string());
+            }
+            assert_eq!(hash(&all.iter().map(String::as_str).collect::<Vec<_>>()), want, "{preset:?}");
+        }
+    }
+
+    /// Each bar's left edge and top, left to right (one sub-path a bar).
+    fn bar_tops(path: &str) -> Vec<(f32, f32)> {
+        path.split('M').filter(|s| !s.is_empty()).map(|s| points(&format!("M{s}")).iter().fold((f32::MAX, f32::MAX), |(x, y), p| (x.min(p.0), y.min(p.1)))).collect()
+    }
+
+    /// One frame of bars or the line, `dt` after the last, with a hit of `hit` (0: none).
+    fn kick_frame(d: &mut Draw, l: &Look, s: &Stage, levels: &[f32], dt: f32, hit: f32) -> Paths {
+        d.tick(dt);
+        d.pulse(Pulse { hit, ..Pulse::default() });
+        d.draw(l, s, true, levels, levels).clone()
+    }
+
+    #[test]
+    fn a_kick_lifts_the_low_bars_at_once_less_further_up_and_dies_away() {
+        let l = Look { reflection: false, ..look(Style::Bars) };
+        let s = stage(1400.0, 204.0);
+        let (n, bands) = layout(&l, &s);
+        assert_eq!(n, bands);
+        let levels = vec![0.3; bands];
+        let mut d = Draw::default();
+        let rest = bar_tops(&kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0).fill);
+        let p = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 1.0);
+        let hit = bar_tops(&p.fill);
+        assert_eq!(rest.len(), bands);
+        let span = (bands as f32 * KICK_SPAN) as usize;
+        let rise: Vec<f32> = rest.iter().zip(&hit).map(|(a, b)| a.1 - b.1).collect();
+        assert!(rise[0] > 40.0, "the lowest bar takes the kick in the frame it lands: {}", rise[0]);
+        assert!(rise.windows(2).take(span).all(|w| w[1] <= w[0]), "less further up: {rise:?}");
+        assert!(rise[span / 2] > 0.0 && rise[span / 2] < rise[0], "{rise:?}");
+        assert!(rise[span..].iter().all(|&r| r == 0.0), "none past the lowest fifth: {rise:?}");
+        // Shaped like any level: a full kick on a loud bar bends toward the top, not past it.
+        let loud = vec![0.9; bands];
+        let mut e = Draw::default();
+        kick_frame(&mut e, &l, &s, &loud, 1.0 / 60.0, 0.0);
+        let top = bar_tops(&kick_frame(&mut e, &l, &s, &loud, 1.0 / 60.0, 1.0).fill)[0].1;
+        assert!(top > 4.0, "nothing pinned to the top: {top}");
+        // Every cap is kicked up a little, the low ones riding their bars.
+        let caps = |p: &Paths| bar_tops(&p.caps);
+        let mut f = Draw::default();
+        let c0 = caps(&kick_frame(&mut f, &l, &s, &levels, 1.0 / 60.0, 0.0));
+        let c1 = caps(&kick_frame(&mut f, &l, &s, &levels, 1.0 / 60.0, 1.0));
+        assert_eq!(c0.len(), bands);
+        assert!(c0.iter().zip(&c1).all(|(a, b)| b.1 < a.1), "every cap jumps");
+        assert!(c0[0].1 - c1[0].1 > c0[bands - 1].1 - c1[bands - 1].1 + 20.0, "the low ones with their bars");
+        // The field brightens with it.
+        assert!((p.light - LIT_BARS).abs() < 1e-4, "{}", p.light);
+        // An eighth of a second on, the lift is nearly gone; it is gone soon after.
+        let mut later = Vec::new();
+        for _ in 0..8 {
+            later = bar_tops(&kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0).fill);
+        }
+        assert!(rest[0].1 - later[0].1 < 0.15 * rise[0], "{} of {}", rest[0].1 - later[0].1, rise[0]);
+        for _ in 0..40 {
+            kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0);
+        }
+        let settled = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0);
+        assert_eq!(bar_tops(&settled.fill), rest);
+        assert_eq!(settled.light, 0.0, "and the light settled");
+    }
+
+    #[test]
+    fn the_light_settles_before_the_next_beat() {
+        let l = look(Style::Bars);
+        let s = stage(1400.0, 204.0);
+        let levels = vec![0.3; layout(&l, &s).1];
+        for period in [0.35, 0.5, 0.8] {
+            let mut d = Draw::default();
+            let dt = 1.0 / 60.0;
+            let frames = (period / dt) as usize;
+            let mut lights = Vec::new();
+            for i in 0..frames {
+                d.tick(dt);
+                d.pulse(Pulse { hit: if i == 0 { 1.0 } else { 0.0 }, period, ..Pulse::default() });
+                lights.push(d.draw(&l, &s, true, &levels, &levels).light);
+            }
+            assert!(lights[0] > 0.29 && lights[frames - 1] < 0.02, "{period}: {lights:?}");
+        }
+    }
+
+    #[test]
+    fn mirrored_bars_take_the_kick_in_the_middle() {
+        let l = Look { reflection: false, mirror: true, ..look(Style::Bars) };
+        let s = stage(1400.0, 204.0);
+        let (n, bands) = layout(&l, &s);
+        assert_eq!(n, bands * 2);
+        let levels = vec![0.3; bands];
+        let mut d = Draw::default();
+        let rest = bar_tops(&kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0).fill);
+        let hit = bar_tops(&kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 1.0).fill);
+        let rise: Vec<f32> = rest.iter().zip(&hit).map(|(a, b)| a.1 - b.1).collect();
+        assert!(rise[bands - 1] > 40.0 && rise[bands] > 40.0, "the middle: {rise:?}");
+        assert!(rise[0] == 0.0 && rise[n - 1] == 0.0, "not the edges");
+        let span = (bands as f32 * KICK_SPAN) as usize;
+        assert!(rise[..bands - span].iter().chain(&rise[bands + span..]).all(|&r| r == 0.0));
+    }
+
+    #[test]
+    fn smooth_motion_and_other_looks_do_not_take_the_kick() {
+        let s = stage(1400.0, 204.0);
+        for l in [Look { motion: Motion::Smooth, ..look(Style::Bars) }, Look { motion: Motion::Smooth, ..look(Style::Line) }, Preset::Calm.look(&ThemeViz::default())] {
+            let levels = vec![0.3; layout(&l, &s).1];
+            let mut d = Draw::default();
+            let rest = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0);
+            let mut quiet = Draw::default();
+            quiet.level(-20.0);
+            kick_frame(&mut quiet, &l, &s, &levels, 1.0 / 60.0, 0.0);
+            quiet.level(-30.0);
+            let hit = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 1.0);
+            assert_eq!(rest, hit, "{:?} {:?}", l.style, l.motion);
+            assert!(hit.light == 0.0 && hit.swell == 0.0);
+            let q = kick_frame(&mut quiet, &l, &s, &levels, 1.0, 0.0);
+            assert_eq!(q.light, 0.0, "as faint as ever when quiet");
+            assert!(!l.hears_beat(), "the beat is not even listened for");
+        }
+        assert!(Preset::Classic.look(&ThemeViz::default()).hears_beat() && Preset::Prism.look(&ThemeViz::default()).hears_beat());
+    }
+
+    #[test]
+    fn a_kick_moves_bars_and_the_line_alike_at_any_frame_rate() {
+        let s = stage(1400.0, 204.0);
+        for style in [Style::Bars, Style::Line] {
+            let l = look(style);
+            let levels = vec![0.3; layout(&l, &s).1];
+            let mut at = Vec::new();
+            for fps in [30.0, 60.0, 144.0] {
+                let mut d = Draw::default();
+                let dt = 1.0 / fps;
+                kick_frame(&mut d, &l, &s, &levels, dt, 1.0);
+                let mut t = 0.0;
+                while t + dt < 0.1 - 1e-4 {
+                    kick_frame(&mut d, &l, &s, &levels, dt, 0.0);
+                    t += dt;
+                }
+                // To 0.1 s after the kick exactly.
+                kick_frame(&mut d, &l, &s, &levels, 0.1 - t, 0.0);
+                at.push((d.kick, d.lit));
+            }
+            for (k, lit) in &at {
+                assert!((k - at[0].0).abs() < 1e-3 && (lit - at[0].1).abs() < 1e-3, "{style:?}: {at:?}");
+            }
+            assert!(at[0].0 > 0.05 && at[0].0 < 0.2, "{style:?}: mostly gone in an eighth of a second: {}", at[0].0);
+        }
+    }
+
+    #[test]
+    fn a_still_frame_takes_no_kick() {
+        let s = stage(1400.0, 204.0);
+        for style in [Style::Bars, Style::Line] {
+            let l = look(style);
+            let levels = vec![0.3; layout(&l, &s).1];
+            let rest = Draw::default().draw(&l, &s, true, &levels, &levels).clone();
+            let mut d = Draw::default();
+            d.pulse(Pulse { hit: 1.0, ..Pulse::default() });
+            d.level(-30.0);
+            assert_eq!(*d.draw(&l, &s, true, &levels, &levels), rest, "{style:?}");
+        }
+    }
+
+    #[test]
+    fn the_line_takes_the_kick_thickens_and_is_fuller_when_loud() {
+        let l = Look { reflection: false, peaks: false, ..look(Style::Line) };
+        let s = stage(1400.0, 204.0);
+        let (n, bands) = layout(&l, &s);
+        let levels = vec![0.3; bands];
+        let mut d = Draw::default();
+        let rest = points(&kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0).line);
+        let p = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 1.0);
+        let hit = points(&p.line);
+        // The curve's points are every third (each segment's two control points before it).
+        let ys = |v: &[(f32, f32)]| -> Vec<f32> { std::iter::once(v[0].1).chain(v.iter().skip(3).step_by(3).map(|p| p.1)).collect() };
+        let (a, b) = (ys(&rest), ys(&hit));
+        assert_eq!(a.len(), n);
+        let rise: Vec<f32> = a.iter().zip(&b).map(|(a, b)| a - b).collect();
+        let span = (bands as f32 * KICK_SPAN) as usize;
+        assert!(rise[0] > 30.0 && rise[span / 2] < rise[0] && rise[span / 2] > 0.0, "{rise:?}");
+        assert!(rise[span + 2..].iter().all(|&r| r.abs() < 0.05), "the low end only: {rise:?}");
+        assert!((p.swell - 1.0).abs() < 1e-4 && p.light == 0.0, "twice as thick, its area as loud as it has been");
+        // Fainter when the music is quiet against its loudest lately, as it was when loud.
+        let mut e = Draw::default();
+        e.level(0.0);
+        kick_frame(&mut e, &l, &s, &levels, 1.0 / 60.0, 0.0);
+        let loud = kick_frame(&mut e, &l, &s, &levels, 1.0 / 60.0, 0.0).light;
+        e.level(-12.0);
+        let mut quiet = 0.0;
+        for _ in 0..600 {
+            quiet = kick_frame(&mut e, &l, &s, &levels, 1.0 / 60.0, 0.0).light;
+        }
+        assert!(loud.abs() < 1e-3 && quiet < -0.25, "{loud} {quiet}");
     }
 }

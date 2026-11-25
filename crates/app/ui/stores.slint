@@ -611,6 +611,11 @@ export global Visualizer {
     in-out property <length> glow-width;
     // How much wider than that the glow is drawn now (the eclipse's rim, with the bass).
     in-out property <float> glow-swell: 1.0;
+    // How much thicker than that the line is drawn now (bars and the line, with the beat).
+    in-out property <float> line-swell: 1.0;
+    // How much brighter the area and its reflection are drawn now: 0 as their brushes are,
+    // above brighter (the bars on the beat), below fainter (the line's area when it is quiet).
+    in-out property <float> fill-light: 0.0;
     in-out property <length> top-h;
     in-out property <length> refl-h;
     // Drawing (between the first frame and coming to rest), and the preview's still frame.

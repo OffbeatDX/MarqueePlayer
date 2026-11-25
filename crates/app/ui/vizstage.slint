@@ -83,7 +83,8 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.fill;
         anti-alias: !Visualizer.crisp;
-        fill: Visualizer.fill-brush;
+        // Brighter on the beat, or fainter when quiet (`fill-light`); at rest the brush as it is.
+        fill: Visualizer.fill-light == 0 ? Visualizer.fill-brush : Visualizer.fill-brush.transparentize(-Visualizer.fill-light);
         stroke-width: 0;
     }
     // The line's glow: the same line, wide and faint, under it.
@@ -119,7 +120,7 @@ export component VisualizerStage inherits Rectangle {
         commands: Visualizer.line;
         fill: transparent;
         stroke: Visualizer.line-brush;
-        stroke-width: Visualizer.line-width;
+        stroke-width: Visualizer.line-width * Visualizer.line-swell;
         stroke-line-join: round;
         stroke-line-cap: round;
     }
@@ -165,7 +166,7 @@ export component VisualizerStage inherits Rectangle {
             viewbox-height: Visualizer.refl-h / 1px;
             commands: r.c;
         anti-alias: !Visualizer.crisp;
-            fill: r.b;
+            fill: Visualizer.fill-light == 0 ? r.b : r.b.transparentize(-Visualizer.fill-light);
             stroke-width: 0;
         }
     }

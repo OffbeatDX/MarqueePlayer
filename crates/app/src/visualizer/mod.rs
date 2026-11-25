@@ -675,6 +675,17 @@ fn set_paths(g: &Visualizer, p: &draw::Paths) {
     if (g.get_glow_swell() - glow).abs() > 0.01 {
         g.set_glow_swell(glow);
     }
+    // Bars and the line with the beat: the line thicker, the area and its reflection brighter
+    // (the line's fainter when the music is quiet). Back exactly to rest once settled, where
+    // the page draws the brushes as they are.
+    let swell = if p.swell < 0.02 { 1.0 } else { 1.0 + p.swell.min(1.0) };
+    if swell != g.get_line_swell() && ((g.get_line_swell() - swell).abs() > 0.02 || swell == 1.0) {
+        g.set_line_swell(swell);
+    }
+    let light = if p.light.abs() < 0.01 { 0.0 } else { p.light.clamp(-1.0, 1.0) };
+    if light != g.get_fill_light() && ((g.get_fill_light() - light).abs() > 0.01 || light == 0.0) {
+        g.set_fill_light(light);
+    }
 }
 
 fn set_brushes(g: &Visualizer, b: &Brushes) {
@@ -835,7 +846,7 @@ fn frame(st: &Rc<State>) {
             let rate = z.tap.read(&mut z.samples, true);
             z.analyzer.update(Some((&z.samples, rate)), bands, dt);
             // The beat, for the looks that move with it: listened for in the same samples.
-            if l.style.beats() {
+            if l.hears_beat() {
                 let heard = z.beat.update(&z.samples, rate, dt);
                 z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low });
                 #[cfg(feature = "bench")]

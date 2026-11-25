@@ -397,6 +397,13 @@ impl Look {
         }
     }
 
+    /// The beat is listened for: the looks that move with it, and bars and the line, whose
+    /// low notes take the kick and whose light swells with the beat, unless their motion is
+    /// Smooth (Calm, and the default where Windows' animations are off: no jumping there).
+    pub fn hears_beat(&self) -> bool {
+        self.style.beats() || matches!(self.style, Style::Bars | Style::Line) && self.motion != Motion::Smooth
+    }
+
     /// How strongly it is drawn where it shows: behind the page, or elsewhere (the panel,
     /// the full page).
     pub fn strength(&self, behind: bool) -> f32 {
