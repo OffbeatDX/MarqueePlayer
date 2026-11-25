@@ -301,6 +301,9 @@ pub struct Draw {
     /// The beat as heard for the next frame (`pulse`); without it a frame listens to the
     /// levels it is given (a test, a caller with no sound to listen to).
     heard: Option<Pulse>,
+    /// Since the last beat let through to the looks (seconds; `None`: none yet), so that one
+    /// beat is one hit (`one_hit`).
+    hit_since: Option<f32>,
 }
 
 impl Draw {
@@ -329,10 +332,37 @@ impl Draw {
         self.eclipse = Eclipse::default();
         self.sparks_of = None;
         self.heard = None;
+        self.hit_since = None;
+    }
+
+    /// One beat, one hit: a low notes' onset on the beat stays above what counts for two or
+    /// three frames, and the kick itself may be told a frame after it, so what `beat_hit`
+    /// lets through can come several frames running for one beat. A hit this soon after the
+    /// last one let through is dropped (with a tempo, 0.42 of a beat, between 0.16 and
+    /// 0.3 s, the ripples' own least gap; without, 0.16 s).
+    fn one_hit(&mut self, hit: f32, period: f32, dt: f32) -> f32 {
+        // A still frame moves nothing with the beat.
+        if dt <= 0.0 {
+            return hit;
+        }
+        if let Some(t) = &mut self.hit_since {
+            *t += dt;
+        }
+        let gap = if period > 0.0 { (0.42 * period).clamp(RIPPLE_GAP, 0.3) } else { RIPPLE_GAP };
+        if hit <= 0.0 || self.hit_since.is_some_and(|t| t < gap) {
+            return 0.0;
+        }
+        self.hit_since = Some(0.0);
+        hit
     }
 
     /// The paths for these levels and peaks (0..1, `bands` of them).
     pub fn draw(&mut self, look: &Look, stage: &Stage, reflect_here: bool, levels: &[f32], peaks: &[f32]) -> &Paths {
+        let dt = std::mem::take(&mut self.dt);
+        // Every look moves with the music's beat, not with every low note told as a kick, and
+        // once a beat.
+        let heard = self.heard.take().map(|h| Pulse { hit: beat_hit(&h), ..h });
+        let heard = heard.map(|h| Pulse { hit: self.one_hit(h.hit, h.period, dt), ..h });
         let p = &mut self.paths;
         p.fill.clear();
         p.caps.clear();
@@ -350,9 +380,6 @@ impl Draw {
         p.top_h = top;
         p.refl_h = refl;
         let strips = look.colour_by == ColourBy::Frequency && !matches!(look.colours, Colours::Accent);
-        let dt = std::mem::take(&mut self.dt);
-        // Every look moves with the music's beat, not with every low note told as a kick.
-        let heard = self.heard.take().map(|h| Pulse { hit: beat_hit(&h), ..h });
         if look.style != Style::Radial {
             self.ripples = Ripples::default();
         }
@@ -1101,14 +1128,6 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
         // How far past the beat what is told now started (the hit is already the beat's,
         // `beat_hit`; a snare's ring goes by this too).
         let (past, _) = heard.map_or((0.0, 0.5), |h| beat_place(&h));
-        // The kick itself told a moment after its onset sent the ripple: the ripple is the
-        // kick's, thrown as hard.
-        if hit > 0.0
-            && rip.since < 0.08
-            && let Some(r) = rip.list.last_mut()
-        {
-            r.thrown(if tune.throw { RIPPLE_THROW * (0.6 + 0.4 * (0.5 * hit).max(swell.clamp(0.0, 1.0))) } else { 0.0 });
-        }
         rip.quiet = if hit > 0.0 { 0.0 } else { rip.quiet + dt };
         // No kick for more than a beat and a half: a breakdown, an intro, music without any.
         let beatless = rip.quiet > if period > 0.0 { 1.6 * period } else { 1.0 };
@@ -2774,6 +2793,43 @@ mod tests {
             if style != Style::Bonfire {
                 assert!((soft.punch - 0.38).abs() < 0.01, "{style:?}: {}", soft.punch);
             }
+        }
+    }
+
+    #[test]
+    fn one_beat_is_one_hit() {
+        let s = stage(800.0, 800.0);
+        let dt = 1.0 / 60.0;
+        for style in [Style::Radial, Style::Swarm, Style::Eclipse] {
+            let l = look(style);
+            let (_, bands) = layout(&l, &s);
+            let sound: Vec<f32> = (0..bands).map(|i| 0.3 + 0.5 * ((i as f32) * 0.3).sin().abs()).collect();
+            // Half a second of music with nothing told, then four frames on the beat: what
+            // they tell, and the frames after.
+            let run = |told: [(f32, f32); 4]| {
+                let mut d = Draw::default();
+                for i in 0..30 {
+                    d.tick(dt);
+                    d.pulse(Pulse { period: 0.5, phase: (i as f32 * dt / 0.5 + 0.05).fract(), ..Pulse::default() });
+                    d.draw(&l, &s, true, &sound, &sound);
+                }
+                let mut out = Vec::new();
+                for i in 0..12 {
+                    let (hit, low) = told.get(i).copied().unwrap_or((0.0, 0.0));
+                    d.tick(dt);
+                    d.pulse(Pulse { hit, period: 0.5, phase: RIPPLE_LATE / 0.5 + i as f32 * dt / 0.5, low, ..Pulse::default() });
+                    out.push(d.draw(&l, &s, true, &sound, &sound).clone());
+                }
+                out
+            };
+            // A low notes' onset on the beat for three frames, then the kick itself told: one
+            // hit, the onset's, as if the onset alone had been heard.
+            let once = run([(0.0, 4.0), (0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
+            let told = run([(0.0, 4.0), (0.0, 4.5), (0.0, 4.2), (0.9, 0.0)]);
+            for (i, (a, b)) in once.iter().zip(&told).enumerate() {
+                assert!(a == b, "{style:?}: frame {i} of the beat");
+            }
+            assert!(once[0].punch > 0.3, "{style:?}: the beat is a hit");
         }
     }
 

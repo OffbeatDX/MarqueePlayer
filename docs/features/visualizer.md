@@ -94,7 +94,11 @@ have no beat told. A beat without its kick is no longer made up from the tempo: 
 beats are there, kick or no kick (`Heard::beat`). What the looks do with it
 (`visualizer::draw::Pulse`): only a kick where the music's beat is counts (on the beat, or a
 firm one on the half beat; without a tempo, a sure one: the halo's row above says how), and so
-does an onset of the low notes on the beat with no kick told, as a soft one. Each is a jump of
+does an onset of the low notes on the beat with no kick told, as a soft one. One beat is one
+hit (`Draw::one_hit`): an onset stays above what counts for two or three frames and the kick
+itself may be told a frame after it, so a hit sooner than 0.42 of a beat after the last one
+(between 0.16 and 0.3 s; without a tempo, 0.16 s) is dropped; until 2026-11-25 only the
+ripples had such a gap, and one beat blew the swarm out three times. Each is a jump of
 the whole ring (dying away in an eighth of a second), a ripple, a burst of sparks, the cover's
 pulse and what moves the ring's other kinds and the bonfire, larger for a harder kick; a snap
 is a smaller burst and, round the halo, a thin ring; every such kick also pushes the ripples on their way, and with the
