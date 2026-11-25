@@ -13,7 +13,8 @@
 //! - Ring, around the round cover, in five kinds: Ripples (the spectrum as a glowing
 //!   contour, the two halves mirrored; each beat sends the contour out as a ripple and
 //!   throws sparks off it), Saturn (a tilted
-//!   ring of dust in orbit, behind the cover and in front), Galaxy (two spiral arms of
+//!   ring of dust in orbit, behind the cover and in front; each beat knocks some of it out
+//!   of the ring and it settles back), Galaxy (two spiral arms of
 //!   dust), Swarm (dust in a whirl, blown out by each beat) and Eclipse (flares arcing off
 //!   the rim and back).
 //! - Bonfire: the spectrum as a low glowing line along the foot, sparks rising from it.
@@ -1532,6 +1533,25 @@ const SATURN_SURGE: f32 = 0.5;
 const SATURN_SURGE_TIME: f32 = 0.25;
 /// The band of light a beat sends round the ring: how wide it is (radians either side).
 const SATURN_BAND: f32 = 0.3;
+/// The grains a beat throws off the ring: at a full beat this share of them, the ones nearest
+/// where the throw leaves (that place steps `SATURN_STEP` of a turn round the ring a beat);
+/// how high out of the ring's plane the highest go and how far further out (in cover's
+/// radii); and how long they are away (this many beats, between the two times in seconds;
+/// without a tempo, `SATURN_AWAY_ALONE` seconds).
+const SATURN_THROWN: f32 = 0.2;
+const SATURN_STEP: f32 = 0.382;
+const SATURN_HIGH: f32 = 1.0;
+const SATURN_OUT: f32 = 0.2;
+const SATURN_AWAY: f32 = 1.4;
+const SATURN_AWAY_TIMES: (f32, f32) = (0.4, 1.1);
+const SATURN_AWAY_ALONE: f32 = 0.7;
+
+/// How far a thrown grain is from its place in the ring `u` (0..1) of the way through its
+/// time away, at the most 1: out fast on the beat, back slowly, settling into the ring
+/// rather than landing in it (it ends at rest).
+fn saturn_away(u: f32) -> f32 {
+    if (0.0..1.0).contains(&u) { 6.75 * u * (1.0 - u) * (1.0 - u) } else { 0.0 }
+}
 
 /// How much of a beat's turn Saturn's ring has made `at` (0..1) of the way through the beat.
 fn saturn_turned(at: f32) -> f32 {
@@ -1565,14 +1585,30 @@ struct Saturn {
     band: f32,
     band_life: f32,
     band_hit: f32,
+    /// Where round the ring the next beat's throw leaves (turns from the front, the way the
+    /// ring turns), and where the last one's band of light left from (radians on the orbit).
+    spot: f32,
+    band_from: f32,
+    /// For the throws' spread, the same every run.
+    seed: u32,
 }
 
+#[derive(Default)]
 struct Grain {
     /// Where on its orbit (radians), how far out (in cover's radii), how big, how fast.
     th: f32,
     r: f32,
     size: f32,
     k: f32,
+    /// Thrown off the ring: how long ago (seconds), for how long (0: in the ring), how high
+    /// out of its plane at the most (in cover's radii; below 0: under it) and how much
+    /// further out.
+    flown: f32,
+    away: f32,
+    high: f32,
+    out: f32,
+    /// Drawn behind the cover in the last frame.
+    behind: bool,
 }
 
 /// Saturn: a tilted ring of dust in orbit round the cover, the grains on its far side
@@ -1584,7 +1620,14 @@ struct Grain {
 /// turns faster); without one it goes at its own pace, hurried by the bass and the beats. The
 /// bass makes the whole ring swell and a beat pushes it out, and sends a band of light once
 /// round it (the grains it passes drawn as if their notes were louder), gone within the beat.
-/// The louder the music against its loudest lately (`loud`), the fuller and brighter the ring.
+/// Each beat also throws dust off the ring: the grains nearest where the throw leaves (that
+/// place stepping round the ring beat by beat, the band of light setting out from it), more
+/// and higher the harder the beat, leave the ring's plane (most up, some under it) and a
+/// little further out, and settle back into their place about a beat and a half later; they
+/// move in the ring's tilted space, so those off the near side rise over the cover's face and
+/// those off the far side rise above it or dip behind it, and go no further than fits on the
+/// stage. No beat, no throw; a still frame draws the ring whole. The louder the music against
+/// its loudest lately (`loud`), the fuller and brighter the ring.
 fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>, f32), look: &Look, stage: &Stage, levels: &[f32]) {
     let (n, bands) = layout(look, stage);
     let g = halo(stage);
@@ -1603,10 +1646,12 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
     let (hit, _, period) = beat_of(heard, &mut st.beat, 0.7 * swell + 0.3 * energy, dt);
     st.push = if dt > 0.0 { (st.push * (-dt * 3.5).exp()).max(hit) } else { 0.0 };
     (p.pulse, p.punch) = (swell.max(st.push), st.push);
+    let tau = std::f32::consts::TAU;
+    let spot = std::f32::consts::FRAC_PI_2 + tau * st.spot;
     if dt <= 0.0 {
         st.band_hit = 0.0;
     } else if hit > 0.0 {
-        (st.band, st.band_life, st.band_hit) = (0.0, if period > 0.0 { period } else { 0.5 }, 0.5 + 0.5 * hit);
+        (st.band, st.band_life, st.band_hit, st.band_from) = (0.0, if period > 0.0 { period } else { 0.5 }, 0.5 + 0.5 * hit, spot);
     } else {
         st.band += dt;
     }
@@ -1615,8 +1660,50 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
     if st.grains.len() != most {
         let mut seed = 0x51ed_270b;
         st.grains = (0..most)
-            .map(|_| Grain { th: rand(&mut seed) * std::f32::consts::TAU, r: 1.28 + 0.6 * rand(&mut seed).powf(0.8), size: 0.7 + 1.5 * rand(&mut seed), k: 0.7 + 0.6 * rand(&mut seed) })
+            .map(|_| Grain { th: rand(&mut seed) * tau, r: 1.28 + 0.6 * rand(&mut seed).powf(0.8), size: 0.7 + 1.5 * rand(&mut seed), k: 0.7 + 0.6 * rand(&mut seed), ..Grain::default() })
             .collect();
+    }
+    // Quieter than lately: fewer grains (always the same ones, each shrinking away as the
+    // ring thins past it, none blinking in and out).
+    let full = 0.4 + 0.66 * loud;
+    let keep = |i: usize| ((full - (i as f32 * 0.618_034).fract()) / 0.06).clamp(0.0, 1.0);
+    if dt > 0.0 {
+        for q in st.grains.iter_mut().filter(|q| q.away > 0.0) {
+            q.flown += dt;
+            if q.flown >= q.away {
+                (q.flown, q.away) = (0.0, 0.0);
+            }
+        }
+    }
+    // A beat knocks grains off the ring where the throw leaves (the place stepping round
+    // beat by beat, the band of light setting out from it): those nearest it of the ones in
+    // the ring and drawn, more and higher the harder the beat, the nearest highest, a few
+    // of them under the ring's plane, some further out than others.
+    if hit > 0.0 && dt > 0.0 {
+        st.spot = (st.spot + SATURN_STEP).fract();
+        let count = (SATURN_THROWN * most as f32 * hit.powf(1.5)).round() as usize;
+        let mut near: Vec<(f32, usize)> = st
+            .grains
+            .iter()
+            .enumerate()
+            .filter(|&(i, q)| q.away <= 0.0 && keep(i) > 0.5)
+            .map(|(i, q)| (((q.th - spot + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI).abs(), i))
+            .collect();
+        let count = count.min(near.len());
+        if count > 0 {
+            near.select_nth_unstable_by(count - 1, |a, b| a.0.total_cmp(&b.0));
+            let widest = near[..count].iter().map(|n| n.0).fold(1e-3, f32::max);
+            let away = if period > 0.0 { (SATURN_AWAY * period).clamp(SATURN_AWAY_TIMES.0, SATURN_AWAY_TIMES.1) } else { SATURN_AWAY_ALONE };
+            let strength = hit.powf(0.7);
+            for &(d, i) in &near[..count] {
+                let (a, b, c) = (rand(&mut st.seed), rand(&mut st.seed), rand(&mut st.seed));
+                let q = &mut st.grains[i];
+                let middle = 1.0 - 0.5 * d / widest;
+                q.high = SATURN_HIGH * strength * middle * (0.45 + 0.55 * a) * if b < 0.25 { -0.6 } else { 1.0 };
+                q.out = SATURN_OUT * strength * (0.3 + 0.7 * c);
+                (q.flown, q.away) = (0.0, away * (0.85 + 0.3 * a));
+            }
+        }
     }
     if dt > 0.0 && period > 0.0 {
         let phase = heard.map_or(0.0, |h| h.phase);
@@ -1639,36 +1726,56 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
     let rim: Vec<(f32, f32)> = g.frame(48.max(n / 4)).iter().map(|&(q, _)| q).collect();
     closed_curve(&mut p.line, &rim);
     let (cs, sn) = (SATURN_TURN.cos(), SATURN_TURN.sin());
-    // Quieter than lately: fewer grains (always the same ones, each shrinking away as the
-    // ring thins past it, none blinking in and out), smaller, fewer of them glowing.
+    // Out of the ring's plane: up the screen as far as the ring is upright, and toward the
+    // eye as far as it lies flat.
+    let upright = (1.0 - SATURN_TILT * SATURN_TILT).sqrt();
+    // Quieter than lately: smaller, fewer of them glowing.
     let big = (g.hub * 0.0065).clamp(0.8, 1.9) * shown * (0.8 + 0.2 * loud);
-    let full = 0.4 + 0.66 * loud;
     let glows = 0.45 + 0.15 * (1.0 - loud);
     let out = 1.0 + 0.07 * st.push + 0.05 * swell;
-    // The beat's band of light: where round the ring it is (from the front, the way the
-    // ring turns) and how bright, fading as it goes.
+    // The beat's band of light: where round the ring it is (from where the beat's throw left,
+    // the way the ring turns) and how bright, fading as it goes.
     let band = (st.band_hit > 0.0 && st.band < st.band_life).then(|| {
         let u = st.band / st.band_life;
-        (std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * u, st.band_hit * (1.0 - u).powf(1.5))
+        (st.band_from + tau * u, st.band_hit * (1.0 - u).powf(1.5))
     });
-    for (i, q) in st.grains.iter().enumerate() {
-        let keep = ((full - (i as f32 * 0.618_034).fract()) / 0.06).clamp(0.0, 1.0);
-        if keep <= 0.0 {
+    for (i, q) in st.grains.iter_mut().enumerate() {
+        let kept = keep(i);
+        if kept <= 0.0 {
             continue;
         }
-        let a = (q.th / std::f32::consts::TAU).rem_euclid(1.0) * n as f32;
+        let a = (q.th / tau).rem_euclid(1.0) * n as f32;
         let (i0, t) = (a.floor() as usize % n, a - a.floor());
         let mut l = (lv[i0] * (1.0 - t) + lv[(i0 + 1) % n] * t).min(1.0);
         if let Some((at, bright)) = band {
-            let d = (q.th - at + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            let d = (q.th - at + std::f32::consts::PI).rem_euclid(tau) - std::f32::consts::PI;
             l = (l + 0.6 * bright * (-(d / SATURN_BAND).powi(2)).exp()).min(1.0);
         }
-        let big = big * keep;
+        // Thrown: lit as it leaves, how far from its place now (a still frame draws the ring
+        // whole).
+        let flight = if dt > 0.0 && q.away > 0.0 { saturn_away(q.flown / q.away) } else { 0.0 };
+        if flight > 0.0 {
+            l = (l + 0.5 * (1.0 - q.flown / q.away)).min(1.0);
+        }
+        let big = big * kept;
         let rr = g.hub * q.r * out;
         let (ex, ey) = (q.th.cos() * rr, q.th.sin() * rr * SATURN_TILT);
-        let (x, y) = (g.cx + ex * cs - ey * sn, g.cy + ex * sn + ey * cs);
-        // The far half of the orbit is behind the cover.
-        if q.th.sin() < 0.0 {
+        let (mut x, mut y) = (g.cx + ex * cs - ey * sn, g.cy + ex * sn + ey * cs);
+        // The far half of the orbit is behind the cover (how near the eye: below 0, behind).
+        let mut z = q.th.sin();
+        if flight > 0.0 {
+            // Out along the ring and out of its plane, as far as fits on the stage.
+            let (h, more) = (g.hub * q.high * flight, g.hub * q.out * flight);
+            let (fx, fy) = (q.th.cos() * more, q.th.sin() * more * SATURN_TILT - upright * h);
+            let (dx, dy) = (fx * cs - fy * sn, fx * sn + fy * cs);
+            let edge = q.size * big * (0.7 + 1.0 * l) * 1.12 + 1.0;
+            let fits = |at: f32, by: f32, side: f32| if by > 0.0 { ((side - edge - at) / by).max(0.0) } else if by < 0.0 { ((edge - at) / by).max(0.0) } else { 1.0 };
+            let s = fits(x, dx, stage.w).min(fits(y, dy, stage.h)).min(1.0);
+            (x, y) = (x + dx * s, y + dy * s);
+            z = q.th.sin() * rr * upright + (q.th.sin() * more * upright + SATURN_TILT * h) * s;
+        }
+        q.behind = z < 0.0;
+        if q.behind {
             dot(&mut p.sparks_old, x, y, q.size * big * (0.7 + 1.0 * l) * 0.85);
         } else {
             let r = q.size * big * (0.7 + 1.0 * l) * 1.12;
@@ -2992,6 +3099,159 @@ mod tests {
         assert!(b.front != a.front && b.pulse >= 0.99);
         let pushed = dots(&b.sparks_old).iter().chain(&dots(&b.front)).map(r).fold(0.0, f32::max);
         assert!(pushed > far, "{pushed} after a beat, {far} before");
+    }
+
+    /// Saturn as behind the page: a cover 300 px across, the stage 0.3 of the page's cover
+    /// round it (`halo_room` in nowplaying.slint).
+    fn saturn_stage() -> Stage {
+        Stage { hub: 150.0, ..stage(585.0, 585.0) }
+    }
+
+    /// Each grain's dot in the last frame drawn (all of them drawn: as loud as can be), its
+    /// centre and radius, and whether it is away from the ring.
+    fn saturn_dots(d: &Draw) -> Vec<((f32, f32, f32), bool)> {
+        let (back, front) = (points(&d.paths.sparks_old), points(&d.paths.front));
+        let centres = |p: Vec<(f32, f32)>| -> Vec<(f32, f32, f32)> { p.chunks(3).filter(|c| c.len() == 3).map(|c| ((c[0].0 + c[1].0) / 2.0, c[0].1, (c[1].0 - c[0].0) / 2.0)).collect() };
+        let (mut back, mut front) = (centres(back).into_iter(), centres(front).into_iter());
+        let out: Vec<_> = d.saturn.grains.iter().map(|q| (if q.behind { back.next() } else { front.next() }.expect("a dot for each grain"), q.away > 0.0)).collect();
+        assert!(back.next().is_none() && front.next().is_none());
+        out
+    }
+
+    /// Each grain's place in the ring in the last frame drawn (where it would be at its angle and
+    /// distance out, the ring swollen as the grains in it say), and how far it is from it (px).
+    fn saturn_places(d: &Draw, g: &Halo) -> Vec<((f32, f32), f32)> {
+        let (cs, sn) = (SATURN_TURN.cos(), SATURN_TURN.sin());
+        let flat = |(x, y): (f32, f32)| {
+            let (dx, dy) = (x - g.cx, y - g.cy);
+            (dx * cs + dy * sn, -dx * sn + dy * cs)
+        };
+        let all = saturn_dots(d);
+        let grains = &d.saturn.grains;
+        let mut swell: Vec<f32> = all
+            .iter()
+            .zip(grains)
+            .filter(|(_, q)| q.away <= 0.0)
+            .map(|(&((x, y, _), _), q)| {
+                let (ex, ey) = flat((x, y));
+                ex.hypot(ey / SATURN_TILT) / (g.hub * q.r)
+            })
+            .collect();
+        swell.sort_by(f32::total_cmp);
+        let swell = swell.get(swell.len() / 2).copied().unwrap_or(1.0);
+        all.iter()
+            .zip(grains)
+            .map(|(&((x, y, _), _), q)| {
+                let rr = g.hub * q.r * swell;
+                let (px, py) = (q.th.cos() * rr, q.th.sin() * rr * SATURN_TILT);
+                let (ex, ey) = flat((x, y));
+                ((g.cx + px * cs - py * sn, g.cy + px * sn + py * cs), (ex - px).hypot(ey - py))
+            })
+            .collect()
+    }
+
+    fn saturn_off(d: &Draw, g: &Halo) -> Vec<f32> {
+        saturn_places(d, g).into_iter().map(|(_, o)| o).collect()
+    }
+
+    #[test]
+    fn saturn_throws_grains_off_on_a_beat_and_they_come_back() {
+        let l = look(Style::Saturn);
+        let s = saturn_stage();
+        let g = halo(&s);
+        let (_, bands) = layout(&l, &s);
+        let sound: Vec<f32> = (0..bands).map(|i| if i < bands / 8 { 0.25 } else { 0.25 + 0.15 * ((i as f32) * 0.3).sin().abs() }).collect();
+        let away = |d: &Draw| d.saturn.grains.iter().filter(|q| q.away > 0.0).count();
+        // A second of music, then a beat of `hit` at 120 a minute, and two beats after it: the
+        // most thrown, the farthest one went from its place, and how many are still away.
+        let throw = |hit: f32| {
+            let mut d = Draw::default();
+            let (mut most, mut far, mut left) = (0, 0.0f32, usize::MAX);
+            run_beats(&mut d, &l, &s, 60.0, 2.1, 0.5, &mut |d, i, _| {
+                if i == 0 {
+                } else if i <= 59 {
+                    assert_eq!(away(d), 0, "none before the beat");
+                    assert!(saturn_off(d, &g).iter().all(|&o| o < 0.5), "all in the ring");
+                } else {
+                    most = most.max(away(d));
+                    far = far.max(saturn_off(d, &g).into_iter().fold(0.0, f32::max));
+                    if i == 59 + 61 {
+                        left = away(d);
+                        assert!(saturn_off(d, &g).iter().all(|&o| o < 0.5), "all back in the ring");
+                    }
+                }
+                (sound.clone(), if i == 59 { hit } else { 0.0 }, 0.0)
+            });
+            (most, far, left)
+        };
+        let (hard, far, left) = throw(1.0);
+        let all = ((g.hub * 1.1) as usize).clamp(90, 300);
+        assert!(hard as f32 > all as f32 * 0.15 && hard as f32 <= all as f32 * 0.21, "{hard} of {all} thrown");
+        // Well away from their places (out of the ring's plane and further out), and back
+        // within two beats.
+        assert!(far > g.hub * 0.5, "{far} px from its place at the most");
+        assert_eq!(left, 0, "back in the ring within two beats");
+        // A soft beat throws a few, not as far.
+        let (soft, soft_far, _) = throw(0.38);
+        assert!(soft >= 2 && soft < hard / 3, "{soft} for a soft beat, {hard} for a hard one");
+        assert!(soft_far < far * 0.8, "{soft_far} px for a soft beat, {far} for a hard one");
+    }
+
+    #[test]
+    fn saturn_s_throws_leave_from_a_place_that_steps_round_and_stay_on_the_stage() {
+        let l = look(Style::Saturn);
+        let s = saturn_stage();
+        let g = halo(&s);
+        let (_, bands) = layout(&l, &s);
+        // Loud, and a hard beat on every one.
+        let sound: Vec<f32> = (0..bands).map(|i| if i < bands / 8 { 0.9 } else { 0.5 + 0.3 * ((i as f32) * 0.3).sin().abs() }).collect();
+        for period in [0.35, 0.5, 0.83] {
+            let mut d = Draw::default();
+            let mut spots = Vec::new();
+            let mut most = 0;
+            run_beats(&mut d, &l, &s, 60.0, 8.0, period, &mut |d, i, t| {
+                if i > 0 {
+                    // (Its place in the ring may reach past the stage's edge with the bass: a
+                    // grain thrown from there goes no further out.)
+                    let past = |x: f32, y: f32, r: f32| (r - x).max(x + r - s.w).max(r - y).max(y + r - s.h).max(0.0);
+                    for (((x, y, r), off), ((px, py), _)) in saturn_dots(d).into_iter().zip(saturn_places(d, &g)) {
+                        assert!(!off || past(x, y, r) <= past(px, py, r) + 0.2, "a thrown grain at {x}, {y} off a stage of {}", s.w);
+                    }
+                    most = most.max(d.saturn.grains.iter().filter(|q| q.away > 0.0).count());
+                }
+                let beat = (t / period).floor() != ((t - 1.0 / 60.0) / period).floor();
+                if beat {
+                    spots.push(d.saturn.spot);
+                }
+                (sound.clone(), if beat { 1.0 } else { 0.0 }, 0.0)
+            });
+            // Never more than two beats' throws away at once: the ring does not empty.
+            assert!(most as f32 <= 0.45 * d.saturn.grains.len() as f32, "{most} away at {period} s a beat");
+            // Each beat's throw leaves a step further round than the last.
+            assert!(spots.len() > 8 && spots.windows(2).all(|w| ((w[1] - w[0]).rem_euclid(1.0) - SATURN_STEP).abs() < 1e-4), "{spots:?}");
+        }
+    }
+
+    #[test]
+    fn saturn_throws_nothing_without_a_beat_and_a_still_frame_has_the_ring_whole() {
+        let l = look(Style::Saturn);
+        let s = saturn_stage();
+        let g = halo(&s);
+        let (_, bands) = layout(&l, &s);
+        // Loud music with a tempo, its low notes swelling and falling, nothing on the beat.
+        let mut d = Draw::default();
+        run_beats(&mut d, &l, &s, 60.0, 4.0, 0.5, &mut |d, i, t| {
+            assert!(d.saturn.grains.iter().all(|q| q.away == 0.0), "frame {i}: thrown with no beat");
+            let lows = 0.3 + 0.6 * (t * 9.0).sin().abs();
+            ((0..bands).map(|k| if k < bands / 8 { lows } else { 0.5 }).collect(), 0.0, 0.0)
+        });
+        // A hard beat, then a still frame while the grains are away: the ring is whole.
+        let sound = vec![0.5; bands];
+        run_beats(&mut d, &l, &s, 60.0, 0.2, 0.5, &mut |_, i, _| (sound.clone(), if i == 0 { 1.0 } else { 0.0 }, 0.0));
+        assert!(d.saturn.grains.iter().any(|q| q.away > 0.0));
+        assert!(saturn_off(&d, &g).iter().any(|&o| o > 10.0));
+        d.draw(&l, &s, true, &sound, &sound);
+        assert!(saturn_off(&d, &g).iter().all(|&o| o < 0.5), "a still frame draws the ring whole");
     }
 
     #[test]

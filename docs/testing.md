@@ -296,6 +296,10 @@ the real clipboard and opens no file dialog.
 
 `MP_TRACE_STAGE=1300x1300x340` (width, height, hub), `MP_TRACE_STRENGTH=0.85` (the look's opacity) and `MP_HALO_WITHOUT` apply. A timeline of the ripples' distance against time, with the kicks and snaps on it, shows skipped beats, ripples by the clock and rings on the wrong sounds at a glance.
 
+**Saturn, traced** (`saturn_trace`, beside it). Saturn's frames over made-up music (120 and 170 a minute with a kick on every beat, 72 a minute with soft beats only, 120 a minute going quiet for four seconds), 60 a second for 12 seconds each, behind the page's size (a cover 300 px across): every grain's place, size and layer each frame (`<tag>-<case>.bin`, the format in its comment) and the brushes (`saturn.json`), for an animation of the look as drawn, before and after a change (run it on each, `MP_TRACE_TAG=before` and `after`).
+
+    MP_TRACE_OUT=<folder> MP_TRACE_TAG=after cargo test -p marquee-player saturn_trace -- --ignored
+
 `MP_BENCH=server` (`bench/server.rs`) runs on any library of two albums of two tracks or more (the
 runner gives it the `formats` set). It starts a Navidrome stand-in on 127.0.0.1 itself
 (`subsonic::mock`; no request leaves the machine) serving two of the library's albums as the same

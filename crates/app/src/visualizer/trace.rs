@@ -142,3 +142,155 @@ fn halo_trace() {
     }
     std::fs::write(out.join("trace.jsonl"), lines).unwrap();
 }
+
+/// The dots of a path of them (`dot`): each one's centre and radius, in order.
+fn dot_list(path: &str) -> Vec<(f32, f32, f32)> {
+    path.split('M')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| {
+            let v: Vec<f32> = s.split([' ', 'A', 'Z']).filter_map(|n| n.parse().ok()).collect();
+            (v.len() >= 4).then(|| (v[0] + v[2], v[1], v[2]))
+        })
+        .collect()
+}
+
+/// A brush as JSON: its kind and stops (a radial one centred on the cover, out to the reach;
+/// a conic one round the cover from the top, clockwise).
+fn brush_json(b: &Brush) -> String {
+    let stop = |s: GradientStop| format!("[{:.4},{},{},{},{:.4}]", s.position, s.color.red(), s.color.green(), s.color.blue(), f32::from(s.color.alpha()) / 255.0);
+    let (kind, stops): (&str, Vec<String>) = match b {
+        Brush::SolidColor(c) => ("solid", vec![stop(GradientStop { color: *c, position: 0.0 })]),
+        Brush::RadialGradient(r) => ("radial", r.stops().cloned().map(stop).collect()),
+        Brush::ConicGradient(c) => ("conic", c.stops().cloned().map(stop).collect()),
+        Brush::LinearGradient(l) => ("linear", l.stops().cloned().map(stop).collect()),
+        _ => ("none", Vec::new()),
+    };
+    format!("{{\"kind\":\"{kind}\",\"stops\":[{}]}}", stops.join(","))
+}
+
+/// Saturn over made-up music, frame by frame at 60 a second, for an animation of it to be
+/// looked at: every grain's place, size and layer in each frame (`<tag>-<case>.bin`: frames
+/// and grains as u32, then a frame each: the beat, pulse, punch and phase as bytes, and six
+/// bytes a grain, x and y in quarter pixels, the radius in twentieths, the layer: 0 not
+/// drawn, 1 behind the cover, 2 in front, 3 in front and glowing), and the brushes and the
+/// stage (`saturn.json`). The grains are told apart by their order in each layer's path (the
+/// ring's order) and which of them are drawn (the fullness drops them in a fixed order).
+///
+///     MP_TRACE_OUT=<folder> MP_TRACE_TAG=after cargo test -p marquee-player saturn_trace -- --ignored
+///
+/// The cases: 120 a minute, a kick on every beat; 170 a minute; 72 a minute with soft beats (the
+/// low notes' onset only); 120 a minute going quiet for four seconds (no kick, 12 dB down).
+#[test]
+#[ignore = "a tool, not a check: see its comment"]
+fn saturn_trace() {
+    let Ok(out) = std::env::var("MP_TRACE_OUT") else { return };
+    let out = std::path::PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    let tag = std::env::var("MP_TRACE_TAG").unwrap_or_else(|_| "now".into());
+    // Behind the page: a cover drawn 300 px across (0.82 of the page's), the stage 0.3 of the
+    // page's cover round it each side.
+    let size = (300.0f32 / 0.82 * 1.6).round();
+    let stage = Stage { hub: 150.0, ..Stage::new(size, size, (10.0, 4.0)) };
+    let look = Preset::Saturn.look(&ThemeViz::default());
+    let palette = [[0x8a, 0x4f, 0xff], [0x2c, 0xd5, 0xe0], [0xff, 0x3d, 0xa5]];
+    let stops = base_stops(&look, palette[0], &palette);
+    let g = halo(&stage);
+    let (_, bands) = layout(&look, &stage);
+    let dt = 1.0f32 / 60.0;
+    let b = brushes(&look, &stage, stage.h, 0.0, &stops, look.strength(true));
+    let json = format!(
+        "{{\"w\":{},\"h\":{},\"cx\":{},\"cy\":{},\"hub\":{},\"reach\":{},\"line_width\":{},\"glow_width\":{},\"bloom\":{},\"line\":{},\"glow\":{},\"sparks\":{},\"sparks_old\":{},\"sparks_glow\":{}}}",
+        stage.w,
+        stage.h,
+        g.cx,
+        g.cy,
+        g.hub,
+        g.hub + g.gap + g.travel + 1.0,
+        b.line_width,
+        b.glow_width,
+        brush_json(&b.bloom),
+        brush_json(&b.line),
+        brush_json(&b.glow),
+        brush_json(&b.sparks),
+        brush_json(&b.sparks_old),
+        brush_json(&b.sparks_glow)
+    );
+    std::fs::write(out.join("saturn.json"), json).unwrap();
+    for (name, bpm) in [("120", 120.0f32), ("170", 170.0), ("slow", 72.0), ("quiet", 120.0)] {
+        let period = 60.0 / bpm;
+        let mut d = Draw::default();
+        let frames = (12.0 / dt).round() as usize;
+        let mut kick = 0.0f32;
+        let mut rows: Vec<Vec<u8>> = Vec::new();
+        let mut most = 0;
+        for f in 0..frames {
+            let t = (f + 1) as f32 * dt;
+            let phase = (t / period).fract();
+            let beat = phase < dt / period;
+            let n = (t / period).floor() as usize;
+            let quiet = name == "quiet" && (4.0..8.0).contains(&t);
+            let strength = if name == "slow" || quiet { 0.0 } else { [1.0, 0.75, 0.9, 0.75][n % 4] };
+            // The slow one's beats: the low notes' onset alone, a little harder some beats.
+            let low = if name == "slow" && beat { 3.5 + 0.5 * ((n * 7 % 5) as f32) / 4.0 } else if beat && strength > 0.0 { 4.0 } else { 0.0 };
+            if beat {
+                kick = kick.max(if strength > 0.0 { strength } else if name == "slow" { 0.45 } else { 0.0 });
+            }
+            kick *= (-dt / 0.12).exp();
+            let gain = if quiet { 0.55 } else { 1.0 };
+            let levels: Vec<f32> = (0..bands)
+                .map(|i| {
+                    let x = i as f32 / bands as f32;
+                    let lows = if x < 0.15 { 0.35 + 0.55 * kick } else { 0.0 };
+                    let mids = 0.28 + 0.22 * (x * 9.0 + t * 0.7).sin().abs() * (1.0 - x * 0.5) + 0.08 * (t * 3.1 + x * 20.0).sin();
+                    (lows.max(mids) * gain).clamp(0.0, 1.0)
+                })
+                .collect();
+            d.tick(dt);
+            d.level(if quiet { -12.0 } else { 0.0 });
+            d.pulse(Pulse { hit: if beat { strength } else { 0.0 }, period, phase, beat, low, ..Pulse::default() });
+            d.draw(&look, &stage, true, &levels, &levels);
+            let (p, st) = (&d.paths, &d.saturn);
+            let (back, front, glow) = (dot_list(&p.sparks_old), dot_list(&p.front), dot_list(&p.front_glow));
+            // Which grains are drawn: the fullness drops them in a fixed order.
+            let mut by: Vec<usize> = (0..st.grains.len()).collect();
+            by.sort_by(|&a, &b| (a as f32 * 0.618_034).fract().total_cmp(&(b as f32 * 0.618_034).fract()));
+            let mut shown = vec![false; st.grains.len()];
+            by.iter().take(back.len() + front.len()).for_each(|&i| shown[i] = true);
+            let (mut bi, mut fi, mut gi) = (0, 0, 0);
+            let mut row = vec![u8::from(beat), (p.pulse.clamp(0.0, 1.0) * 255.0).round() as u8, (p.punch.clamp(0.0, 1.0) * 255.0).round() as u8, (phase * 255.0).round() as u8];
+            row.resize(4 + st.grains.len() * 6, 0);
+            for (i, q) in st.grains.iter().enumerate() {
+                if !shown[i] {
+                    continue;
+                }
+                let (v, layer) = if q.behind {
+                    bi += 1;
+                    (back.get(bi - 1), 1)
+                } else {
+                    fi += 1;
+                    let v = front.get(fi - 1);
+                    let lit = v.zip(glow.get(gi)).is_some_and(|(v, w)| (w.0 - v.0).abs() < 0.11 && (w.1 - v.1).abs() < 0.11);
+                    gi += usize::from(lit);
+                    (v, if lit { 3 } else { 2 })
+                };
+                let Some(&(x, y, r)) = v else { continue };
+                let o = 4 + i * 6;
+                row[o..o + 2].copy_from_slice(&((x * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+                row[o + 2..o + 4].copy_from_slice(&((y * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+                row[o + 4] = (r * 20.0).round().clamp(0.0, 255.0) as u8;
+                row[o + 5] = layer;
+            }
+            assert!(bi == back.len() && fi == front.len() && gi == glow.len(), "{name} frame {f}: grains not told apart ({bi}/{}, {fi}/{}, {gi}/{})", back.len(), front.len(), glow.len());
+            most = most.max(st.grains.len());
+            rows.push(row);
+        }
+        let mut bin: Vec<u8> = Vec::new();
+        bin.extend_from_slice(&(frames as u32).to_le_bytes());
+        bin.extend_from_slice(&(most as u32).to_le_bytes());
+        for mut r in rows {
+            r.resize(4 + most * 6, 0);
+            bin.extend(r);
+        }
+        std::fs::write(out.join(format!("{tag}-{name}.bin")), bin).unwrap();
+    }
+}
