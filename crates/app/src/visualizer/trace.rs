@@ -173,16 +173,15 @@ fn brush_json(b: &Brush) -> String {
 }
 
 /// Saturn over made-up music, frame by frame at 60 a second, for an animation of it to be
-/// looked at: every grain's (and moon's) place, size and layer in each frame
-/// (`<look>-<case>.bin`: frames and grains as u32, then a frame each: the beat, pulse, punch and
-/// phase as bytes, and six bytes a grain, x and y in quarter pixels, the radius in twentieths,
-/// the layer: 0 not drawn, 1 behind the cover, 2 in front, 3 in front and glowing), and the
-/// brushes and the stage (`saturn.json`).
+/// looked at: every grain's place, size and layer in each frame (`<case>.bin`: frames and
+/// grains as u32, then a frame each: the beat, pulse, punch and phase as bytes, and six bytes a
+/// grain, x and y in quarter pixels, the radius in twentieths, the layer: 0 not drawn, 1 behind
+/// the cover, 2 in front, 3 in front and glowing), and the brushes and the stage
+/// (`saturn.json`).
 ///
 ///     MP_TRACE_OUT=<folder> cargo test -p marquee-player saturn_trace -- --ignored
 ///
-/// The looks (`MP_TRACE_LOOKS`, comma-separated, all by default): `plain` (none of
-/// `SaturnWays`), `kepler`, `pull`, `infall`, `moons` (each alone) and `default`. The cases:
+/// The cases (`MP_TRACE_CASES`, comma-separated, all by default; `120`, `170`, `slow`, `quiet`):
 /// 120 a minute, a kick on every beat; 170 a minute; 72 a minute with soft beats (weak kicks the
 /// low notes bear out); 120 a minute going quiet for four seconds (no kick, 12 dB down).
 #[test]
@@ -191,7 +190,7 @@ fn saturn_trace() {
     let Ok(out) = std::env::var("MP_TRACE_OUT") else { return };
     let out = std::path::PathBuf::from(out);
     std::fs::create_dir_all(&out).unwrap();
-    let asked = std::env::var("MP_TRACE_LOOKS").unwrap_or_default();
+    let asked = std::env::var("MP_TRACE_CASES").unwrap_or_default();
     // Behind the page: a cover drawn 300 px across (0.82 of the page's), the stage 0.3 of the
     // page's cover round it each side.
     let size = (300.0f32 / 0.82 * 1.6).round();
@@ -221,70 +220,65 @@ fn saturn_trace() {
         brush_json(&b.sparks_glow)
     );
     std::fs::write(out.join("saturn.json"), json).unwrap();
-    let looks = [("plain", SaturnWays::NONE), ("kepler", SaturnWays::parse("kepler")), ("pull", SaturnWays::parse("pull")), ("infall", SaturnWays::parse("infall")), ("moons", SaturnWays::parse("moons")), ("default", SaturnWays::DEFAULT)];
-    for (tag, ways) in looks {
-        if !asked.is_empty() && !asked.split(',').any(|w| w.trim() == tag) {
+    for (name, bpm) in [("120", 120.0f32), ("170", 170.0), ("slow", 72.0), ("quiet", 120.0)] {
+        if !asked.is_empty() && !asked.split(',').any(|w| w.trim() == name) {
             continue;
         }
-        SATURN_TEST.with(|w| w.set(Some(ways)));
-        for (name, bpm) in [("120", 120.0f32), ("170", 170.0), ("slow", 72.0), ("quiet", 120.0)] {
-            let period = 60.0 / bpm;
-            let mut d = Draw::default();
-            let frames = (12.0 / dt).round() as usize;
-            let mut kick = 0.0f32;
-            let mut rows: Vec<Vec<u8>> = Vec::new();
-            let mut most = 0;
-            for f in 0..frames {
-                let t = (f + 1) as f32 * dt;
-                let phase = (t / period).fract();
-                let beat = phase < dt / period;
-                let n = (t / period).floor() as usize;
-                let quiet = name == "quiet" && (4.0..8.0).contains(&t);
-                // The slow one's beats: weak kicks (0.35 to 0.5), the low notes bearing them out
-                // (twice the usual or more, what a weak kick needs to count, `GRID_WEAK`).
-                let strength = if quiet { 0.0 } else if name == "slow" { 0.35 + 0.15 * ((n * 7 % 5) as f32) / 4.0 } else { [1.0, 0.75, 0.9, 0.75][n % 4] };
-                let low = if beat && strength > 0.0 { if name == "slow" { 2.5 } else { 4.0 } } else { 0.0 };
-                if beat {
-                    kick = kick.max(strength);
-                }
-                kick *= (-dt / 0.12).exp();
-                let gain = if quiet { 0.55 } else { 1.0 };
-                let levels: Vec<f32> = (0..bands)
-                    .map(|i| {
-                        let x = i as f32 / bands as f32;
-                        let lows = if x < 0.15 { 0.35 + 0.55 * kick } else { 0.0 };
-                        let mids = 0.28 + 0.22 * (x * 9.0 + t * 0.7).sin().abs() * (1.0 - x * 0.5) + 0.08 * (t * 3.1 + x * 20.0).sin();
-                        (lows.max(mids) * gain).clamp(0.0, 1.0)
-                    })
-                    .collect();
-                d.tick(dt);
-                d.level(if quiet { -12.0 } else { 0.0 });
-                d.pulse(Pulse { hit: if beat { strength } else { 0.0 }, period, phase, beat, low, ..Pulse::default() });
-                d.draw(&look, &stage, true, &levels, &levels);
-                let st = &d.saturn;
-                let p = &d.paths;
-                let all: Vec<(f32, f32, f32, u8)> = st.grains.iter().map(|q| q.drawn).chain(st.moons.iter().map(|q| q.drawn)).collect();
-                let drawn = |l: &[u8]| all.iter().filter(|q| l.contains(&q.3)).count();
-                assert!(drawn(&[1]) == dot_list(&p.sparks_old).len() && drawn(&[2, 3]) == dot_list(&p.front).len() && drawn(&[3]) == dot_list(&p.front_glow).len(), "{tag} {name} frame {f}: the grains' records are not what was drawn");
-                let mut row = vec![u8::from(beat), (p.pulse.clamp(0.0, 1.0) * 255.0).round() as u8, (p.punch.clamp(0.0, 1.0) * 255.0).round() as u8, (phase * 255.0).round() as u8];
-                for &(x, y, r, layer) in &all {
-                    row.extend_from_slice(&((x * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
-                    row.extend_from_slice(&((y * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
-                    row.push((r * 20.0).round().clamp(0.0, 255.0) as u8);
-                    row.push(layer);
-                }
-                most = most.max(all.len());
-                rows.push(row);
+        let period = 60.0 / bpm;
+        let mut d = Draw::default();
+        let frames = (12.0 / dt).round() as usize;
+        let mut kick = 0.0f32;
+        let mut rows: Vec<Vec<u8>> = Vec::new();
+        let mut most = 0;
+        for f in 0..frames {
+            let t = (f + 1) as f32 * dt;
+            let phase = (t / period).fract();
+            let beat = phase < dt / period;
+            let n = (t / period).floor() as usize;
+            let quiet = name == "quiet" && (4.0..8.0).contains(&t);
+            // The slow one's beats: weak kicks (0.35 to 0.5), the low notes bearing them out
+            // (twice the usual or more, what a weak kick needs to count, `GRID_WEAK`).
+            let strength = if quiet { 0.0 } else if name == "slow" { 0.35 + 0.15 * ((n * 7 % 5) as f32) / 4.0 } else { [1.0, 0.75, 0.9, 0.75][n % 4] };
+            let low = if beat && strength > 0.0 { if name == "slow" { 2.5 } else { 4.0 } } else { 0.0 };
+            if beat {
+                kick = kick.max(strength);
             }
-            let mut bin: Vec<u8> = Vec::new();
-            bin.extend_from_slice(&(frames as u32).to_le_bytes());
-            bin.extend_from_slice(&(most as u32).to_le_bytes());
-            for mut r in rows {
-                r.resize(4 + most * 6, 0);
-                bin.extend(r);
+            kick *= (-dt / 0.12).exp();
+            let gain = if quiet { 0.55 } else { 1.0 };
+            let levels: Vec<f32> = (0..bands)
+                .map(|i| {
+                    let x = i as f32 / bands as f32;
+                    let lows = if x < 0.15 { 0.35 + 0.55 * kick } else { 0.0 };
+                    let mids = 0.28 + 0.22 * (x * 9.0 + t * 0.7).sin().abs() * (1.0 - x * 0.5) + 0.08 * (t * 3.1 + x * 20.0).sin();
+                    (lows.max(mids) * gain).clamp(0.0, 1.0)
+                })
+                .collect();
+            d.tick(dt);
+            d.level(if quiet { -12.0 } else { 0.0 });
+            d.pulse(Pulse { hit: if beat { strength } else { 0.0 }, period, phase, beat, low, ..Pulse::default() });
+            d.draw(&look, &stage, true, &levels, &levels);
+            let st = &d.saturn;
+            let p = &d.paths;
+            let all: Vec<(f32, f32, f32, u8)> = st.grains.iter().map(|q| q.drawn).collect();
+            let drawn = |l: &[u8]| all.iter().filter(|q| l.contains(&q.3)).count();
+            assert!(drawn(&[1]) == dot_list(&p.sparks_old).len() && drawn(&[2, 3]) == dot_list(&p.front).len() && drawn(&[3]) == dot_list(&p.front_glow).len(), "{name} frame {f}: the grains' records are not what was drawn");
+            let mut row = vec![u8::from(beat), (p.pulse.clamp(0.0, 1.0) * 255.0).round() as u8, (p.punch.clamp(0.0, 1.0) * 255.0).round() as u8, (phase * 255.0).round() as u8];
+            for &(x, y, r, layer) in &all {
+                row.extend_from_slice(&((x * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+                row.extend_from_slice(&((y * 4.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
+                row.push((r * 20.0).round().clamp(0.0, 255.0) as u8);
+                row.push(layer);
             }
-            std::fs::write(out.join(format!("{tag}-{name}.bin")), bin).unwrap();
+            most = most.max(all.len());
+            rows.push(row);
         }
-        SATURN_TEST.with(|w| w.set(None));
+        let mut bin: Vec<u8> = Vec::new();
+        bin.extend_from_slice(&(frames as u32).to_le_bytes());
+        bin.extend_from_slice(&(most as u32).to_le_bytes());
+        for mut r in rows {
+            r.resize(4 + most * 6, 0);
+            bin.extend(r);
+        }
+        std::fs::write(out.join(format!("{name}.bin")), bin).unwrap();
     }
 }
