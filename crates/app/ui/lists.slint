@@ -286,6 +286,9 @@ export component TrackList inherits Rectangle {
             TrackListRow {
                 y: parent.height - self.height;
                 width: parent.width;
+                // The positions above are computed from `row-height`: the row is that tall here,
+                // whatever its own default.
+                height: root.row-height;
                 track: slot.t;
                 ctx: root.ctx;
                 index: slot.i;
