@@ -172,6 +172,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_HALO_SHAPE=square` | Measurement and comparison only: the halo follows the cover's rounded square instead of a circle (the cover drawn square), as tried and left out. Works in every build |
 | `MP_HALO_WITHOUT=<words>` | Comparison only: the halo's ripples without some of what moves them (comma-separated: `throw`, a kick throwing its ripple; `push`, kicks pushing those on their way; `swells`, a ripple on a swell where there are no kicks, a timer instead). Works in every build |
 | `MP_HALO_WITH=rings` | The halo's snare rings, which are off: a thin white ring on a snare or a clap on the beat. Tried on real music and left out (a ring could not be connected to a sound heard); kept for another try at tuning them. Works in every build |
+| `MP_BARS_WITH=flash` | The bars' flash, which is off: the bars' area and reflection brighter on the beat (their alpha 1.3 times at a full one, settled before the next). Watched on real music and left out (too jarring, and at times with nothing much heard); kept for another try. Works in every build |
 | `MP_REDUCED_MOTION=1\|0` | Stand in for Windows' "Show animations in Windows" (off: the visualizer's default look is Calm). Works in every build |
 | `MP_BENCH_SKIP_ALBUM=<title>` | With `skip`: the album to play (default: the first of four tracks or more) |
 | `MP_BENCH_MOVED=<text>` | With `session-check`: the moved history track's path must contain this |

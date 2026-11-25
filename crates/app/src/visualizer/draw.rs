@@ -84,8 +84,8 @@ pub struct Paths {
     /// the line style with the beat).
     pub swell: f32,
     /// How much brighter the area and its reflection are drawn now (0: as their brushes say;
-    /// above: brighter, the bars with the beat; below: fainter, the line's area in a quiet
-    /// passage). The page raises or lowers the brushes' alpha by it.
+    /// above: brighter, the bars with the beat when asked for, `bars_flash`; below: fainter,
+    /// the line's area in a quiet passage). The page raises or lowers the brushes' alpha by it.
     pub light: f32,
     /// The ring's ripples: the contours that left the cover on a beat, on their way out.
     pub ripples: String,
@@ -319,9 +319,19 @@ pub struct Draw {
     loud: Loud,
     /// Bars and the line: the last beat's strength, dying away in about an eighth of a second
     /// (what lifts the low notes, `KICK_FADE`), and dying away over the beat (what brightens
-    /// the bars and thickens the line, `LIT_FADE`).
+    /// the bars when asked for, `bars_flash`, and thickens the line, `LIT_FADE`).
     kick: f32,
     lit: f32,
+    /// Whether the bars brighten on the beat; `None`: as `MP_BARS_WITH` says (`bars_flash`).
+    flash: Option<bool>,
+}
+
+/// Whether the bars' area and reflection brighten on the beat. Watched on real music on
+/// 2026-11-25 the flash was too jarring, and at times came with nothing much heard: it is
+/// off unless `MP_BARS_WITH=flash` asks for it (kept for another try). Read once.
+fn bars_flash() -> bool {
+    static FLASH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLASH.get_or_init(|| std::env::var("MP_BARS_WITH").unwrap_or_default().split(',').any(|w| w.trim().eq_ignore_ascii_case("flash")))
 }
 
 /// Bars and the line: the share of the bands, from the lowest, that take the kick; how much a
@@ -334,8 +344,8 @@ const KICK_CAP: f32 = 0.04;
 const KICK_FADE: f32 = 0.05;
 /// What a beat does to the whole of them, dying away over this share of a beat (between 0.06
 /// and 0.2 s; without a tempo, 0.1 s), so it has settled before the next: the bars' area and
-/// reflection that much brighter at a full beat (`Paths::light`), the line that much thicker
-/// (`Paths::swell`: 2 px to 4 px).
+/// reflection that much brighter at a full beat (`Paths::light`; only if asked for,
+/// `bars_flash`), the line that much thicker (`Paths::swell`: 2 px to 4 px).
 const LIT_FADE: f32 = 0.22;
 const LIT_BARS: f32 = 0.3;
 const LIT_LINE: f32 = 1.0;
@@ -517,7 +527,9 @@ impl Draw {
         match look.style {
             Style::Bars => {
                 bars(p, look, stage, levels, peaks, strips, kick);
-                p.light = LIT_BARS * self.lit;
+                if self.flash.unwrap_or_else(bars_flash) {
+                    p.light = LIT_BARS * self.lit;
+                }
             }
             Style::Line => {
                 line(p, look, stage, levels, peaks, strips, kick);
@@ -1794,11 +1806,25 @@ struct Swarm {
     beat: Beat,
     /// How far it has gathered for the next beat (0..1).
     gather: f32,
+    /// The last beat let through, its strength, and the time since it (seconds): what the
+    /// gather goes by.
+    felt: f32,
+    since: f32,
 }
 
 /// How much nearer the cover the swarm is drawn when it has gathered for the beat (a share of
 /// each grain's distance).
 const SWARM_GATHER: f32 = 0.12;
+/// How hard a beat blows the swarm out: each grain is sent outward at this times 0.5 to 1.3
+/// times the beat's strength and a half (cover's radii a second), a grain at the distance it
+/// keeps going out by a quarter of a radius or so, as drawn behind the page (it was 1.25,
+/// and nothing held the swarm in).
+const SWARM_BLOW: f32 = 1.0;
+/// How far out (cover's radii) a grain is blown at the most: one nearer than `SWARM_EASE`
+/// to it is blown that much less, one past it not at all, so beat after beat cannot drive
+/// the swarm further out.
+const SWARM_REACH: f32 = 2.3;
+const SWARM_EASE: f32 = 0.4;
 
 struct Bee {
     /// Where it is and how it moves, in cover's radii from the cover's middle.
@@ -1814,23 +1840,32 @@ struct Bee {
 
 /// The swarm: dust caught in a whirl round the cover. It circles faster the louder the
 /// music is; every beat blows it outward, and each grain spirals back to the distance it
-/// keeps. With a tempo it gathers toward the cover over the last quarter of each beat, so
-/// the blow lands on something drawn in. Each is lit by its own note; the quieter the music
-/// against its loudest lately (`loud`), the thinner the whirl.
+/// keeps. With a tempo and beats heard it gathers toward the cover over the last quarter of
+/// each beat, so the blow lands on something drawn in. It is drawn within the stage's room
+/// (`swarm_reach`). Each is lit by its own note; the quieter the music against its loudest
+/// lately (`loud`), the thinner the whirl.
 fn swarm(p: &mut Paths, st: &mut Swarm, (dt, heard, loud): (f32, Option<Pulse>, f32), look: &Look, stage: &Stage, levels: &[f32]) {
     let r = Round::of(look, stage, levels);
     let g = r.g;
     let (_, bands) = layout(look, stage);
     let (hit, _, period) = beat_of(heard, &mut st.beat, 0.7 * r.swell + 0.3 * r.energy, dt);
+    if hit > 0.0 {
+        (st.felt, st.since) = (hit, 0.0);
+    } else {
+        st.since += dt;
+    }
     // How far it has gathered for the beat to come: none until three quarters through the
     // beat, then rising smoothly to the beat, and let go in a moment after it. It is drawn
     // so, a little nearer the cover, not left to the spring that keeps each grain's distance:
     // pulled twice a beat, that spring (far slower) answered half a beat late, the whirl at
-    // its smallest after the beat instead of on it.
+    // its smallest after the beat instead of on it. It gathers as much as the last beat let
+    // through was strong, and not at all once a beat has gone by without one: by the tempo
+    // alone it drew in before every beat, kick or none, a pulse with nothing heard to it.
     let want = match heard {
         Some(h) if period > 0.0 && dt > 0.0 => {
             let u = ((h.phase.rem_euclid(1.0) - 0.75) / 0.25).clamp(0.0, 1.0);
-            u * u * (3.0 - 2.0 * u)
+            let gone = (st.since / period - 1.0).clamp(0.0, 1.0);
+            u * u * (3.0 - 2.0 * u) * st.felt.min(1.0) * (1.0 - gone * gone * (3.0 - 2.0 * gone))
         }
         _ => 0.0,
     };
@@ -1859,7 +1894,12 @@ fn swarm(p: &mut Paths, st: &mut Swarm, (dt, heard, loud): (f32, Option<Pulse>, 
                 let d = (b.x * b.x + b.y * b.y).sqrt().max(0.05);
                 let (nx, ny) = (b.x / d, b.y / d);
                 if step == 0 && hit > 0.0 {
-                    let k = (0.5 + 0.8 * rand(&mut st.seed)) * (0.5 + hit) * 1.25;
+                    // Less the nearer it already is to the furthest it goes: blown out
+                    // further before it was back, beat after beat drove the swarm off the
+                    // stage (at 170 a minute 2.8 of the cover's radii out, seven grains in
+                    // ten past the stage's edge behind the page, 1.95 radii out).
+                    let room = ((SWARM_REACH - d) / SWARM_EASE).clamp(0.0, 1.0);
+                    let k = (0.5 + 0.8 * rand(&mut st.seed)) * (0.5 + hit) * SWARM_BLOW * room;
                     b.vx += nx * k;
                     b.vy += ny * k;
                 }
@@ -1883,6 +1923,7 @@ fn swarm(p: &mut Paths, st: &mut Swarm, (dt, heard, loud): (f32, Option<Pulse>, 
     // Quieter than lately: fewer grains drawn (always the same ones, each shrinking away as
     // the whirl thins past it, none blinking in and out).
     let full = 0.35 + 0.71 * loud;
+    let reach = swarm_reach(stage, &g);
     for (i, b) in st.bees.iter().enumerate() {
         let keep = ((full - (i as f32 * 0.618_034).fract()) / 0.06).clamp(0.0, 1.0);
         if keep <= 0.0 {
@@ -1892,7 +1933,24 @@ fn swarm(p: &mut Paths, st: &mut Swarm, (dt, heard, loud): (f32, Option<Pulse>, 
         let f = b.note * (bands.max(2) - 1) as f32;
         let (i0, t) = (f.floor() as usize, f - f.floor());
         let l = (get(levels, i0) * (1.0 - t) + get(levels, (i0 + 1).min(bands - 1)) * t).min(1.0);
-        lit(p, g.cx + b.x * near * g.hub, g.cy + b.y * near * g.hub, b.size * big * (0.6 + 1.3 * l), l);
+        let d = (b.x * b.x + b.y * b.y).sqrt().max(1e-3);
+        let k = reach(d) * near * g.hub / d;
+        lit(p, g.cx + b.x * k, g.cy + b.y * k, b.size * big * (0.6 + 1.3 * l), l);
+    }
+}
+
+/// How far from the middle (cover's radii) a grain `d` radii out is drawn on this stage: the
+/// swarm, out to the furthest a beat blows it (`SWARM_REACH`), fitted between the cover and
+/// the stage's edge (its smaller side's, less a grain's size), and past four fifths of that
+/// room, eased toward the edge without reaching it. Where there is room for all of it (none
+/// of the places the app has) it is not squeezed.
+fn swarm_reach(stage: &Stage, g: &Halo) -> impl Fn(f32) -> f32 {
+    let edge = ((stage.w.min(stage.h) / 2.0 - EDGE - 6.0) / g.hub).max(1.1);
+    let fit = ((edge - 1.0) / (SWARM_REACH - 1.0)).min(1.0);
+    let knee = 1.0 + 0.8 * (edge - 1.0);
+    move |d: f32| {
+        let d = 1.0 + (d - 1.0) * fit;
+        if d <= knee { d } else { knee + (edge - knee) * ((d - knee) / (edge - knee)).tanh() }
     }
 }
 
@@ -3137,20 +3195,34 @@ mod tests {
             let all: Vec<(f32, f32)> = dots(&p.sparks).into_iter().chain(dots(&p.sparks_old)).collect();
             all.iter().map(|q| ((q.0 - g.cx).powi(2) + (q.1 - g.cy).powi(2)).sqrt()).sum::<f32>() / all.len() as f32
         };
-        // With a tempo and no beats told: drawn in toward the cover by the end of each beat
-        // (frame 164 ends halfway through the sixth beat, 178 just before the seventh), out
-        // again a moment after it, the same at any frame rate.
+        // With a tempo and a beat heard on each beat to 2 s: gathered by the end of each beat
+        // (none halfway through it), as much as the beats were strong, the same at any frame
+        // rate. After the last one it gathers once more for the beat that does not come, and
+        // then no more.
         for fps in [30.0, 60.0, 144.0] {
-            let mut d = Draw::default();
-            let frames = run_beats(&mut d, &l, &s, fps, 3.0, 0.5, &mut |_, _, _| (sound.clone(), 0.0, 0.0));
-            let at = |t: f32| mean(&frames[(t * fps).round() as usize - 1]);
-            let (mid, end, after) = (at(2.75), at(2.97), at(3.0 - 0.5 + 0.1));
-            assert!(end < mid * 0.92 && after > end * 1.06, "{fps} fps: {mid} halfway through a beat, {end} at its end, {after} after it");
+            for strength in [0.8, 0.3] {
+                let mut d = Draw::default();
+                let mut gathered = Vec::new();
+                run_beats(&mut d, &l, &s, fps, 4.0, 0.5, &mut |d, _, t| {
+                    gathered.push(d.swarm.gather);
+                    let hit = if t < 2.0 + 1.0 / fps && (t / 0.5).fract() < 1.0 / fps / 0.5 { strength } else { 0.0 };
+                    (sound.clone(), hit, 0.0)
+                });
+                // What it had gathered by the frame ending at `t` (the next frame's start).
+                let at = |t: f32| gathered[(t * fps).round() as usize];
+                let (mid, end, once, then) = (at(1.75), at(1.97), at(2.47), at(2.97));
+                assert!(mid < 0.02, "{fps} fps: {mid} halfway through a beat");
+                assert!(end > 0.7 * strength && end <= strength + 1e-3, "{fps} fps: {end} at a beat's end, beats of {strength}");
+                assert!(once > 0.7 * strength && then < 0.05 && at(3.47) < 1e-3, "{fps} fps: {once} for the beat that did not come, {then} for the one after");
+            }
         }
-        // Without a tempo it keeps its distance.
-        let mut d = Draw::default();
-        let frames = run_beats(&mut d, &l, &s, 60.0, 3.0, 0.0, &mut |_, _, _| (sound.clone(), 0.0, 0.0));
-        assert!((mean(&frames[164]) - mean(&frames[177])).abs() < mean(&frames[164]) * 0.01);
+        // With a tempo and no beat heard it keeps its distance: no gathering by the clock
+        // alone (frame 164 ends halfway through the sixth beat, 177 just before the seventh).
+        for period in [0.5, 0.0] {
+            let mut d = Draw::default();
+            let frames = run_beats(&mut d, &l, &s, 60.0, 3.0, period, &mut |_, _, _| (sound.clone(), 0.0, 0.0));
+            assert!((mean(&frames[164]) - mean(&frames[177])).abs() < mean(&frames[164]) * 0.01, "{period}");
+        }
         // Thinner when quiet, the grains going one by one.
         let mut d = Draw::default();
         let frames = run_beats(&mut d, &l, &s, 60.0, 10.0, 0.5, &mut |_, i, _| (sound.clone(), 0.0, if i < 300 { 0.0 } else { -12.0 }));
@@ -3481,8 +3553,17 @@ mod tests {
         assert_eq!(c0.len(), bands);
         assert!(c0.iter().zip(&c1).all(|(a, b)| b.1 < a.1), "every cap jumps");
         assert!(c0[0].1 - c1[0].1 > c0[bands - 1].1 - c1[bands - 1].1 + 20.0, "the low ones with their bars");
-        // The field brightens with it.
-        assert!((p.light - LIT_BARS).abs() < 1e-4, "{}", p.light);
+        // The field does not brighten with it, unless asked for (`MP_BARS_WITH=flash`); then
+        // it does, and has settled by the next beat.
+        assert_eq!(p.light, 0.0, "no flash");
+        let mut lit = Draw { flash: Some(true), ..Draw::default() };
+        kick_frame(&mut lit, &l, &s, &levels, 1.0 / 60.0, 0.0);
+        let flash = kick_frame(&mut lit, &l, &s, &levels, 1.0 / 60.0, 1.0).light;
+        assert!((flash - LIT_BARS).abs() < 1e-4, "{flash}");
+        for _ in 0..40 {
+            kick_frame(&mut lit, &l, &s, &levels, 1.0 / 60.0, 0.0);
+        }
+        assert_eq!(kick_frame(&mut lit, &l, &s, &levels, 1.0 / 60.0, 0.0).light, 0.0, "the flash settled");
         // An eighth of a second on, the lift is nearly gone; it is gone soon after.
         let mut later = Vec::new();
         for _ in 0..8 {
@@ -3494,7 +3575,6 @@ mod tests {
         }
         let settled = kick_frame(&mut d, &l, &s, &levels, 1.0 / 60.0, 0.0);
         assert_eq!(bar_tops(&settled.fill), rest);
-        assert_eq!(settled.light, 0.0, "and the light settled");
     }
 
     #[test]
@@ -3503,7 +3583,8 @@ mod tests {
         let s = stage(1400.0, 204.0);
         let levels = vec![0.3; layout(&l, &s).1];
         for period in [0.35, 0.5, 0.8] {
-            let mut d = Draw::default();
+            // With the flash asked for (`MP_BARS_WITH=flash`).
+            let mut d = Draw { flash: Some(true), ..Draw::default() };
             let dt = 1.0 / 60.0;
             let frames = (period / dt) as usize;
             let mut lights = Vec::new();
@@ -3625,5 +3706,42 @@ mod tests {
             quiet = kick_frame(&mut e, &l, &s, &levels, 1.0 / 60.0, 0.0).light;
         }
         assert!(loud.abs() < 1e-3 && quiet < -0.25, "{loud} {quiet}");
+    }
+
+    #[test]
+    fn the_swarm_stays_on_its_stage_beat_after_beat() {
+        let l = look(Style::Swarm);
+        // Behind the page (a 400 px cover, the stage 0.3 of it more each side, the hub the
+        // cover drawn at 0.82), the full page and the panel's tab.
+        let mut behind = stage(640.0, 640.0);
+        behind.hub = 164.0;
+        for s in [behind, stage(1440.0, 800.0), stage(360.0, 300.0)] {
+            let g = halo(&s);
+            let (_, bands) = layout(&l, &s);
+            let sound: Vec<f32> = (0..bands).map(|i| 0.3 + 0.5 * ((i as f32) * 0.3).sin().abs()).collect();
+            let edge = (s.w.min(s.h) / 2.0 - EDGE) / g.hub;
+            let far = |p: &Paths| -> Vec<f32> { dots(&p.sparks).into_iter().chain(dots(&p.sparks_old)).map(|q| ((q.0 - g.cx).powi(2) + (q.1 - g.cy).powi(2)).sqrt() / g.hub).collect() };
+            let mean = |p: &Paths| far(p).iter().sum::<f32>() / far(p).len() as f32;
+            let rest = {
+                let mut d = Draw::default();
+                mean(run_beats(&mut d, &l, &s, 60.0, 4.0, 0.0, &mut |_, _, _| (sound.clone(), 0.0, 0.0)).last().unwrap())
+            };
+            // A full beat on every beat for twelve seconds, at 120 and 170 a minute.
+            for (bpm, fps) in [(120.0, 60.0), (170.0, 60.0), (170.0, 144.0)] {
+                let period = 60.0 / bpm;
+                let mut d = Draw::default();
+                let frames = run_beats(&mut d, &l, &s, fps, 12.0, period, &mut |_, _, t| (sound.clone(), if (t / period).fract() < 1.0 / fps / period { 1.0 } else { 0.0 }, 0.0));
+                let most = |from: f32, to: f32| frames[(from * fps) as usize..(to * fps) as usize].iter().flat_map(|p| far(p)).fold(0.0f32, f32::max);
+                let (first, last) = (most(0.0, 4.0), most(8.0, 12.0));
+                assert!(first < edge && last < edge, "{s:?} {bpm} a minute: {first} and {last} of the cover's radii out, the edge {edge}");
+                // Not driven further out beat after beat.
+                assert!(last <= first + 0.01, "{s:?} {bpm} a minute: {first} at first, {last} after eight seconds");
+                // And each beat still reads as a blow: the whirl swells well past where it
+                // rests, and is drawn in again before the next.
+                let means: Vec<f32> = frames[(8.0 * fps) as usize..].iter().map(mean).collect();
+                let (lo, hi) = (means.iter().cloned().fold(f32::MAX, f32::min), means.iter().cloned().fold(0.0, f32::max));
+                assert!(hi > rest * 1.06 && hi - lo > 0.1 * rest, "{s:?} {bpm} a minute: {lo}..{hi}, at rest {rest}");
+            }
+        }
     }
 }
