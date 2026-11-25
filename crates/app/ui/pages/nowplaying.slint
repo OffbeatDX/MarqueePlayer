@@ -307,15 +307,20 @@ export component NowPlayingPage inherits Rectangle {
             }
         }
     }
-    // Behind everything on the page, a band above the player bar: the bars, and under them
-    // their reflection, which ends where the bar begins. Nothing on the page moves for it.
-    // The bars are Theme.viz-height tall, less on a short window (a quarter of the page).
+    // Behind everything on the page, a band along the foot: the bars, rising from the player
+    // bar's top edge (as the bonfire does), and their reflection under the bar, seen only
+    // through its glass. Nothing on the page moves for it. The bars are Theme.viz-height
+    // tall, less on a short window (a quarter of the page); the reflection is the look's
+    // share of that, no taller than the bar.
+    private property <length> band-bars: round(min(Theme.viz-height, root.height * 0.24) / 1px) * 1px;
+    private property <length> band-refl: floor(min(root.band-bars * Visualizer.refl-share, Theme.bar-height) / 1px) * 1px;
     if root.behind && !Visualizer.ring: VisualizerStage {
         x: 0;
         width: root.width;
         // A band along the foot; the bonfire's sparks rise up the whole page.
-        height: Visualizer.tall ? root.height - Theme.bar-height : min(Theme.viz-height, root.height * 0.24) * (1 + Visualizer.refl-share);
-        y: root.height - Theme.bar-height - self.height;
+        height: Visualizer.tall ? root.height - Theme.bar-height : root.band-bars + root.band-refl;
+        y: root.height - Theme.bar-height - (Visualizer.tall ? self.height : root.band-bars);
+        refl-room: Visualizer.tall ? -1px : root.band-refl;
     }
     if !root.full: HorizontalLayout {
         padding: Theme.page-margin;

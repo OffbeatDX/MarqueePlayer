@@ -402,8 +402,7 @@ pub fn reshuffle(st: &Rc<State>) {
 }
 
 pub fn new_seed() -> i64 {
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    ((t as i64) ^ ((t >> 64) as i64)).wrapping_mul(0x5851_F42D_4C95_7F2D)
+    crate::playback::seed() as i64
 }
 
 // ---- elsewhere: Playlists page counts, home shelves, menu actions ---------------------------------

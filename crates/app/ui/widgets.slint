@@ -1356,7 +1356,7 @@ export component StatusNote inherits Rectangle {
                 padding-top: 6px;
                 ProgressLine { value: root.progress; label: root.title; }
             }
-            // Its actions, under the text.
+    // The row's actions, under the text.
             HorizontalLayout {
                 alignment: start;
                 spacing: 8px;
@@ -1365,4 +1365,138 @@ export component StatusNote inherits Rectangle {
             }
         }
     }
+}
+
+// Single-line text that elides at rest and, while `active` and wider than its slot,
+// pauses briefly, glides smoothly to its end at a steady reading speed, pauses to let
+// the ending read, fades back to the start and repeats. Nothing runs while idle or
+// when the text fits; under reduced motion it stays still and offers a tooltip instead.
+export component MarqueeText inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: Theme.font-body;
+    in property <int> font-weight: 500;
+    in property <color> text-color: Theme.text;
+    // Drive scrolling while the row is hovered or focused (and visible).
+    in property <bool> active;
+    // Steady reading speed (logical px/s) once scrolling starts.
+    in property <float> speed: 36;
+
+    // Smooth ease-in / constant middle / ease-out over [0, 1] with ramp fraction `r` (0 < r <= 0.5).
+    pure function ease-scroll(p: float, r: float) -> float {
+        if p <= 0 { return 0; }
+        if p >= 1 { return 1; }
+        if p < r {
+            return 0.5 * p * p / (r * (1 - r));
+        }
+        if p <= 1 - r {
+            return (p - 0.5 * r) / (1 - r);
+        }
+        return 1 - 0.5 * (1 - p) * (1 - p) / (r * (1 - r));
+    }
+
+    clip: true;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    preferred-width: 0px;
+
+    private property <length> full-width: full.preferred-width;
+    private property <length> overflow: max(0px, root.full-width - root.width);
+    out property <bool> overflows: root.overflow > 1px;
+    private property <bool> wants-scroll: root.active && root.overflows && !Theme.reduced-motion;
+    private property <bool> scrolling;
+    private property <duration> start-tick;
+
+    // Wait briefly on hover so brushing the pointer past rows does not jolt them,
+    // and let the reader anchor on the start of the name first.
+    Timer {
+        interval: 450ms;
+        running: root.wants-scroll && !root.scrolling;
+        triggered => {
+            root.start-tick = animation-tick();
+            root.scrolling = true;
+        }
+    }
+
+    changed wants-scroll => {
+        if !self.wants-scroll {
+            self.scrolling = false;
+        }
+    }
+    changed text => {
+        self.scrolling = false;
+    }
+
+    // Frame clock runs ONLY while actively scrolling; zero frames while idle or dwelling.
+    private property <duration> now: root.scrolling ? animation-tick() : 0ms;
+    private property <float> scroll-ms: max(450, (root.overflow / 1px) / max(1, root.speed) * 1000);
+    private property <float> end-pause-ms: 1400;
+    private property <float> fade-out-ms: 200;
+    private property <float> fade-in-ms: 220;
+    private property <float> start-pause-ms: 850;
+    private property <float> cycle-ms: root.scroll-ms + root.end-pause-ms + root.fade-out-ms + root.fade-in-ms + root.start-pause-ms;
+    private property <float> elapsed-ms: root.scrolling ? max(0, (root.now - root.start-tick) / 1ms) : 0;
+    private property <float> t: root.scrolling ? mod(root.elapsed-ms, root.cycle-ms) : 0;
+
+    private property <float> ramp: min(0.22, 220 / root.scroll-ms);
+    private property <float> progress: root.t < root.scroll-ms
+        ? root.ease-scroll(root.t / root.scroll-ms, root.ramp)
+        : root.t < root.scroll-ms + root.end-pause-ms + root.fade-out-ms ? 1 : 0;
+    private property <length> offset: root.scrolling ? root.overflow * root.progress : 0px;
+    private property <float> cycle-opacity: !root.scrolling ? 1
+        : root.t < root.scroll-ms + root.end-pause-ms ? 1
+        : root.t < root.scroll-ms + root.end-pause-ms + root.fade-out-ms
+            ? 1 - (root.t - root.scroll-ms - root.end-pause-ms) / root.fade-out-ms
+        : root.t < root.scroll-ms + root.end-pause-ms + root.fade-out-ms + root.fade-in-ms
+            ? (root.t - root.scroll-ms - root.end-pause-ms - root.fade-out-ms) / root.fade-in-ms
+        : 1;
+
+    // Soft alpha fade at whichever edge currently clips text (works cleanly over frosted glass).
+    private property <length> fade-px: min(14px, root.width * 0.22);
+    private property <length> rem: max(0px, root.overflow - root.offset);
+    private property <float> left-alpha: root.fade-px > 0px ? 1 - clamp(root.offset / root.fade-px, 0, 1) : 1;
+    private property <float> right-alpha: root.fade-px > 0px ? 1 - clamp(root.rem / root.fade-px, 0, 1) : 1;
+    private property <float> l0: root.full-width > 0px ? clamp(root.offset / root.full-width, 0, 1) : 0;
+    private property <float> l1: root.full-width > 0px ? clamp((root.offset + root.fade-px) / root.full-width, 0, 1) : 0;
+    private property <float> r0: root.full-width > 0px ? clamp((root.offset + root.width - root.fade-px) / root.full-width, 0, 1) : 1;
+    private property <float> r1: root.full-width > 0px ? clamp((root.offset + root.width) / root.full-width, 0, 1) : 1;
+
+    // Rest state: crisp ellipsis.
+    Text {
+        visible: !root.scrolling;
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        color: root.text-color;
+        vertical-alignment: center;
+        overflow: elide;
+        accessible-role: none;
+    }
+
+    // Active scroll state: full text glided across the clipped slot with soft alpha edge fades.
+    full := Text {
+        visible: root.scrolling;
+        x: -root.offset;
+        y: 0;
+        width: self.preferred-width;
+        height: parent.height;
+        text: root.text;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        vertical-alignment: center;
+        opacity: root.cycle-opacity;
+        color: @linear-gradient(90deg,
+            root.text-color.with-alpha(root.left-alpha) root.l0,
+            root.text-color root.l1,
+            root.text-color root.r0,
+            root.text-color.with-alpha(root.right-alpha) root.r1
+        );
+        accessible-role: none;
+    }
+
+    // Under reduced motion, offer the full name in a tooltip instead of scrolling.
+    if root.overflows && Theme.reduced-motion: Tooltip { TipBubble { text: root.text; } }
 }

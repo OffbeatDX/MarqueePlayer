@@ -4,18 +4,21 @@ Now playing shows the music moving (`visualizer/mod.rs` runs it, `visualizer/dra
 `visualizer/look.rs` is its look and its settings; the engine's tap and the analysis are
 `player_core::spectrum`). By default it is the look it always had, Classic: faint bars in the
 playing cover's accent along the bottom of the page, behind the cover and the panel, with peak
-caps and their mirrored reflection, which now sits between the bars and the player bar where it
-can be seen (it used to lie entirely behind the bar's frosted glass, where nothing of it
-showed). Settings > Visualizer, or `V`, turns it on and off (on by default).
+caps and their mirrored reflection. Behind the page the bars rise from the player bar's top
+edge (as the bonfire's coals do) and the reflection lies under the bar, seen only through its
+frosted glass, drawn stronger by what the glass's tint holds back (`1 / (1 - its alpha)`, about
+4 times: visualizer/mod.rs `brush`) so it shows there as the dimmer copy its strength says (with
+the glass off the bar is opaque and hides it); in the panel, on the full page
+and in the Settings preview it sits under the bars in the stage. Settings > Visualizer, or `V`, turns it on and off (on by default).
 
 **Styles** (`visualizer::look::Style`), each drawn by a few `Path`s rebuilt per frame:
 
 | Style | What | Drawn as |
 | --- | --- | --- |
-| Bars | Rounded bars, caps above, a scaled mirror below | one path of rectangles (and one for the caps, one for the reflection), on whole pixels without anti-aliasing |
-| Line | A smooth curve (Catmull-Rom as cubic Béziers) over a filled area, faint at its foot; its reflection a mirrored area brighter toward its edge | an area path and a 2 px stroke |
-| Ring, as Ripples | The cover as a drum skin (`visualizer::draw::radial`). The spectrum is a glowing contour around it: the low notes (the lowest eighth of the bands) swell the whole ring at once, the rest of the spectrum shapes it, low mids at the top to highs at the bottom, the two halves mirrored (no seam where 20 Hz meets 20 kHz: the lows are not on the ring at all, the highs meet themselves); smoothed around, moving as fast as bars do (slowed down, as it once was, it hardly moved). **Intensity** (50% to 200%, this kind only) is how far it swings for the same music, bent toward its reach rather than clipped at it. Between the cover and the contour, its corona: light at the cover's edge thinning outward; behind the cover a bloom that brightens with the low notes. On each beat (the low notes, and a little of everything, rising above where they have been: told when the rise tops out, `Beat`) the contour as it is then leaves the cover as a **ripple**: out a whole cover's radius at 95 px a second, its shape kept half again as pronounced, lower and softer the farther it is, turned a little round as it goes (0.34 rad over its way), through the look's colours and fading out. With sound and no beat, one leaves after a rest. As many at once as there is room for (one per 36 px of the way out, three to five), the time between two a ripple's life shared among them, so none is cut short. And **sparks** (`Sparks`): a few leave the contour all the time, where it is loudest, and every beat throws a burst; each flies outward, slowing, and goes out as it ages (it shrinks: one path cannot fade each dot by its age), with a soft disc of light round the young ones; as many as the way out has room for (60 to 240). Peak caps do not apply. A still frame (the preview with nothing playing) shows a few ripples and sparks as a moment would leave them | the contour as one closed curve (stroked twice: glow and line), the corona as that curve with the cover's place left out of it, the ripples as one path of closed curves a third as detailed as the contour, three paths of dots for the sparks (young, old, discs), each with a radial brush that fades with the distance, and a radial-gradient rectangle for the bloom |
-| Ring, its other kinds | Everything drawn around the cover is one style, **Ring** (`Style::RING`; Settings' second choice, "Around the cover"), its kinds sharing the round cover, the bloom behind it and a thin contour or rim. **Saturn** (`saturn`): a tilted ring of dust in orbit (its short axis 0.3 of its long one, turned 18 degrees), the grains on its far side drawn under the cover and those on the near side over it (`VisualizerFront`), each as big as its note is loud, the inner ones faster than the outer; the bass makes the ring swell and a beat pushes it out. **Galaxy** (`galaxy`): two spiral arms of dust seen from above, the low notes by the cover and the high ones at the arms' ends; the bass winds them tighter and turns them faster. **Swarm** (`swarm`): dust in a whirl, each grain lit by its own note, circling faster the louder it is; every beat blows it outward and each grain springs back to the distance it keeps. **Eclipse** (`eclipse`): a glow at the rim, and on each beat a flare of sparks leaving where the music is loudest, leaning one way, pulled back into the cover in an arc; a harder beat throws two. All of them fade to nothing in silence. **Pulse the cover** (on by default; `Look::cover_pulse`): the ring's cover is drawn 2.5% larger at the top of a beat (`Paths::punch`, an eighth of a second), whatever its kind | dots in three paths (bright or young, dim or old, and discs of light), Saturn's near grains in two more over the cover, a thin stroked contour |
+| Bars | Rounded bars, caps above, a scaled mirror below. **With the beat** (below; not with Smooth motion, so not Calm nor the default where Windows' animations are off): the low bars take the kick the moment it lands (the lowest fifth of the bands, the lowest lifted most, by 0.35 of the height at a full kick, less further up and none past that fifth, on top of the spectrum's own level and shaped like any level, so nothing pins to the top; mostly gone in an eighth of a second), every peak cap is kicked up a little with it (a lifted bar carries its cap) and falls as before. The whole field and its reflection brightening on the beat (their alpha 1.3 times at a full one, settled before the next, over 0.22 of a beat) is off: watched on real music on 2026-11-25 the flash was too jarring and at times came with nothing much heard; `MP_BARS_WITH=flash` turns it on (docs/testing.md). Mirrored, the middle bars take it. At rest, with no beat, a frame is exactly as it was | one path of rectangles (and one for the caps, one for the reflection), on whole pixels without anti-aliasing; the brightening a number (`Visualizer.fill-light`) the page lays on the brushes, not a brush rebuilt |
+| Line | A smooth curve (Catmull-Rom as cubic Béziers) over a filled area, faint at its foot; its reflection a mirrored area brighter toward its edge. **With the beat**, as the bars (not with Smooth motion: Calm stays still): its low end takes the kick (the lowest fifth of the curve), and the line thickens from 2 px to 4 px at a full beat, settled before the next; its area and the reflection are fainter when the music is quiet against its loudest lately (as `Loud` has it for Saturn: at 12 dB under, its alpha 0.55 of what it is when loud), so a drop looks fuller than a breakdown. It has no glow to widen (a second wide stroke cost more than it showed) | an area path and a 2 px stroke (thickened by a number, `Visualizer.line-swell`) |
+| Ring, as Ripples | The cover as a drum skin (`visualizer::draw::radial`). The spectrum is a glowing contour around it: the low notes (the lowest eighth of the bands) swell the whole ring at once, the rest of the spectrum shapes it, low mids at the top to highs at the bottom, the two halves mirrored (no seam where 20 Hz meets 20 kHz: the lows are not on the ring at all, the highs meet themselves); smoothed around, moving as fast as bars do (slowed down, as it once was, it hardly moved). **Intensity** (50% to 200%, this kind only) is how far it swings for the same music, bent toward its reach rather than clipped at it. Between the cover and the contour, its corona: light at the cover's edge thinning outward; behind the cover a bloom that brightens with the low notes. On each beat (the low notes, and a little of everything, rising above where they have been: told when the rise tops out, `Beat`) the contour as it is then leaves the cover as a **ripple**: out a whole cover's radius, its shape kept half again as pronounced, lower and softer the farther it is, turned a little round as it goes (0.34 rad over its way), through the look's colours and fading out (bright over the first half of its way, then quickly fainter: thrown ripples spend most of their time far out). **Every kick has its ripple** (none nearer the last than 0.42 of a beat): as many at once as there is room for (one per 36 px of the way out, three to five), and when one more leaves the oldest, out at the edge where it is all but gone, hurries out of its way (it used to hold the newcomer back: with room for five and a way of five beats the sixth kick found the first one's ripple at the very end of its life, and whether it was gone was a matter of a frame's rounding and of the tempo heard a hair long, so a beat now and then went without, and the timer's ripple after it fell between the beats). **How a ripple moves** is the music's doing, not its age's: the kick that sends it throws it (0.55 of the way for the hardest kick, 0.6 of that for the softest, dying away over 0.3 of the way's time; how hard is the kick's strength as told, raised by how loud the low notes get in the 0.15 s after, a kick being told before its peak), every later kick pushes all those on their way (a tenth of the way for a full one, over a sixth of a second), and between kicks they drift, as fast as it takes for the way to last as many beats as there is room for ripples (with the tempo known; without it, as far apart as the kicks' ripples have lately left; 95 px a second at the slowest): a harder kick's ripple is out fast and slows, a soft one's goes evenly, and the whole field surges on the beat. **Without kicks** (none for a beat and a half: a breakdown, an intro, music that has none) nothing leaves by the clock: a ripple leaves when the music swells (the rise told when it tops out, `Beat`, the larger the rise the harder it is thrown), or after 2.4 s with sound and no swell; where the music keeps a beat without kicks, that ripple waits for the next beat and leaves on it. **The snares' rings are off** (`MP_HALO_WITH=rings` shows them): tried on real music on 2026-11-25, a ring could not be connected to any sound heard as it appeared, while the ripples were liked; they are kept for another try at tuning them. As built: a snare, a clap sends a **ring**: the contour smoothed, as wide as a ripple and nearly white (the look's colours seven tenths of the way to white: told from the ripples at a glance), quickly out and slowing, over the whole of the ripples' way in two beats (it overtakes them), bright until the last third of it; four at once at the most, none nearer the last than 0.42 of a beat. Which sharp edges are a snare's: the tracker's snap is any of them, a kick's own edge and a plucked note's too (in the house fixture every kick was one, in the ballad every plucked note: 67 in 30 s and not a drum in it), so a ring is kept back for two frames and shown only if the sound has stayed bright since (`beat::Heard::bright`, 0.07 or more: a snare's or a clap's noise lasts, a kick's edge is over in milliseconds, a note was never bright). On the fixtures: all 32 claps of the house track (and 3 of its 31 kicks without one), all 22 snares of the hip-hop track and none of its kicks, 34 snares of the rock track, 44 of the build's and all 18 claps of the drop in "Dynamics", none in the ballad or the ambient track. **Where in the beat** (with a beat to go by, `meter::Meter`, below): what counts as a beat depends on it, for this kind and every other that moves with the beat (`draw::beat_hit`, applied once to what is heard each frame: what sends a ripple, the contour's jump, the sparks' burst, the cover's pulse, and what moves Saturn, the eclipse and the bonfire; until 2026-11-25 all but the ripples went with every kick told, a bass line's notes among them). On the beat (within 0.14 of a beat): a kick told (one weaker than 0.55 only if the low notes' onset is at least twice the usual), or an onset of the low notes eight times the usual (a kick the tracker missed under a bass line; never sooner than a twentieth of a beat before the beat, and if the kick is told a moment later the ripple is thrown as hard as that kick). On the half beat: a firm kick (0.75) that the low notes bear out. Off both: nothing. Measured over a minute each of 64 tracks of every kind from a real library (the steady ones: 3,964 beats): of the kicks told, 57% were on the beat, 19% on the half beat and 24% off both, as strong off the beat as on it (a bass line's notes, which fall anywhere), and with every one of them sending a ripple, as they did, the ripples left on the music's beats 49% of the time (chance: 21%) and the tempo read off the kicks was known 40% of the time. With the meter and these rules: 66% on the beat, 83% on the beat or the half beat (chance: 42%), three beats in five with their ripple, the tempo held 89% of the time. A ring too is then a snare's or a clap's on the beat only (an open hat on every half beat is as bright: the rings were 1.8 a second, and are 0.9). While the music has no beat to go by, a hit weaker than 0.85 is no kick to any look unless it is 0.55 or more and the low notes bear it out (three times the usual): the ambient fixture, which has none, was told 92 weak ones in 30 s. **Hits for nothing** (2026-11-25: "pulses for nothing at times" on songs without a clear kick, for the halo and the bars alike): over a minute each of 63 tracks from a real library, half of them without a clear kick (ambient, acoustic, jazz, score, vocal, slow songs), a hit was taken to be for nothing when neither the low band nor the whole sound rose in the 60 ms around it, against the half second before, more than at four moments in five of the same track taken at random (at random 73% of moments are without such a rise). Until then an onset of the low notes three times the usual counted on the beat: it gave three hits in five, and half of them were for nothing (a bass line wavering, a held note's swell); at eight times the usual, 27%. Weak kicks on the beat the low notes did not bear out were 47% for nothing, and kicks of 0.55 to 0.85 with no tempo known, about half. With the rules as they are: 63 hits a minute where there were 98, 17 of them for nothing where there were 42 (on the music with a clear kick 15 where there were 36; on the rest 18 where there were 47), 66% within 50 ms of a reference beat where there were 60% (chance: 20%); of the beats with an audible rise of the low notes, 77% have a hit on music with a clear kick (85% before) and 49% on the rest (62%). What is still left: a quarter of the hits for nothing are on the tracks whose tempo is wrong (14 of the 33 without a clear kick, 3 of the 30 with one: held at two thirds or four thirds of the beat, half a beat off, or none held), where the hits land on the beat no more often than by chance; and the kicks the tracker tells on music without a clear kick are for nothing a third of the time however strong. `MP_HALO_WITHOUT=throw,push,swells` leaves any of these out, for comparing. And **sparks** (`Sparks`): a few leave the contour all the time, where it is loudest, and every beat throws a burst; each flies outward, slowing, and goes out as it ages (it shrinks: one path cannot fade each dot by its age), with a soft disc of light round the young ones; as many as the way out has room for (60 to 240). Peak caps do not apply. A still frame (the preview with nothing playing) shows a few ripples and sparks as a moment would leave them | the contour as one closed curve (stroked twice: glow and line), the corona as that curve with the cover's place left out of it, the ripples as one path of closed curves a third as detailed as the contour, the snare's rings as another (half as detailed again), three paths of dots for the sparks (young, old, discs), each with a radial brush that fades with the distance, and a radial-gradient rectangle for the bloom |
+| Ring, its other kinds | Everything drawn around the cover is one style, **Ring** (`Style::RING`; Settings' second choice, "Around the cover"), its kinds sharing the round cover, the bloom behind it and a thin contour or rim. **Saturn** (`saturn`): a tilted ring of dust in orbit (its short axis 0.3 of its long one, turned 18 degrees), the grains on its far side drawn under the cover and those on the near side over it (`VisualizerFront`), each as big as its note is loud. The cover is drawn as a heavy body the dust is bound to, and a beat as the cover pulling, never pushing (since 2026-11-25: the owner found the ring a little boring, its 3D depth the best of it). **Kepler's speeds**: the ring reaches near the cover (1.1 to 1.88 of its radius) and every grain goes at the speed its distance gives it (the distance to the power -1.5, none at a pace of its own), so the inner edge goes round 2.3 times as fast as the outer and laps it, the grains crossing the cover's face outrunning those at the ends. With a tempo it keeps time: a grain halfway out goes a sixteenth of a turn a beat, half of it in a surge right after the beat and the rest coasting to the next (a faster song turns faster; without a tempo it goes at its own pace, hurried by the bass and the beats); and each beat sends a band of light once round the ring, the grains it passes drawn as if their notes were louder, gone within the beat. **The pull**: each beat draws the ring in toward the cover, up to 16% of its distance at a full beat (more nearer the cover, never nearer than 1.04 of its radius), most of the way within a twentieth of a second, turning faster as it comes in (its turn over the square of how far in it is drawn, as a skater's spin), and it eases back out over the beat (over 0.35 of a beat; without a tempo 0.18 s); the bass does not swell it (behind the page the median grain goes 8% in on a full beat at 120 a minute). **Infall**: grains leave the ring's inner quarter, more with the bass (up to three a second) and more on a beat (two or three for a full one), and spiral down in the ring's plane, faster and faster and brighter as they fall (behind the cover on the far side, over its face on the near side), gone at the cover's edge in under a second; each is fed back at the outer edge, brightening in over 0.7 s, and drifts back in to its place; with neither bass nor beat nothing falls, and no more than a tenth of the grains fall at once, so it stays a ring. Tried on 2026-11-25 and dropped: each beat knocking dust out of the ring to settle back (it read as an explosion), two moons on tilted ellipses of their own (they read as moons rather than as the cover's pull), a spoke of light lit on each beat to show the shear (it read as a bright patch standing still) and gaps in the ring (they did not show). Nothing goes further out than the ring's outer edge. A still frame (the Settings preview) draws the ring whole and calm, every grain in its place. A frame costs about 0.12 ms at a 300 px cover. `saturn_trace` (docs/testing.md) writes its frames over made-up music for an animation to judge it by. The louder the music against its loudest lately, the denser and brighter the ring (below). **Eclipse** (`eclipse`): a glow at the rim, wider with the bass, and on each beat a flare of sparks leaving the rim a fifth of a turn (0.19) further round than the last, leaning one way and the next the other, pulled back into the cover in an arc, so the flares circle the cover in time (they left where the music was loudest, which jumped about); a hard beat (over 0.8) throws a pair, the second opposite the first. Without beats: with a tempo, a small flare when the music swells (the rise told when it tops out, `Beat`, as the halo's ripples have it), no more than one a beat, none by the clock; without a tempo, a small one after 1.5 s with sound. All of them fade to nothing in silence. **How loud** (`draw::Loud`, Saturn): the auto level (below) makes a quiet verse fill the display as a loud chorus does, so how far it has slid its scale (`Analyzer::level_slide_db`) is the music's own level; eased over a second and a half, against the loudest it has lately been (followed up at once, forgotten at a third of a dB a second), 12 dB under that is as quiet as it gets (40% of its grains). **Pulse the cover** (on by default; `Look::cover_pulse`): the ring's cover is drawn 2.5% larger at the top of a beat (`Paths::punch`, an eighth of a second), whatever its kind. **Taken out** on 2026-11-25 (the owner found they looked out of place and silly beside the others): **Galaxy**, two spiral arms of dust seen from above, and **Swarm**, dust in a whirl blown out by each beat. A look that names one (the current look or one of the user's presets in settings.json, or a preset pasted or imported, `visualizer::share`) shows as Saturn, the nearest of what remains, the rest of it kept; settings.json is written back so at the next save (`Style::Saturn`'s serde aliases, and `preset_id` for the Galaxy and Swarm presets), and a shared one says so in its notes | dots in three paths (bright or young, dim or old, and discs of light), Saturn's near grains in two more over the cover, a thin stroked contour (the eclipse's glow under it widened per frame by a number, `Visualizer.glow-swell`, not a path) |
 | Bonfire | The ring's sparks without the circle (`visualizer::draw::bonfire`): the spectrum as a low glowing line along the stage's foot (its coals: low notes on the left, a sixth of the height at most, its area faintly filled), and sparks rising from it where the music is loudest, slowing and swaying a little as they go, each going out as it ages; a few all the time, a burst on every beat; as many as the stage has room for (60 to 420). Behind the page its stage is the whole page (`Visualizer.tall`), not the band along the foot: the sparks rise behind the cover and the panel. Coloured across the page (by frequency) or up it (by height: a spark turns through the colours as it rises). No reflection, no peak caps | an area path and a 2 px stroke for the coals, three paths of dots for the sparks |
 
 **The halo's cover.** The ring is always around a cover (`VisualizerStage.hub`): behind the
@@ -61,34 +64,74 @@ track starts, only while a look uses it (a 360 px thumbnail decoded and voted, a
 
 **The beat** (`visualizer/beat.rs`, `beat::Tracker`): the ring and the bonfire move with the kicks, not
 with a rise in the spectrum they draw (a 170 ms window, smoothed again: a kick in it is a slow
-swell, told late). The tracker listens to the newest 35 ms of the sound itself each frame.
+swell, told late), and since 2026-11-25 so do bars and the line, which until then had a kick
+only through that window, soft and late (their rows above say how; with Smooth motion they
+do not listen for it at all, `Look::hears_beat`). The tracker listens to the newest 35 ms of the sound itself each frame.
 *Kicks*: the energy at five frequencies from 45 to 110 Hz (Goertzel under a Hann window, no
 state between frames); a kick is that energy rising sharply, told the moment the rise passes
 what a kick needs (a frame or two after the kick starts), no weaker than 42% of recent kicks'
 rises, within 7 dB of the loudest the band has lately been, and, for 0.3 s after a kick, only
 if it is as loud as that one (a kick's tail swelling back against a bass note is not a second
 kick). *Snaps*: the same for the sound's sharp end (the energy of its sample-to-sample
-change): a snare, a clap. *Tempo*: the kicks and snaps of the last 8 s, each a point on a
-circle turned once per candidate beat (68 to 184 a minute, in halves): for the right period
-they pile up on one side, and where is the beat's phase; kicks between the beats count on the
-circle turned twice and four times, for less; a period is also judged by how many of its beats
-have something on them, by whether what was heard comes round again four beats later (a bar),
-and by how usual it is (84 to 152: of a tempo and its double, the one in that range). A small
-change is eased in, a large one must be heard twice; four seconds after the last kick the tempo
-is let go. *Beats without a kick*: with a tempo that fits well, a beat whose kick is missing is
-still shown, softer, while a kick was heard lately. What the looks do with it
-(`visualizer::draw::Pulse`): each kick is a jump of the whole ring (dying away in an eighth of a
-second), a ripple and a burst of sparks, larger for a harder kick; a snap is a smaller burst
-and no ripple; with the tempo known a ripple's way out takes as many beats as there is room for
-ripples and one leaves on each beat, so those on their way are a beat apart and move in time.
-Unit tests on made-up tracks (a kick on every beat from 84 to 174 a minute at 30, 60 and 144
-frames a second, each kick heard once and within 70 ms; a hip-hop bar with its second kick half
-a beat late; a missing kick; a breakdown; a bass note between kicks; no kicks at all), and
-`viz-look` on the fixtures: 124.2 heard for the house track's 124 with 17 beats shown of 17
-played in 8 s, 87.8 for the hip-hop track's 88.
+change): a snare, a clap. *The tempo and the beats* (`visualizer/meter.rs`, `meter::Meter`) are not read off the kicks: on
+real music a bass line's notes are told as kicks and a kick under a rolling bass is missed.
+The meter hears everything that starts, as beat trackers do (it follows Stark, Davies and
+Plumbley's BTrack most closely). Every 10 ms the spectrum of the newest 21 ms in sixteen
+bands from 35 Hz to 11.5 kHz, each band's level compressed; the onset function is how much
+the bands rose since the hop before, and the low notes' share of it apart. The tempo: the
+onset function's last six seconds correlated with themselves, read by a comb (a beat's length
+is a lag at which it repeats, and at twice, three and four times that lag), tempos near 140
+a minute preferred, broadly; the scores are held and eased and the tempo kept while it scores
+within a fifth of the best; a newly chosen tempo is checked against the ones at two thirds
+and four thirds of its beat and at twice it, by laying a train of pulses at each spacing over
+the onsets (the comb cannot always tell a beat from one and a half). Since 2026-11-25 the
+newest three seconds are read alone too, and when they are sure of another tempo (not the one
+held, twice it or half it) two readings running, the held one is let go and the tempo read
+afresh from those three seconds: the six seconds hold the music before a change for as long as
+it fills most of them, and a tempo that had stopped fitting was held five to eight seconds
+(124 a minute over an 88 track), where the looks, moving only with what falls on the beat,
+barely moved; now two to three. On made-up music at fifteen steady tempos and three frame
+rates it never lets go (asking the held tempo to score 0.9 of the best instead of 0.75, it
+let go of one). The beats: a running
+score (each hop's onset plus the best score of about a beat ago), run on into the future half
+a beat after each beat to find the next: a beat is told when it happens, not after. Whether
+there is a beat at all: how far the best tempo's score stands above the others' (noise, a film
+score, a piano played freely repeat a little at some lag as anything does: nothing is told
+for them). Whether the beat is on the meter's pulse or halfway between two is left to the
+kicks when they say it plainly (`beat::Count`: an open hat on every half beat can outweigh
+the kicks in what the meter hears). Against a trained beat tracker run offline (beat_this) on
+those 64 minutes: the beats told within 70 ms of the reference's, or of its half beats or
+every other one, for 79% of them, 42 tracks over 80%; slow songs are mostly told at twice
+their tempo (their eighth notes are as steady as their beats), and three tracks in free time
+have no beat told. A beat without its kick is no longer made up from the tempo: the meter's
+beats are there, kick or no kick (`Heard::beat`). What the looks do with it
+(`visualizer::draw::Pulse`): only a kick where the music's beat is counts (on the beat, or a
+firm one on the half beat; without a tempo, a sure one: the halo's row above says how), and so
+does an onset of the low notes on the beat with no kick told, as a soft one. One beat is one
+hit (`Draw::one_hit`): an onset stays above what counts for two or three frames and the kick
+itself may be told a frame after it, so a hit sooner than 0.42 of a beat after the last one
+(between 0.16 and 0.3 s; without a tempo, 0.16 s) is dropped; until 2026-11-25 only the
+ripples had such a gap. Each is a jump of
+the whole ring (dying away in an eighth of a second), a ripple, a burst of sparks, the cover's
+pulse and what moves the ring's other kinds and the bonfire, larger for a harder kick (Saturn's
+pull and band of light, the eclipse's flare); with the tempo known, Saturn's
+ring also turns with the beat, by where in the beat the frame is
+(`Pulse::phase`); a snap
+is a smaller burst and, round the halo, a thin ring; every such kick also pushes the ripples on their way, and with the
+tempo known their way out takes as many beats as there is room for ripples, so those on their
+way are about a beat apart and move in time (the halo's row above says how).
+Unit tests on made-up tracks (a kick on every beat from 92 to 174 a minute at 30, 60 and 144
+frames a second, each kick heard once and within 70 ms, the tempo within 1.5% and each beat
+told within 45 ms of a kick; a hip-hop bar with its second kick half a beat late; a missing
+kick; a bass note between kicks; a pad, noise and silence, which have no beat; a frame a
+quarter of a second long), and
+`viz-look` on the fixtures: 123.8 heard for the house track's 124 with 17 kicks told for 17
+beats played in 8 s, 176.0 for the hip-hop track's 88 (twice it: its eighth notes).
 
 **Where it shows** (`Placement`): behind the page (a band along the bottom; the bars at most a
-quarter of the page tall, `[visualizer] height` at most), as a Visualizer tab of Now playing's
+quarter of the page tall, `[visualizer] height` at most, their baseline at the player bar's top
+edge and their reflection under the bar, its share of the bars' height but no taller than the
+bar: `VisualizerStage.refl-room`, `Stage::refl_room`, `draw::split`), as a Visualizer tab of Now playing's
 panel beside Up next and Lyrics (`Y` gives way to the lyrics), or the full page (the cover and
 title in the top left corner, the stage everywhere else). `Shift+V` (remappable: "Where the
 visualizer shows") moves it to the next (`visualizer::look::cycle_placement`).
@@ -109,7 +152,7 @@ Skyline (fine mirrored bars over a clear mirror), Calm (a slow, soft line in the
 a quiet room or less motion), Bonfire (sparks rising from a glowing line, in the cover's
 colours, 80% behind the page), Halo (the ring, as Ripples, in the cover's colours, 85% behind
 the page), and one for each other look drawn around the cover, the halo's look with its own
-drawing: Saturn, Galaxy, Swarm, Eclipse. In that order everywhere they are listed. Changing
+drawing: Saturn, Eclipse. In that order everywhere they are listed. Changing
 anything makes the look Custom (or the preset it then equals). `C` (remappable: "Next
 visualizer look") shows the next look, the built-in presets then the user's in their order,
 and says its name in the pill. Reset goes back to Classic, behind the page; the user's presets
@@ -210,7 +253,17 @@ smoothing is by elapsed time, so it moves the same at any frame rate.
 **When it runs.** Only while its stage is on screen: the visualizer on and Now playing shown
 with that placement (the panel's tab chosen, for the panel), or Settings > Visualizer shown;
 the window shown and not minimized; music playing. Then a timer at the display's refresh rate,
-at most 60 a second (or 30, Settings > Frame rate) reads the tap, analyses and draws. Paused or
+at most 60 a second (or 30, Settings > Frame rate) reads the tap, analyses and draws; for a
+look that hears the beat (all but bars and the line with Smooth motion) the beat tracker and
+its meter listen to the same samples. They start afresh when another track starts (the
+engine's token for the track heard changes: a gapless one of the same album too) and when the
+position jumps (back more than 0.3 s, or on more than 0.5 s past the time since the last
+frame): a seek from the bar, the keys, the media controls or the lyrics alike, read from the
+position the engine publishes, not from who asked for it. A tempo carried over to the next
+track of a mix was weighed and not kept: until the meter has read three seconds of the new
+track it cannot tell whether the tempo held, a wrong one keeps the looks still (only what falls
+on its beat moves them) and no tempo lets a sure kick through, so the looks move from the new
+track's first strong kicks either way. Paused or
 stopped, the bars fall to rest, and then the timer, the analysis and the tap stop (the preview
 goes back to its still frame); leaving the page or the section, Up next or Lyrics in the panel,
 hiding or minimizing the window stops them at once. `MP_BENCH=viz-styles` checks each of these.
@@ -228,8 +281,6 @@ the analysis and path building in Rust. Repeated runs differ by about two points
 | Line (Prism) | 14.1% | 6.9% | 15.9% | 0.42 ms |
 | Ring: Ripples (Halo) | 24.2% | 14.1% | 18.0% | 0.44 ms |
 | Ring: Saturn | 14.1% | 10.2% | 14.1% | 0.33 ms |
-| Ring: Galaxy | 20.3% | 12.5% | 13.3% | 0.40 ms |
-| Ring: Swarm | 21.8% | 10.2% | 18.0% | 0.38 ms |
 | Ring: Eclipse | 20.3% | 13.3% | 19.5% | 0.41 ms |
 | Bonfire | 27.3% | 14.1% | 25.0% | 0.79 ms |
 
@@ -251,6 +302,17 @@ within the noise. The ring before its ripples travelled a whole radius and befor
 measured 10.9-19.5% (median 14.1%) behind the page; the first halo (rays around the cover)
 13.4-14.7%, and the plain ring before that 5.9-6.9%.
 
+**Bars and the line with the beat** (2026-11-25, two runs before and two after, 3 s a case on
+the `fast` profile, `MP_BENCH_VIZ_CASES=bars,line`): the tracker and the meter now run for them,
+and the work per frame grew by about 0.03 ms (bars behind the page 0.61 to 0.63 ms, in the
+panel 0.15 to 0.18 ms, the line in the panel 0.12 to 0.15-0.21 ms), a fifth of a point of a
+core at 60 frames a second. Process CPU, before then after: bars behind the page 13.0, 12.5%
+then 14.1, 15.1%; in the panel 9.4, 7.3% then 8.9, 9.4%; on the full page 12.5, 14.1% then
+11.5, 11.5%; Skyline 11.5, 12.5% then 11.5, 13.0%; the line behind the page 16.7, 17.2% then
+18.7, 16.7%; in the panel 10.4, 8.3% then 8.3, 10.4%; on the full page 15.6, 17.2% then 16.7,
+19.3%. Within the runs' two points either way; bars behind the page, the default, about 1.9
+points more on average.
+
 At 30 frames a second: the line on the full page 6.6%, bars behind the page 6.2%. Before this
 work the one look, Classic, measured 13.6-14.3% in `viz-idle`'s running phase (now 11.7-12.8%)
 and 13.7% on the 96 kHz sweep of `visualizer`. What was tried and measured on the way: 300 fine bars with anti-aliasing 30%, on whole pixels without it 11%; the line's cost was
@@ -262,8 +324,8 @@ running, the app is idle as before (`MP_BENCH=viz-idle`): 0.0 ms of CPU in 45 s 
 runs before and after (one run of the new build saw a single 15.6 ms scheduler tick), and in a
 paired run 2 context switches in 35 s before and after (counted outside, from the threads' raw
 performance counters; another run of the old build saw 27). With the software renderer every style draws (gradients, the
-ring's radial and conic gradients), and the reflection, now above the opaque bar,
-shows there too.
+ring's radial and conic gradients); behind the page the reflection lies under the bar, which
+is opaque there (no glass), so it does not show.
 
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the

@@ -88,7 +88,13 @@ with a file of its own keeps the art the scan found. Each album records which co
 which cache format (`albums.art_checked`), so a pass interrupted goes on where it was, a cover
 the server does not have is not asked for again, a cover changed on the server is fetched again,
 and a new cache format fetches every server cover again once, newest first, the old images
-showing meanwhile.
+showing meanwhile. A cover shows as soon as it is in the cache, on what is already on screen too:
+tiles, the album page, and the results of a search or filter made before it arrived. A cover the
+server fails to give (a server error, or one the account may not read) is that album's alone: the
+pass leaves it and goes on to the older albums. A failure that is the connection's, or two
+batches in a row with no cover given, pauses the covers until the next sync. The covers left are
+asked for again at the next sync, unless that pass paused: then the next one starts past them, so
+the older albums are still reached, and they are tried again the sync after.
 
 **Marked with a cloud.** What plays from the server (a track only the server has, an album none of
 whose tracks has a file here) has a small cloud after its title: album tiles (Albums, Home's

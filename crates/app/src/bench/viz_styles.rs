@@ -160,6 +160,18 @@ pub fn run() {
             show(st, app, Preset::Classic, Placement::Behind);
             check(r, "running behind the page", crate::visualizer::running() == (true, true), state(app));
         });
+        // Behind the page the bars rise from the player bar's top edge and their reflection
+        // lies under the bar (seen through its glass), no taller than it.
+        for preset in [Preset::Classic, Preset::Prism] {
+            step!(400, move |st, app, _r| show(st, app, preset, Placement::Behind));
+            step!(100, move |_st, app, r| {
+                let (g, bar) = (app.global::<Visualizer>(), app.global::<crate::Theme>().get_bar_height());
+                let (h, top, refl) = (g.get_stage_height(), g.get_top_h(), g.get_refl_h());
+                let detail = format!("stage {h:.1}, bars {top:.1}, reflection {refl:.1} (room {:.1}), bar {bar:.1}", g.get_stage_refl_room());
+                let ok = refl > 1.0 && refl <= bar && (top + refl - h).abs() < 0.01 && (g.get_stage_refl_room() - refl).abs() < 0.01;
+                check(r, &format!("{}, behind: the baseline at the bar's top, the reflection under the bar", preset.id()), ok, detail);
+            });
+        }
     }
 
     // ---- Colour schemes, by height and across, on the full page -------------------------
@@ -509,25 +521,19 @@ pub fn run_cost() {
         (Preset::Halo, None, Placement::Behind, "halo, behind"),
         (Preset::Bonfire, None, Placement::Behind, "bonfire, behind"),
         (Preset::Halo, Some(("ring", 1)), Placement::Behind, "saturn, behind"),
-        (Preset::Halo, Some(("ring", 2)), Placement::Behind, "galaxy, behind"),
-        (Preset::Halo, Some(("ring", 3)), Placement::Behind, "swarm, behind"),
-        (Preset::Halo, Some(("ring", 4)), Placement::Behind, "eclipse, behind"),
+        (Preset::Halo, Some(("ring", 2)), Placement::Behind, "eclipse, behind"),
         (Preset::Classic, None, Placement::Panel, "bars, panel"),
         (Preset::Prism, None, Placement::Panel, "line, panel"),
         (Preset::Halo, None, Placement::Panel, "halo, panel"),
         (Preset::Bonfire, None, Placement::Panel, "bonfire, panel"),
         (Preset::Halo, Some(("ring", 1)), Placement::Panel, "saturn, panel"),
-        (Preset::Halo, Some(("ring", 2)), Placement::Panel, "galaxy, panel"),
-        (Preset::Halo, Some(("ring", 3)), Placement::Panel, "swarm, panel"),
-        (Preset::Halo, Some(("ring", 4)), Placement::Panel, "eclipse, panel"),
+        (Preset::Halo, Some(("ring", 2)), Placement::Panel, "eclipse, panel"),
         (Preset::Classic, None, Placement::Page, "bars, full page"),
         (Preset::Prism, None, Placement::Page, "line, full page"),
         (Preset::Halo, None, Placement::Page, "halo, full page"),
         (Preset::Bonfire, None, Placement::Page, "bonfire, full page"),
         (Preset::Halo, Some(("ring", 1)), Placement::Page, "saturn, full page"),
-        (Preset::Halo, Some(("ring", 2)), Placement::Page, "galaxy, full page"),
-        (Preset::Halo, Some(("ring", 3)), Placement::Page, "swarm, full page"),
-        (Preset::Halo, Some(("ring", 4)), Placement::Page, "eclipse, full page"),
+        (Preset::Halo, Some(("ring", 2)), Placement::Page, "eclipse, full page"),
         (Preset::Skyline, None, Placement::Page, "fine mirrored bars, full page"),
     ];
     let only = std::env::var("MP_BENCH_VIZ_CASES").unwrap_or_default();

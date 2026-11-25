@@ -170,6 +170,9 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_BENCH_VIZ_CASES=<words>` | With `viz-cost`: only the cases whose name contains one of these (comma-separated) |
 | `MP_BENCH_LOOK_PART=<parts>` | With `viz-look`: only these parts (comma-separated: halo, pin, keys, opacity, presets) |
 | `MP_HALO_SHAPE=square` | Measurement and comparison only: the halo follows the cover's rounded square instead of a circle (the cover drawn square), as tried and left out. Works in every build |
+| `MP_HALO_WITHOUT=<words>` | Comparison only: the halo's ripples without some of what moves them (comma-separated: `throw`, a kick throwing its ripple; `push`, kicks pushing those on their way; `swells`, a ripple on a swell where there are no kicks, a timer instead). Works in every build |
+| `MP_HALO_WITH=rings` | The halo's snare rings, which are off: a thin white ring on a snare or a clap on the beat. Tried on real music and left out (a ring could not be connected to a sound heard); kept for another try at tuning them. Works in every build |
+| `MP_BARS_WITH=flash` | The bars' flash, which is off: the bars' area and reflection brighter on the beat (their alpha 1.3 times at a full one, settled before the next). Watched on real music and left out (too jarring, and at times with nothing much heard); kept for another try. Works in every build |
 | `MP_REDUCED_MOTION=1\|0` | Stand in for Windows' "Show animations in Windows" (off: the visualizer's default look is Calm). Works in every build |
 | `MP_BENCH_SKIP_ALBUM=<title>` | With `skip`: the album to play (default: the first of four tracks or more) |
 | `MP_BENCH_MOVED=<text>` | With `session-check`: the moved history track's path must contain this |
@@ -285,6 +288,17 @@ unknown style, 40 KB), Export, Delete, Import (Esc, then Add by the pointer), a 
 refused, the quick menu's Your presets ▸, and settings.json read back after each change.
 `vl-*.png` and a count of failed checks at the end of `bench-viz-look.txt`. It never touches
 the real clipboard and opens no file dialog.
+
+**The halo, traced** (`visualizer/trace.rs`, an ignored test: a tool, not a check). Nobody can watch the window move from a terminal, so this runs the real beat tracker, analysis and drawing over a stretch of sound at 60 frames a second and writes what happened: `trace.jsonl` (every frame: the kick, snap, tempo (`per`, the beat's length), beat, phase, the low notes' onset (`low`) and brightness told, what the looks were given as the beat after `beat_hit` and `one_hit` (`given`, 0 for nothing), where each ripple and ring is) and the frames of chosen moments as SVG (the frame's own paths under its own brushes, to scale: what is too faint there is too faint in the window).
+
+    ffmpeg -i track.flac -f f32le -ac 1 -ar 48000 track.pcm
+    MP_TRACE_PCM=track.pcm MP_TRACE_OUT=<folder> MP_TRACE_FRAMES=12-12.7 cargo test -p marquee-player halo_trace -- --ignored
+
+`MP_TRACE_STAGE=1300x1300x340` (width, height, hub), `MP_TRACE_STRENGTH=0.85` (the look's opacity) and `MP_HALO_WITHOUT` apply. A timeline of the ripples' distance against time, with the kicks and snaps on it, shows skipped beats, ripples by the clock and rings on the wrong sounds at a glance.
+
+**Saturn, traced** (`saturn_trace`, beside it). Saturn's frames over made-up music (120 and 170 a minute with a kick on every beat, 72 a minute with soft beats only, weak kicks the low notes bear out, and 120 a minute going quiet for four seconds; `MP_TRACE_CASES` picks some: `120`, `170`, `slow`, `quiet`), 60 a second for 12 seconds each, behind the page's size (a cover 300 px across): every grain's place, size and layer each frame (`<case>.bin`, the format in its comment) and the brushes (`saturn.json`), for an animation of it as drawn.
+
+    MP_TRACE_OUT=<folder> cargo test -p marquee-player saturn_trace -- --ignored
 
 `MP_BENCH=server` (`bench/server.rs`) runs on any library of two albums of two tracks or more (the
 runner gives it the `formats` set). It starts a Navidrome stand-in on 127.0.0.1 itself

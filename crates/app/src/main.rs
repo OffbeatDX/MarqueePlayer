@@ -177,6 +177,7 @@ fn run() {
         ))
     });
     app.global::<Theme>().set_glass_supported(glass);
+    app.global::<Theme>().set_reduced_motion(visualizer::reduced());
     // Linux: no decorations from the system (Slint asks again for them whenever the window's
     // properties change, unless the window says `no-frame`).
     app.global::<Chrome>().set_frameless(cfg!(target_os = "linux"));
@@ -853,6 +854,7 @@ fn wire(app: &AppWindow) {
     a.on_open_artist(|name| {
         state::with(|st| views::open_artist(st, &name));
     });
+    a.on_first_track_at(rows::first_track_at);
     a.on_artist_links(|kind, id, shown| {
         let links = state::with(|st| views::artist_links(st, &kind, id, &shown)).unwrap_or_default();
         slint::ModelRc::new(slint::VecModel::from(links))
@@ -863,6 +865,9 @@ fn wire(app: &AppWindow) {
     });
     a.on_open_playlist(|id| {
         state::with(|st| views::open_playlist(st, i64::from(id)));
+    });
+    a.on_play_playlist(|id, shuffle| {
+        state::with(|st| menus::play_playlist(st, i64::from(id), shuffle));
     });
 
     // Albums.

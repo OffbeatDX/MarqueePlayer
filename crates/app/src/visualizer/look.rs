@@ -28,12 +28,11 @@ pub enum Style {
     /// sparks on the beat, was taken out: a file that names it reads as this.)
     #[serde(alias = "fireworks")]
     Bonfire,
-    /// A tilted ring of dust in orbit round the cover.
+    /// A tilted ring of dust in orbit round the cover. (Galaxy, two spiral arms of dust, and
+    /// Swarm, dust in a whirl, were taken out on 2026-11-25: a file that names one reads as
+    /// this, the nearest of what remains.)
+    #[serde(alias = "galaxy", alias = "swarm")]
     Saturn,
-    /// Around the cover: two spiral arms of dust.
-    Galaxy,
-    /// Around the cover: dust in a whirl, blown out by each beat.
-    Swarm,
     /// Around the cover: flares arcing off the rim and back.
     Eclipse,
 }
@@ -41,20 +40,11 @@ pub enum Style {
 impl Style {
     /// Every style: those Settings offers side by side (`TOP`), then the other kinds of
     /// ring.
-    pub const ALL: [Style; 8] = [
-        Style::Bars,
-        Style::Line,
-        Style::Radial,
-        Style::Bonfire,
-        Style::Saturn,
-        Style::Galaxy,
-        Style::Swarm,
-        Style::Eclipse,
-    ];
+    pub const ALL: [Style; 6] = [Style::Bars, Style::Line, Style::Radial, Style::Bonfire, Style::Saturn, Style::Eclipse];
     /// The styles as Settings offers them: everything drawn around the cover is one, "Ring".
     pub const TOP: [Style; 4] = [Style::Bars, Style::Line, Style::Radial, Style::Bonfire];
     /// The kinds of ring.
-    pub const RING: [Style; 5] = [Style::Radial, Style::Saturn, Style::Galaxy, Style::Swarm, Style::Eclipse];
+    pub const RING: [Style; 3] = [Style::Radial, Style::Saturn, Style::Eclipse];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -63,8 +53,6 @@ impl Style {
             Style::Radial => "Ripples",
             Style::Bonfire => "Bonfire",
             Style::Saturn => "Saturn",
-            Style::Galaxy => "Galaxy",
-            Style::Swarm => "Swarm",
             Style::Eclipse => "Eclipse",
         }
     }
@@ -397,6 +385,13 @@ impl Look {
         }
     }
 
+    /// The beat is listened for: the looks that move with it, and bars and the line, whose
+    /// low notes take the kick and whose light swells with the beat, unless their motion is
+    /// Smooth (Calm, and the default where Windows' animations are off: no jumping there).
+    pub fn hears_beat(&self) -> bool {
+        self.style.beats() || matches!(self.style, Style::Bars | Style::Line) && self.motion != Motion::Smooth
+    }
+
     /// How strongly it is drawn where it shows: behind the page, or elsewhere (the panel,
     /// the full page).
     pub fn strength(&self, behind: bool) -> f32 {
@@ -452,26 +447,13 @@ pub enum Preset {
     Bonfire,
     Halo,
     Saturn,
-    Galaxy,
-    Swarm,
     Eclipse,
 }
 
 impl Preset {
     /// In the order they are offered: the bars and the lines, the bonfire, then the looks
     /// drawn around the cover.
-    pub const ALL: [Preset; 10] = [
-        Preset::Classic,
-        Preset::Prism,
-        Preset::Skyline,
-        Preset::Calm,
-        Preset::Bonfire,
-        Preset::Halo,
-        Preset::Saturn,
-        Preset::Galaxy,
-        Preset::Swarm,
-        Preset::Eclipse,
-    ];
+    pub const ALL: [Preset; 8] = [Preset::Classic, Preset::Prism, Preset::Skyline, Preset::Calm, Preset::Bonfire, Preset::Halo, Preset::Saturn, Preset::Eclipse];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -480,8 +462,6 @@ impl Preset {
             Preset::Halo => "halo",
             Preset::Bonfire => "bonfire",
             Preset::Saturn => "saturn",
-            Preset::Galaxy => "galaxy",
-            Preset::Swarm => "swarm",
             Preset::Eclipse => "eclipse",
             Preset::Skyline => "skyline",
             Preset::Calm => "calm",
@@ -495,8 +475,6 @@ impl Preset {
             Preset::Halo => "Halo",
             Preset::Bonfire => "Bonfire",
             Preset::Saturn => "Saturn",
-            Preset::Galaxy => "Galaxy",
-            Preset::Swarm => "Swarm",
             Preset::Eclipse => "Eclipse",
             Preset::Skyline => "Skyline",
             Preset::Calm => "Calm",
@@ -510,8 +488,7 @@ impl Preset {
             Preset::Halo => "A glowing ring around the cover, in its colours: ripples and sparks on the beat",
             Preset::Bonfire => "Sparks rising from a glowing line along the foot, in the cover's colours",
             Preset::Saturn => "A tilted ring of dust in orbit round the cover, passing behind it and in front",
-            Preset::Galaxy => "Two spiral arms of dust turning round the cover, winding tighter with the bass",
-            Preset::Swarm => "Dust in a whirl round the cover: every beat blows it outward and it spirals back",
+
             Preset::Eclipse => "A glow at the cover's rim, and on each beat a flare of sparks arcing out and back",
             Preset::Skyline => "Fine bars, low notes in the middle, over a clear mirror",
             Preset::Calm => "A slow, soft line: little movement, for a quiet room or less motion",
@@ -545,8 +522,7 @@ impl Preset {
             Preset::Bonfire => Look { style: Style::Bonfire, colours: Colours::Cover, colour_by: ColourBy::Frequency, reflection: false, peaks: false, detail: Detail::Medium, prominence: 0.8, ..base },
             // The other looks drawn around the cover: the halo's, with their own drawing.
             Preset::Saturn => Look { style: Style::Saturn, ..Preset::Halo.look(t) },
-            Preset::Galaxy => Look { style: Style::Galaxy, ..Preset::Halo.look(t) },
-            Preset::Swarm => Look { style: Style::Swarm, ..Preset::Halo.look(t) },
+
             Preset::Eclipse => Look { style: Style::Eclipse, ..Preset::Halo.look(t) },
             Preset::Skyline => Look {
                 style: Style::Bars,
@@ -594,6 +570,8 @@ pub enum Fps {
 pub struct VizSettings {
     /// The preset in use by id, or "custom": then `look` is the look, in full. One of the
     /// user's presets is "custom" too, with its look (an older build shows it as it is).
+    /// A preset taken out reads as its nearest relative (`preset_id`).
+    #[serde(deserialize_with = "preset_id")]
     pub preset: String,
     pub look: Look,
     pub placement: Placement,
@@ -602,6 +580,17 @@ pub struct VizSettings {
     /// "Update" saves to after a change. `None` for a built-in one or none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub based_on: Option<String>,
+}
+
+/// The preset's id as stored, a preset taken out read as its nearest relative and written
+/// back so: the Galaxy and Swarm presets (taken out on 2026-11-25, with their styles) as
+/// Saturn, dust round the cover.
+fn preset_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let id = String::deserialize(d)?;
+    Ok(match id.as_str() {
+        "galaxy" | "swarm" => Preset::Saturn.id().to_owned(),
+        _ => id,
+    })
 }
 
 impl Default for VizSettings {
@@ -839,6 +828,31 @@ mod tests {
         let s: VizSettings = serde_json::from_str(r#"{ "preset": "fireworks", "look": { "style": "fireworks", "colours": "cover" } }"#).unwrap();
         assert_eq!((s.preset(), s.effective(&ThemeViz::default()).style), (None, Style::Bonfire));
         assert!(serde_json::to_string(&s).unwrap().contains("\"style\":\"bonfire\""));
+        // Galaxy and Swarm were kinds of ring: the current look, a built-in preset of either
+        // or one of the user's presets that names one loads as Saturn, the rest of it kept,
+        // and is written back so.
+        for old in ["galaxy", "swarm"] {
+            let text = format!(r#"{{ "preset": "custom", "look": {{ "style": "{old}", "colours": "ember", "opacity": 0.6, "sensitivity": -4, "cover_pulse": false }}, "placement": "panel", "fps": "half", "based_on": "Mine" }}"#);
+            let s: VizSettings = serde_json::from_str(&text).unwrap();
+            let l = s.effective(&ThemeViz::default());
+            assert_eq!((l.style, l.colours, l.sensitivity, l.cover_pulse, s.placement, s.fps, s.based_on.as_deref()), (Style::Saturn, Colours::Ember, -4, false, Placement::Panel, Fps::Half, Some("Mine")), "{old}");
+            assert!((l.opacity - 0.6).abs() < 1e-6);
+            let back = serde_json::to_string(&s).unwrap();
+            assert!(back.contains("\"style\":\"saturn\"") && !back.contains(old), "{back}");
+            let text = format!(r#"{{ "preset": "{old}", "look": {{ "style": "{old}", "colours": "cover", "colour_by": "frequency" }} }}"#);
+            let s: VizSettings = serde_json::from_str(&text).unwrap();
+            assert_eq!(s.preset(), Some(Preset::Saturn), "{old}");
+            assert_eq!(s.effective(&ThemeViz::default()), Preset::Saturn.look(&ThemeViz::default()));
+            let back = serde_json::to_string(&s).unwrap();
+            assert!(back.contains("\"preset\":\"saturn\"") && !back.contains(old), "{back}");
+            let text = format!(r#"[{{ "name": "Old {old}", "look": {{ "style": "{old}", "colours": "ice", "intensity": 1.5 }} }}]"#);
+            let p: UserPresets = serde_json::from_str(&text).unwrap();
+            assert!(p.kept.is_empty(), "{old}: read, not kept as it was");
+            let l = &p.list[0].look;
+            assert_eq!((p.list[0].name.as_str(), l.style, l.colours), (format!("Old {old}").as_str(), Style::Saturn, Colours::Ice));
+            assert!((l.intensity - 1.5).abs() < 1e-6);
+            assert!(serde_json::to_string(&p).unwrap().contains("\"style\":\"saturn\""));
+        }
         // Every look drawn around the cover has a preset of its own.
         let t = ThemeViz::default();
         assert!(Style::RING.iter().all(|k| Preset::ALL.iter().any(|p| p.look(&t).style == *k)));
