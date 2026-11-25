@@ -81,7 +81,15 @@ is a lag at which it repeats, and at twice, three and four times that lag), temp
 a minute preferred, broadly; the scores are held and eased and the tempo kept while it scores
 within a fifth of the best; a newly chosen tempo is checked against the ones at two thirds
 and four thirds of its beat and at twice it, by laying a train of pulses at each spacing over
-the onsets (the comb cannot always tell a beat from one and a half). The beats: a running
+the onsets (the comb cannot always tell a beat from one and a half). Since 2026-11-25 the
+newest three seconds are read alone too, and when they are sure of another tempo (not the one
+held, twice it or half it) two readings running, the held one is let go and the tempo read
+afresh from those three seconds: the six seconds hold the music before a change for as long as
+it fills most of them, and a tempo that had stopped fitting was held five to eight seconds
+(124 a minute over an 88 track), where the looks, moving only with what falls on the beat,
+barely moved; now two to three. On made-up music at fifteen steady tempos and three frame
+rates it never lets go (asking the held tempo to score 0.9 of the best instead of 0.75, it
+let go of one). The beats: a running
 score (each hop's onset plus the best score of about a beat ago), run on into the future half
 a beat after each beat to find the next: a beat is told when it happens, not after. Whether
 there is a beat at all: how far the best tempo's score stands above the others' (noise, a film
@@ -242,7 +250,15 @@ with that placement (the panel's tab chosen, for the panel), or Settings > Visua
 the window shown and not minimized; music playing. Then a timer at the display's refresh rate,
 at most 60 a second (or 30, Settings > Frame rate) reads the tap, analyses and draws; for a
 look that hears the beat (all but bars and the line with Smooth motion) the beat tracker and
-its meter listen to the same samples. Paused or
+its meter listen to the same samples. They start afresh when another track starts (the
+engine's token for the track heard changes: a gapless one of the same album too) and when the
+position jumps (back more than 0.3 s, or on more than 0.5 s past the time since the last
+frame): a seek from the bar, the keys, the media controls or the lyrics alike, read from the
+position the engine publishes, not from who asked for it. A tempo carried over to the next
+track of a mix was weighed and not kept: until the meter has read three seconds of the new
+track it cannot tell whether the tempo held, a wrong one keeps the looks still (only what falls
+on its beat moves them) and no tempo lets a sure kick through, so the looks move from the new
+track's first strong kicks either way. Paused or
 stopped, the bars fall to rest, and then the timer, the analysis and the tap stop (the preview
 goes back to its still frame); leaving the page or the section, Up next or Lyrics in the panel,
 hiding or minimizing the window stops them at once. `MP_BENCH=viz-styles` checks each of these.

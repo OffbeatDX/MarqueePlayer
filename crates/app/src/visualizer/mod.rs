@@ -94,6 +94,9 @@ struct Viz {
     draw: Draw,
     /// The kicks and the tempo, for the looks that move with them.
     beat: crate::visualizer::beat::Tracker,
+    /// The track heard at the last frame that had one (the engine's token for it), where in
+    /// it (seconds) and when: another track, or a seek, starts the beat afresh (`jumped`).
+    heard_at: Option<(u64, f64, Instant)>,
     last: Option<Instant>,
     brushes: Option<BrushKey>,
     /// The playing art's stem, and its palette once worked out (for Cover colours).
@@ -118,6 +121,7 @@ pub fn install(st: &Rc<State>) {
             samples: Vec::new(),
             draw: Draw::default(),
             beat: crate::visualizer::beat::Tracker::default(),
+            heard_at: None,
             last: None,
             brushes: None,
             art: None,
@@ -643,7 +647,23 @@ fn stop(z: &mut Viz, app: &AppWindow) {
     g.set_cover_scale(1.0);
     z.draw.reset();
     z.beat.reset();
+    z.heard_at = None;
     set_paths(&g, &z.draw.paths);
+}
+
+/// How far back the position may go, and on past the time since, before it is a seek
+/// (seconds: the position is the device's, which moves by its buffer's periods).
+const SEEK_BACK: f64 = 0.3;
+const SEEK_ON: f64 = 0.5;
+
+/// What is heard now does not go on from what was: another track (the engine's token for it
+/// changed: a gapless one of the same album too), or a seek (the position went back, or on
+/// further than `elapsed` seconds allow; only as far as the frames' own jitter while not
+/// playing). `was` is the last frame's track and position, `now` this one's.
+fn jumped(was: (u64, f64), now: (u64, f64), elapsed: f64, play: bool) -> bool {
+    let on = now.1 - was.1;
+    let allowed = if play { elapsed } else { 0.0 };
+    now.0 != was.0 || on < -SEEK_BACK || on > allowed + SEEK_ON
 }
 
 fn set_paths(g: &Visualizer, p: &draw::Paths) {
@@ -823,7 +843,8 @@ fn frame(st: &Rc<State>) {
     crate::wakes::note(&crate::wakes::VIZ_FRAMES);
     let Some(app) = st.app.upgrade() else { return };
     let at = stage(st, &app);
-    let play = playing(st);
+    let status = st.player.status();
+    let play = status.state == PlayState::Playing && !status.buffering;
     let s = settings(st);
     let l = drawn(st, &app, at);
     let sg = stage_of(&app);
@@ -838,6 +859,16 @@ fn frame(st: &Rc<State>) {
         let started = Instant::now();
         let dt = z.last.map_or(1.0 / 60.0, |t| (started - t).as_secs_f32()).min(0.1);
         z.last = Some(started);
+        // Another track, or a seek: the tempo and the beat of what was heard are not this
+        // music's (held, they would keep the looks still until the meter let go of them).
+        if let Some(token) = status.token {
+            if let Some((was, pos, when)) = z.heard_at
+                && jumped((was, pos), (token, status.position), (started - when).as_secs_f64(), play)
+            {
+                z.beat.reset();
+            }
+            z.heard_at = Some((token, status.position, started));
+        }
         let (_, bands) = draw::layout(&l, &sg);
         let rate = z.tap.rate();
         if play {
@@ -1016,6 +1047,25 @@ mod tests {
         assert_eq!(cover_scale_step(1.0, 1.0), None);
         assert_eq!(cover_scale_step(1.0100, 1.0102), None, "too small to see while pulsing");
         assert_eq!(cover_scale_step(1.0, 1.02), Some(1.02));
+    }
+
+    #[test]
+    fn another_track_or_a_seek_starts_the_beat_afresh() {
+        // Playing on, a frame at a time, a stall of the window: the same music.
+        assert!(!jumped((7, 30.0), (7, 30.017), 0.017, true));
+        assert!(!jumped((7, 30.0), (7, 32.0), 2.0, true));
+        // The device's periods: a little back, a little ahead.
+        assert!(!jumped((7, 30.0), (7, 29.9), 0.017, true));
+        assert!(!jumped((7, 30.0), (7, 30.3), 0.017, true));
+        // Paused, however long: the position stays.
+        assert!(!jumped((7, 30.0), (7, 30.0), 5.0, false));
+        // Another track, even one going on from the last without a gap.
+        assert!(jumped((7, 241.9), (8, 0.02), 0.017, true));
+        // Seeks: back, on, on while paused.
+        assert!(jumped((7, 30.0), (7, 10.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 40.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 31.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 31.0), 5.0, false));
     }
 
     #[test]

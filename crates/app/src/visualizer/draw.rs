@@ -3222,6 +3222,73 @@ mod tests {
     }
 
     #[test]
+    fn after_another_track_the_eclipse_flares_from_its_first_strong_kicks() {
+        let l = look(Style::Eclipse);
+        let s = stage(800.0, 800.0);
+        let g = halo(&s);
+        let (_, bands) = layout(&l, &s);
+        let levels: Vec<f32> = (0..bands).map(|i| 0.3 + 0.5 * ((i as f32) * 0.3).sin().abs()).collect();
+        let new = |d: &Draw| d.eclipse.motes.iter().any(|q| q.age == 0.0 && ((q.x - g.cx).powi(2) + (q.y - g.cy).powi(2)).sqrt() < g.hub * 1.2);
+        // While no tempo is known (the meter starts afresh with another track): a hit that is
+        // surely a kick flares at once, a weak one does not.
+        for (hit, flares) in [(0.8, true), (0.4, false)] {
+            let mut d = Draw::default();
+            d.tick(1.0 / 60.0);
+            d.pulse(Pulse { hit, ..Pulse::default() });
+            d.draw(&l, &s, true, &levels, &levels);
+            assert_eq!(new(&d), flares, "{hit}");
+        }
+        // Heard: ten seconds at 124 a minute, then another track at 88, the tracker started
+        // afresh between them as the visualizer does. Of the new track's first kicks, those in
+        // the three seconds before a tempo can be known, each flares within 80 ms.
+        const RATE: u32 = 44_100;
+        let make = |bpm: f32, secs: f32| -> Vec<f32> {
+            let beat = 60.0 / bpm;
+            (0..(secs * RATE as f32) as usize)
+                .map(|i| {
+                    let t = i as f32 / RATE as f32;
+                    let ph = t % beat;
+                    let kick = 0.8 * (-ph / 0.11).exp() * (std::f32::consts::TAU * (50.0 * ph + 3.5 * (1.0 - (-ph / 0.05).exp()))).sin();
+                    kick + 0.12 * (std::f32::consts::TAU * 55.0 * t).sin() + 0.08 * (std::f32::consts::TAU * 440.0 * t).sin()
+                })
+                .collect()
+        };
+        let mut sound = make(124.0, 10.0);
+        let change = sound.len();
+        sound.extend(make(88.0, 3.0));
+        let (mut tr, mut d) = (crate::visualizer::beat::Tracker::default(), Draw::default());
+        let (dt, size) = (1.0 / 60.0, 8192usize);
+        let mut flared = Vec::new();
+        let mut i = 0usize;
+        loop {
+            let end = (i as f32 * dt * RATE as f32) as usize;
+            if end >= sound.len() {
+                break;
+            }
+            if end >= change && (end - change) < (dt * RATE as f32) as usize {
+                tr.reset();
+            }
+            let mut buf = vec![0.0; size];
+            let from = end.saturating_sub(size);
+            buf[size - (end - from)..].copy_from_slice(&sound[from..end]);
+            let h = tr.update(&buf, RATE, dt);
+            if end >= change {
+                assert_eq!(h.period, 0.0, "a tempo {} s into the new track", (end - change) as f32 / RATE as f32);
+            }
+            d.tick(dt);
+            d.pulse(Pulse { hit: h.hit, snap: h.snap, period: h.period, bright: h.bright, beat: h.beat, phase: h.phase, low: h.low });
+            d.draw(&l, &s, true, &levels, &levels);
+            if end >= change && new(&d) {
+                flared.push((end - change) as f32 / RATE as f32);
+            }
+            i += 1;
+        }
+        let kicks: Vec<f32> = (0..5).map(|k| k as f32 * 60.0 / 88.0).filter(|&k| k < 2.9).collect();
+        let met = kicks.iter().filter(|&&k| flared.iter().any(|&f| f >= k && f < k + 0.08)).count();
+        assert!(met == kicks.len(), "{met} of the kicks at {kicks:?} flared: {flared:?}");
+    }
+
+    #[test]
     fn one_beat_is_one_hit() {
         let s = stage(800.0, 800.0);
         let dt = 1.0 / 60.0;

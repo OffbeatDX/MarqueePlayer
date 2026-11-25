@@ -20,7 +20,12 @@
 //!   scores within a fifth of the best. The comb cannot always tell a beat from one and a
 //!   half: a tempo newly chosen is checked against the ones at two thirds and four thirds
 //!   of its beat, and twice it, by laying a train of pulses at each spacing over the onsets
-//!   (the right one lands on an onset every time).
+//!   (the right one lands on an onset every time). The six seconds hold the music before a
+//!   change for as long as it fills most of them: the newest three are read alone too, and
+//!   when they are sure of another tempo (not the one held, twice it or half it) twice
+//!   running, the held one is let go and the tempo read afresh from those three seconds
+//!   (another track, a seek the visualizer missed, a song changing its tempo: told in two
+//!   to three seconds, where the music before held for five to eight).
 //! - **Beats.** A running score: each hop's onset plus the best score of about a beat ago
 //!   (those nearer exactly one beat ago count more). Half a beat after each beat the score
 //!   is run on into the future with no onsets, and its highest point about a beat after the
@@ -34,7 +39,7 @@
 //! beats, or every other one: which pulse a listener taps is a matter of taste) for 84% of
 //! them on average, 44 tracks over 80%.
 //!
-//! A few thousand multiplications per hop and a quarter of a million four times a second.
+//! A few thousand multiplications per hop and a third of a million four times a second.
 
 const HOPS: f32 = 100.0;
 /// The seconds of onset function the tempo is read from, and how often it is read (hops).
@@ -50,6 +55,12 @@ const SIGMA: f32 = 0.7;
 /// held tempo must keep to stay.
 const EASE: f32 = 0.25;
 const STAY: f32 = 0.8;
+/// The tempo held is let go when the newest `RECENT` hops, read alone, are sure of another
+/// (as sure as `LOCK`), the held one, twice it and half it all scoring under `FIT` of that
+/// one's, for `UNFIT` readings running: another track, or a song changing its tempo.
+const RECENT: usize = 300;
+const FIT: f32 = 0.75;
+const UNFIT: u32 = 2;
 /// How far the best tempo's score must stand above the others' (their upper quartile) for
 /// there to be a beat, and to go on being one. Noise never stood more than 0.19 above, nor
 /// did a film score or a piano played freely; music with a beat stands 0.5 to 1.8 above.
@@ -198,8 +209,14 @@ pub struct Meter {
     next: f32,
     last: f32,
     predict_at: usize,
+    /// The first hop the tempo is read from (after a tempo let go: `unfit`), and how many
+    /// readings running the newest seconds have told another tempo than the one held.
+    from: usize,
+    unfit: u32,
     scratch: Vec<f32>,
     acf: Vec<f32>,
+    /// A reading of the comb's scores (`comb`).
+    reading: Vec<f32>,
 }
 
 impl Default for Meter {
@@ -246,8 +263,11 @@ impl Meter {
             next: -1.0,
             last: -1.0,
             predict_at: 0,
+            from: 0,
+            unfit: 0,
             scratch: Vec::new(),
             acf: Vec::new(),
+            reading: Vec::new(),
         }
     }
 
@@ -434,7 +454,7 @@ impl Meter {
     /// train of pulses at that spacing lands clearly better, then the one at twice the beat
     /// when every other pulse of this one lands on little.
     fn kin(&self, lag: f32) -> f32 {
-        let raw = self.onsets.last(WINDOW);
+        let raw = self.onsets.last(self.since(WINDOW));
         // An onset counts for the hops next to it too (a pulse a hop off still lands).
         let sig: Vec<f32> = (0..raw.len()).map(|i| raw[i].max(raw[i.saturating_sub(1)]).max(raw[(i + 1).min(raw.len() - 1)])).collect();
         let within = |l: f32| l >= LAG_MIN as f32 && l <= LAG_MAX as f32;
@@ -458,26 +478,31 @@ impl Meter {
         best.1
     }
 
-    /// The tempo, from the onset function's last seconds.
-    fn tempo(&mut self) {
-        let x = self.onsets.last(WINDOW);
+    /// How many of the newest `count` onsets the tempo is read from (none from before a
+    /// tempo let go: `from`).
+    fn since(&self, count: usize) -> usize {
+        count.min((self.n + 1).saturating_sub(self.from))
+    }
+
+    /// The comb's reading of the onsets `x` into `out`: for each lag from `LAG_MIN`, how
+    /// strongly they repeat at it and at twice, three and four times it, times how usual
+    /// that tempo is. False when nothing in `x` stands out to repeat.
+    fn comb(x: &[f32], usual: &[f32], acf: &mut Vec<f32>, out: &mut Vec<f32>) -> bool {
         let len = x.len();
-        if len < WINDOW / 2 {
-            return;
-        }
         let mean = x.iter().sum::<f32>() / len as f32;
         // Its correlation with itself at each lag the comb reads, each over as many products
         // as it has, against the lag of none.
         let most = (4 * LAG_MAX + 4).min(len * 9 / 10);
-        self.acf.clear();
+        acf.clear();
         let zero: f32 = x.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / len as f32;
         if zero <= 1e-9 {
-            return;
+            return false;
         }
         for lag in 0..=most {
             let s: f32 = (lag..len).map(|i| (x[i] - mean) * (x[i - lag] - mean)).sum();
-            self.acf.push(s / (len - lag) as f32 / zero);
+            acf.push(s / (len - lag) as f32 / zero);
         }
+        out.clear();
         for (j, lag) in (LAG_MIN..=LAG_MAX).enumerate() {
             let mut s = 0.0f32;
             for k in 1..=4usize {
@@ -485,10 +510,58 @@ impl Meter {
                 if c + k >= len * 9 / 10 || c + k - 1 > most {
                     break;
                 }
-                let peak = self.acf[c + 1 - k..c + k].iter().copied().fold(f32::MIN, f32::max);
+                let peak = acf[c + 1 - k..c + k].iter().copied().fold(f32::MIN, f32::max);
                 s += peak / (k as f32).sqrt();
             }
-            self.held[j] += (s.max(0.0) * self.usual[j] - self.held[j]) * EASE;
+            out.push(s.max(0.0) * usual[j]);
+        }
+        true
+    }
+
+    /// How far the best of the comb's scores `v` stands above the others' upper quartile.
+    fn above(v: &[f32], scratch: &mut Vec<f32>) -> f32 {
+        scratch.clear();
+        scratch.extend_from_slice(v);
+        scratch.sort_by(f32::total_cmp);
+        scratch[scratch.len() - 1] - scratch[scratch.len() * 3 / 4]
+    }
+
+    /// The tempo held has stopped fitting: the newest `RECENT` hops tell another one, surely
+    /// (not the one held, nor twice it or half it), and have for `UNFIT` readings running.
+    /// The six seconds read for the tempo would go on telling the one held for as long as
+    /// the music before fills most of them, and the held scores longer.
+    fn stopped_fitting(&mut self) -> bool {
+        let x = self.onsets.last(self.since(RECENT));
+        if x.len() < RECENT || !Self::comb(x, &self.usual, &mut self.acf, &mut self.reading) {
+            self.unfit = 0;
+            return false;
+        }
+        let r = &self.reading;
+        let best = r.iter().copied().fold(0.0f32, f32::max);
+        let fits = [0.5f32, 1.0, 2.0].iter().any(|f| {
+            let c = (self.period * f).round() as usize;
+            (LAG_MIN..=LAG_MAX).contains(&c) && r[(c - 2).max(LAG_MIN) - LAG_MIN..=(c + 2).min(LAG_MAX) - LAG_MIN].iter().any(|&s| s >= FIT * best)
+        });
+        let sure = Self::above(&self.reading, &mut self.scratch);
+        self.unfit = if !fits && sure >= LOCK { self.unfit + 1 } else { 0 };
+        self.unfit >= UNFIT
+    }
+
+    /// The tempo, from the onset function's last seconds.
+    fn tempo(&mut self) {
+        let x = self.onsets.last(self.since(WINDOW));
+        if x.len() < WINDOW / 2 || !Self::comb(x, &self.usual, &mut self.acf, &mut self.reading) {
+            return;
+        }
+        for (h, &r) in self.held.iter_mut().zip(&self.reading) {
+            *h += (r - *h) * EASE;
+        }
+        if self.period > 0.0 && self.stopped_fitting() {
+            // Let go: the tempo is read afresh from the newest seconds alone, as if the music
+            // had begun there (their reading taken whole, not eased in).
+            self.from = (self.n + 1).saturating_sub(RECENT);
+            (self.period, self.locked, self.next, self.last, self.unfit) = (0.0, false, -1.0, -1.0, 0);
+            self.held.copy_from_slice(&self.reading);
         }
         let top = |v: &[f32]| v.iter().enumerate().fold((0usize, f32::MIN), |b, (i, &s)| if s > b.1 { (i, s) } else { b });
         let mut best = top(&self.held).0;
@@ -566,19 +639,7 @@ mod tests {
 
     /// The meter run over a sound at `fps` frames a second: every frame's time and answer.
     fn listen(sound: &[f32], fps: f32) -> Vec<(f32, Metered)> {
-        let mut m = Meter::default();
-        let (dt, size) = (1.0 / fps, 8192usize);
-        let mut out = Vec::new();
-        let mut t = 0.0f32;
-        while ((t * RATE as f32) as usize) < sound.len() {
-            let end = (t * RATE as f32) as usize;
-            let mut buf = vec![0.0; size];
-            let from = end.saturating_sub(size);
-            buf[size - (end - from)..].copy_from_slice(&sound[from..end]);
-            out.push((t, m.update(&buf, RATE, dt)));
-            t += dt;
-        }
-        out
+        run(&mut Meter::default(), sound, fps)
     }
 
     #[test]
@@ -665,5 +726,48 @@ mod tests {
             }
         }
         assert!(worst < 30.0, "{worst}");
+    }
+
+    /// `m` run over a sound at `fps` frames a second: every frame's time and answer.
+    fn run(m: &mut Meter, sound: &[f32], fps: f32) -> Vec<(f32, Metered)> {
+        let (dt, size) = (1.0 / fps, 8192usize);
+        let mut out = Vec::new();
+        let mut t = 0.0f32;
+        while ((t * RATE as f32) as usize) < sound.len() {
+            let end = (t * RATE as f32) as usize;
+            let mut buf = vec![0.0; size];
+            let from = end.saturating_sub(size);
+            buf[size - (end - from)..].copy_from_slice(&sound[from..end]);
+            out.push((t, m.update(&buf, RATE, dt)));
+            t += dt;
+        }
+        out
+    }
+
+    #[test]
+    fn a_tempo_that_stopped_fitting_is_let_go_and_a_steady_one_is_not() {
+        let four = [0.0, 1.0, 2.0, 3.0];
+        for (a, b, kicks) in [(124.0f32, 88.0f32, &[0.0, 2.5][..]), (124.0, 88.0, &four[..]), (120.0, 92.0, &four[..]), (88.0, 128.0, &four[..]), (140.0, 100.0, &four[..]), (100.0, 150.0, &four[..]), (128.0, 174.0, &four[..])] {
+            // Twelve seconds at one tempo, then another track at another, nothing reset between:
+            // within five seconds the new tempo is told (or twice it, or half: which pulse is
+            // the beat is a matter of taste), and kept.
+            let mut sound = track(a, 12.0, &four);
+            sound.extend(track(b, 12.0, kicks));
+            let mut m = Meter::default();
+            let heard = run(&mut m, &sound, 60.0);
+            for i in 0..14 {
+                let secs = 17.0 + i as f32 * 0.5;
+                let got = heard.iter().find(|h| h.0 >= secs).unwrap().1.period;
+                let told = if got > 0.0 { 60.0 / got } else { 0.0 };
+                assert!([b, 2.0 * b, b / 2.0].iter().any(|&t| (told - t).abs() < t * 0.03), "{a} then {b}: {told} after {} s", secs - 12.0);
+            }
+        }
+        // Steady music, at every tempo: the tempo is never let go.
+        let steady = [70.0f32, 80.0, 92.0, 100.0, 110.0, 120.0, 128.0, 140.0, 150.0, 160.0, 174.0, 190.0].map(|b| (b, &four[..], 60.0));
+        for (bpm, kicks, fps) in steady.into_iter().chain([(88.0, &[0.0, 2.5][..], 60.0), (96.0, &[0.0, 2.5][..], 60.0), (120.0, &[0.0, 1.5, 2.5][..], 60.0), (120.0, &four[..], 30.0), (174.0, &four[..], 144.0)]) {
+            let mut m = Meter::default();
+            run(&mut m, &track(bpm, 30.0, kicks), fps);
+            assert!(m.from == 0 && m.period() > 0.0, "{bpm} at {fps}: let go at hop {}", m.from);
+        }
     }
 }
