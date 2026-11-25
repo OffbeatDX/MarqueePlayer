@@ -61,19 +61,22 @@ export global Theme {
     // ---- Visualizer (now playing) -------------------------------------------
     // The bars' strongest alpha (their tops); the reflection is dimmer still.
     in-out property <float> viz-opacity: 0.4;
-    // The tallest a bar gets, above the baseline just over the player bar.
+    // The tallest a bar gets, above the baseline at the player bar's top edge.
     in-out property <length> viz-height: 200px;
     in-out property <length> viz-bar-width: 10px;
     in-out property <length> viz-bar-gap: 4px;
     // The reflection's height as a share of the bars', and its alpha as a share of theirs.
-    // It lies behind the player bar's glass, which lets about a quarter through, so the
-    // share is above 1 for it to read as a dimmer copy.
+    // Behind the page it lies under the player bar's glass, which lets about a quarter
+    // through: it is drawn that much stronger there (visualizer/mod.rs), so the share reads
+    // the same as elsewhere. theme.toml's reflection_opacity sets both at start.
     in-out property <float> viz-reflection: 0.45;
     in-out property <float> viz-reflection-opacity: 1.6;
     // Peak caps above the bars.
     in-out property <bool> viz-peaks: true;
 
     // ---- Motion ------------------------------------------------------------
+    // True when the OS asks for reduced motion (or MP_REDUCED_MOTION=1).
+    in-out property <bool> reduced-motion: false;
     in-out property <duration> dur-hover: 120ms;
     in-out property <duration> dur-sidebar: 220ms;
     // Page change: the new page fades up and slides in this long. 0 turns it off.

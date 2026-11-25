@@ -219,9 +219,9 @@ right-click on the page) turns it on and off and chooses its opacity, a preset a
 where it shows: **behind the page**, as a **Visualizer** tab beside Up next and Lyrics, or the
 **full page** with the cover and title in the corner. **Shift+V** moves it from one to the
 next (and turns it on if it was off). **Settings > Visualizer** has everything, with a preview
-that stays in view while you scroll: ten presets (Classic, Prism, Skyline, Calm, Bonfire, and five
-around the cover: Halo, Saturn, Galaxy, Swarm, Eclipse), four styles to build your own from
-(bars; a line; the **ring** around the cover, in five kinds: Ripples, Saturn, Galaxy, Swarm
+that stays in view while you scroll: eight presets (Classic, Prism, Skyline, Calm, Bonfire, and three
+around the cover: Halo, Saturn, Eclipse), four styles to build your own from
+(bars; a line; the **ring** around the cover, in three kinds: Ripples, Saturn
 and Eclipse, with a switch for the cover itself to pulse a little with the beat; and the
 bonfire: sparks rising from a glowing line along the foot of the page), colours (the cover's own, classic meter
 colours, rainbows, or three of your choice), the reflection, how fast it moves, how sensitive

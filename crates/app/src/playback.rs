@@ -427,8 +427,16 @@ pub fn repeat_index(r: Repeat) -> i32 {
     }
 }
 
+/// A new random number for a shuffle: the system's randomness (the keys std gives its
+/// hash maps, new for every call) hashed with the clock. Not the clock alone: it ticks in
+/// steps (100 ns on Windows, coarser elsewhere), so its low digits are not random, and a
+/// shuffle of 10 or 100 tracks then always started on the first.
 pub fn seed() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1)
+    use std::hash::{BuildHasher, Hasher};
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(nanos);
+    h.finish()
 }
 
 /// Shuffle on or off (see `Queue`): the playing track keeps playing either way.
@@ -457,7 +465,7 @@ pub fn shuffle_tracks(st: &Rc<State>, mut tracks: Vec<Track>) {
         return;
     }
     let n = tracks.len();
-    tracks.rotate_left((seed() % n as u64) as usize);
+    tracks.rotate_left(crate::queue::below(seed(), n));
     set_shuffle(st, true);
     play_tracks(st, tracks, 0);
 }
@@ -976,6 +984,17 @@ pub fn apply_gain(st: &Rc<State>) {
 #[cfg(test)]
 mod tests {
     use super::counts_after;
+
+    /// A shuffled album of ten starts on any of its tracks (the clock's nanoseconds alone
+    /// always gave the first on Windows, where they come in hundreds).
+    #[test]
+    fn a_shuffle_starts_anywhere() {
+        let mut starts = [0usize; 10];
+        for _ in 0..10_000 {
+            starts[crate::queue::below(super::seed(), 10)] += 1;
+        }
+        assert!(starts.iter().all(|&n| (800..1200).contains(&n)), "{starts:?}");
+    }
 
     #[test]
     fn queue_summary_reads_as_a_count() {

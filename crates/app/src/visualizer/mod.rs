@@ -24,6 +24,7 @@
 //! detection.
 
 pub(crate) mod beat;
+mod meter;
 pub(crate) mod draw;
 pub(crate) mod look;
 pub(crate) mod presets;
@@ -93,6 +94,9 @@ struct Viz {
     draw: Draw,
     /// The kicks and the tempo, for the looks that move with them.
     beat: crate::visualizer::beat::Tracker,
+    /// The track heard at the last frame that had one (the engine's token for it), where in
+    /// it (seconds) and when: another track, or a seek, starts the beat afresh (`jumped`).
+    heard_at: Option<(u64, f64, Instant)>,
     last: Option<Instant>,
     brushes: Option<BrushKey>,
     /// The playing art's stem, and its palette once worked out (for Cover colours).
@@ -117,6 +121,7 @@ pub fn install(st: &Rc<State>) {
             samples: Vec::new(),
             draw: Draw::default(),
             beat: crate::visualizer::beat::Tracker::default(),
+            heard_at: None,
             last: None,
             brushes: None,
             art: None,
@@ -144,7 +149,7 @@ thread_local! {
 
 /// Read once per run (a change in the system's setting applies at the next start).
 /// `MP_REDUCED_MOTION=1` (or 0) stands in for that setting, for tests and the bench.
-fn reduced() -> bool {
+pub(crate) fn reduced() -> bool {
     REDUCED.with(|r| {
         if let Some(v) = r.get() {
             return v;
@@ -642,7 +647,23 @@ fn stop(z: &mut Viz, app: &AppWindow) {
     g.set_cover_scale(1.0);
     z.draw.reset();
     z.beat.reset();
+    z.heard_at = None;
     set_paths(&g, &z.draw.paths);
+}
+
+/// How far back the position may go, and on past the time since, before it is a seek
+/// (seconds: the position is the device's, which moves by its buffer's periods).
+const SEEK_BACK: f64 = 0.3;
+const SEEK_ON: f64 = 0.5;
+
+/// What is heard now does not go on from what was: another track (the engine's token for it
+/// changed: a gapless one of the same album too), or a seek (the position went back, or on
+/// further than `elapsed` seconds allow; only as far as the frames' own jitter while not
+/// playing). `was` is the last frame's track and position, `now` this one's.
+fn jumped(was: (u64, f64), now: (u64, f64), elapsed: f64, play: bool) -> bool {
+    let on = now.1 - was.1;
+    let allowed = if play { elapsed } else { 0.0 };
+    now.0 != was.0 || on < -SEEK_BACK || on > allowed + SEEK_ON
 }
 
 fn set_paths(g: &Visualizer, p: &draw::Paths) {
@@ -658,6 +679,7 @@ fn set_paths(g: &Visualizer, p: &draw::Paths) {
     g.set_top_h(p.top_h);
     g.set_refl_h(p.refl_h);
     g.set_ripples(p.ripples.as_str().into());
+    g.set_rings(p.rings.as_str().into());
     g.set_sparks(p.sparks.as_str().into());
     g.set_sparks_old(p.sparks_old.as_str().into());
     g.set_sparks_glow(p.sparks_glow.as_str().into());
@@ -667,6 +689,22 @@ fn set_paths(g: &Visualizer, p: &draw::Paths) {
     let pulse = 0.4 + 0.6 * p.pulse.clamp(0.0, 1.0);
     if (g.get_pulse() - pulse).abs() > 0.004 {
         g.set_pulse(pulse);
+    }
+    // The line's glow widened with the bass (the eclipse's rim).
+    let glow = 1.0 + p.glow.clamp(0.0, 1.0);
+    if (g.get_glow_swell() - glow).abs() > 0.01 {
+        g.set_glow_swell(glow);
+    }
+    // Bars and the line with the beat: the line thicker, the area and its reflection brighter
+    // (the line's fainter when the music is quiet). Back exactly to rest once settled, where
+    // the page draws the brushes as they are.
+    let swell = if p.swell < 0.02 { 1.0 } else { 1.0 + p.swell.min(1.0) };
+    if swell != g.get_line_swell() && ((g.get_line_swell() - swell).abs() > 0.02 || swell == 1.0) {
+        g.set_line_swell(swell);
+    }
+    let light = if p.light.abs() < 0.01 { 0.0 } else { p.light.clamp(-1.0, 1.0) };
+    if light != g.get_fill_light() && ((g.get_fill_light() - light).abs() > 0.01 || light == 0.0) {
+        g.set_fill_light(light);
     }
 }
 
@@ -683,10 +721,12 @@ fn set_brushes(g: &Visualizer, b: &Brushes) {
     g.set_refl_brush5(b.refl[5].clone());
     g.set_bloom_brush(b.bloom.clone());
     g.set_ripples_brush(b.ripples.clone());
+    g.set_rings_brush(b.rings.clone());
     g.set_sparks_brush(b.sparks.clone());
     g.set_sparks_old_brush(b.sparks_old.clone());
     g.set_sparks_glow_brush(b.sparks_glow.clone());
     g.set_ripples_width(b.ripple_width);
+    g.set_rings_width(b.ring_width);
     g.set_line_width(b.line_width);
     g.set_glow_width(b.glow_width);
 }
@@ -706,6 +746,7 @@ fn stage_of(app: &AppWindow) -> Stage {
     Stage {
         hub: g.get_stage_hub().max(0.0),
         corner: if g.get_square() { t.get_radius_card() } else { -1.0 },
+        refl_room: g.get_stage_refl_room(),
         ..Stage::new(g.get_stage_width().max(1.0), g.get_stage_height().max(1.0), (t.get_viz_bar_width(), t.get_viz_bar_gap()))
     }
 }
@@ -714,6 +755,19 @@ fn stage_of(app: &AppWindow) -> Stage {
 fn brush(z: &mut Viz, app: &AppWindow, l: &Look, s: &Stage, at: Where, behind: bool) {
     let accent = rgb(app.global::<Theme>().get_accent());
     let alpha = l.strength(at == Where::Behind || (at == Where::Preview && behind));
+    // Behind the page the reflection lies under the player bar, whose glass lets through
+    // only what its tint does not cover (about a quarter): drawn that much stronger, it
+    // shows through the glass as the dimmer copy its strength says. Without glass the bar
+    // is opaque and hides it.
+    let t = app.global::<Theme>();
+    let glassed;
+    let l = if s.refl_room > 0.0 && t.get_glass() {
+        let through = (1.0 - t.get_glass_tint().alpha() as f32 / 255.0).max(0.2);
+        glassed = Look { reflection_strength: l.reflection_strength / through, ..l.clone() };
+        &glassed
+    } else {
+        l
+    };
     let key = BrushKey { look: l.clone(), stage: *s, top: z.draw.paths.top_h, refl: z.draw.paths.refl_h, accent, palette: z.palette.clone(), alpha };
     if z.brushes.as_ref() == Some(&key) {
         return;
@@ -803,7 +857,8 @@ fn frame(st: &Rc<State>) {
     crate::wakes::note(&crate::wakes::VIZ_FRAMES);
     let Some(app) = st.app.upgrade() else { return };
     let at = stage(st, &app);
-    let play = playing(st);
+    let status = st.player.status();
+    let play = status.state == PlayState::Playing && !status.buffering;
     let s = settings(st);
     let l = drawn(st, &app, at);
     let sg = stage_of(&app);
@@ -818,6 +873,16 @@ fn frame(st: &Rc<State>) {
         let started = Instant::now();
         let dt = z.last.map_or(1.0 / 60.0, |t| (started - t).as_secs_f32()).min(0.1);
         z.last = Some(started);
+        // Another track, or a seek: the tempo and the beat of what was heard are not this
+        // music's (held, they would keep the looks still until the meter let go of them).
+        if let Some(token) = status.token {
+            if let Some((was, pos, when)) = z.heard_at
+                && jumped((was, pos), (token, status.position), (started - when).as_secs_f64(), play)
+            {
+                z.beat.reset();
+            }
+            z.heard_at = Some((token, status.position, started));
+        }
         let (_, bands) = draw::layout(&l, &sg);
         let rate = z.tap.rate();
         if play {
@@ -826,9 +891,9 @@ fn frame(st: &Rc<State>) {
             let rate = z.tap.read(&mut z.samples, true);
             z.analyzer.update(Some((&z.samples, rate)), bands, dt);
             // The beat, for the looks that move with it: listened for in the same samples.
-            if l.style.beats() {
+            if l.hears_beat() {
                 let heard = z.beat.update(&z.samples, rate, dt);
-                z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period });
+                z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low });
                 #[cfg(feature = "bench")]
                 HEARD.with(|h| {
                     let (bpm, hits) = h.get();
@@ -844,6 +909,8 @@ fn frame(st: &Rc<State>) {
         }
         let g = app.global::<Visualizer>();
         z.draw.tick(dt);
+        // How loud the music is against its loudest lately (the auto level's slide).
+        z.draw.level(z.analyzer.level_slide_db());
         match draw_mode() {
             DrawMode::Full => {
                 let (lv, pk) = (z.analyzer.levels().to_vec(), z.analyzer.peaks().to_vec());
@@ -994,6 +1061,25 @@ mod tests {
         assert_eq!(cover_scale_step(1.0, 1.0), None);
         assert_eq!(cover_scale_step(1.0100, 1.0102), None, "too small to see while pulsing");
         assert_eq!(cover_scale_step(1.0, 1.02), Some(1.02));
+    }
+
+    #[test]
+    fn another_track_or_a_seek_starts_the_beat_afresh() {
+        // Playing on, a frame at a time, a stall of the window: the same music.
+        assert!(!jumped((7, 30.0), (7, 30.017), 0.017, true));
+        assert!(!jumped((7, 30.0), (7, 32.0), 2.0, true));
+        // The device's periods: a little back, a little ahead.
+        assert!(!jumped((7, 30.0), (7, 29.9), 0.017, true));
+        assert!(!jumped((7, 30.0), (7, 30.3), 0.017, true));
+        // Paused, however long: the position stays.
+        assert!(!jumped((7, 30.0), (7, 30.0), 5.0, false));
+        // Another track, even one going on from the last without a gap.
+        assert!(jumped((7, 241.9), (8, 0.02), 0.017, true));
+        // Seeks: back, on, on while paused.
+        assert!(jumped((7, 30.0), (7, 10.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 40.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 31.0), 0.017, true));
+        assert!(jumped((7, 30.0), (7, 31.0), 5.0, false));
     }
 
     #[test]

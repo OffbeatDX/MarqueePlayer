@@ -43,11 +43,19 @@ export component VisualizerStage inherits Rectangle {
     in property <length> hub-size: 0px;
     in property <bool> cover;
     out property <length> hub: root.hub-size > 0 ? root.hub-size : max(6px, (min(root.width, root.height) / 2 - 2px) * 0.58);
+    // The most room the reflection's box has at the stage's foot: behind the page, what
+    // lies under the player bar. Below 0: the look's share of the stage.
+    in property <length> refl-room: -1px;
     accessible-role: none;
     init => {
         Visualizer.stage-width = self.width;
         Visualizer.stage-height = self.height;
         Visualizer.stage-hub = self.hub;
+        Visualizer.stage-refl-room = self.refl-room;
+        Actions.visualizer-wake();
+    }
+    changed refl-room => {
+        Visualizer.stage-refl-room = self.refl-room;
         Actions.visualizer-wake();
     }
     changed width => {
@@ -83,7 +91,8 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.fill;
         anti-alias: !Visualizer.crisp;
-        fill: Visualizer.fill-brush;
+        // Brighter on the beat, or fainter when quiet (`fill-light`); at rest the brush as it is.
+        fill: Visualizer.fill-light == 0 ? Visualizer.fill-brush : Visualizer.fill-brush.transparentize(-Visualizer.fill-light);
         stroke-width: 0;
     }
     // The line's glow: the same line, wide and faint, under it.
@@ -101,7 +110,7 @@ export component VisualizerStage inherits Rectangle {
         commands: Visualizer.line;
         fill: transparent;
         stroke: Visualizer.glow-brush;
-        stroke-width: Visualizer.glow-width;
+        stroke-width: Visualizer.glow-width * Visualizer.glow-swell;
         stroke-line-join: round;
         stroke-line-cap: round;
     }
@@ -119,7 +128,7 @@ export component VisualizerStage inherits Rectangle {
         commands: Visualizer.line;
         fill: transparent;
         stroke: Visualizer.line-brush;
-        stroke-width: Visualizer.line-width;
+        stroke-width: Visualizer.line-width * Visualizer.line-swell;
         stroke-line-join: round;
         stroke-line-cap: round;
     }
@@ -146,6 +155,11 @@ export component VisualizerStage inherits Rectangle {
         width: root.width;
         height: Visualizer.refl-h;
         visible: Visualizer.active;
+        // Under the player bar's glass it is drawn stronger by what the tint holds back
+        // (visualizer/mod.rs brush). With the bar slid away (auto-hide) nothing holds it
+        // back: fainter by as much, the reflection as strong as the look says.
+        opacity: root.refl-room > 0 && Theme.glass && !Player.bar-up ? max(0.2, 1 - Theme.glass-tint.alpha / 255) : 1;
+        animate opacity { duration: Theme.dur-sidebar; easing: ease-out; }
         for r in [
             { c: Visualizer.refl0, b: Visualizer.refl-brush0 },
             { c: Visualizer.refl1, b: Visualizer.refl-brush1 },
@@ -165,7 +179,7 @@ export component VisualizerStage inherits Rectangle {
             viewbox-height: Visualizer.refl-h / 1px;
             commands: r.c;
         anti-alias: !Visualizer.crisp;
-            fill: r.b;
+            fill: Visualizer.fill-light == 0 ? r.b : r.b.transparentize(-Visualizer.fill-light);
             stroke-width: 0;
         }
     }
@@ -185,6 +199,21 @@ export component VisualizerStage inherits Rectangle {
         fill: transparent;
         stroke: Visualizer.ripples-brush;
         stroke-width: Visualizer.ripples-width;
+    }
+    // A snare's rings: thinner and lighter than the ripples, quickly out and gone.
+    if Visualizer.ring: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: root.height / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.rings;
+        fill: transparent;
+        stroke: Visualizer.rings-brush;
+        stroke-width: Visualizer.rings-width;
     }
     // Sparks (the ring's, the bonfire's): the discs of light, the old ones' dots, the young.
     for s in [

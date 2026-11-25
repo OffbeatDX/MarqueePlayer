@@ -562,6 +562,47 @@ fn a_server_change_reaches_its_own_tracks_only() {
     );
 }
 
+/// A later edition tagged with its own year (DATE) and the album's first (ORIGINALDATE), which
+/// the server lists under the original year with the edition's as its release date: one album.
+/// The same files against a server that only gives another year stay apart.
+#[test]
+fn an_edition_dated_both_ways_is_one_album() {
+    let mut lib = Lib::new("edition");
+    let legacy = al("Singer", "Album (Legacy Edition)", Some("2025"), None, tracks("Song", 6));
+    lib.files("Singer/Album (Legacy Edition)", &legacy, None);
+    let other = al("Singer", "Other (Deluxe)", Some("2025"), None, tracks("Tune", 6));
+    lib.files("Singer/Other (Deluxe)", &other, None);
+    for folder in ["Singer/Album (Legacy Edition)", "Singer/Other (Deluxe)"] {
+        for f in std::fs::read_dir(lib.music().join(folder)).unwrap() {
+            let path = f.unwrap().path();
+            let mut tag = lofty::read_from_path(&path).unwrap().primary_tag().unwrap().clone();
+            tag.insert_text(ItemKey::OriginalReleaseDate, "2021".into());
+            tag.save_to_path(&path, WriteOptions::default()).unwrap();
+        }
+    }
+    lib.scan();
+    let mut listed = server("legacy", &legacy, None);
+    listed.date = Some("2021".into());
+    listed.original_date = Some("2021".into());
+    listed.release_date = Some("2025".into());
+    // No release date from the server, and a year that is not the files': not told to be it.
+    let mut vague = server("vague", &other, None);
+    vague.date = Some("2021".into());
+    lib.sync(vec![listed, vague]);
+    let files = |rid: &str| -> i64 {
+        lib.conn
+            .query_row(
+                "SELECT COUNT(*) FROM tracks t JOIN albums a ON a.id = t.album_id WHERE a.remote_id = ?1 AND t.path NOT LIKE 'navidrome:%' AND t.remote_id IS NOT NULL",
+                [rid],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(files("legacy"), 6, "edition and original years agree: the files are the server's songs");
+    assert_eq!(files("vague"), 0, "only another year to go by: an album of its own");
+    assert_eq!(lib.one("SELECT COUNT(*) FROM tracks WHERE path LIKE 'navidrome:%'"), 6);
+}
+
 /// The matches that must not happen (two rows is the safe failure), and the ones that must.
 #[test]
 fn uncertain_albums_stay_apart() {

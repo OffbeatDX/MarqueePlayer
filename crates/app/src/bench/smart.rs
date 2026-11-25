@@ -110,7 +110,9 @@ fn id_named(st: &State, name: &str) -> i64 {
 }
 
 /// Make a smart playlist from a starting point, through the editor (its callbacks), saved.
-fn from_template(st: &Rc<State>, app: &AppWindow, i: i32) {
+fn from_template(st: &Rc<State>, app: &AppWindow, name: &str) {
+    // By name, not by its place in the list: a starting point added or removed moves the rest.
+    let i = library::smart::templates().iter().position(|(n, _)| *n == name).unwrap_or_else(|| panic!("no starting point is called {name:?}")) as i32;
     crate::playlists::smart::open_new(st);
     app.global::<SmartEdit>().invoke_template(i);
     app.global::<SmartEdit>().invoke_save();
@@ -331,7 +333,7 @@ pub fn run() {
     // Reshuffle: a new order (the starting point "Two hours at random", every track here).
     step!(300, |st, app, _r| {
         size_window(st, 1920, 1080);
-        from_template(st, app, 5);
+        from_template(st, app, "Two hours at random");
     });
     step!(1500, |st, app, r| {
         let shown = shown_ids(st);
@@ -367,7 +369,7 @@ pub fn run() {
 
     // ---- live: a play, a favourite ----------------------------------------------------
     step!(500, |st, app, _r| {
-        from_template(st, app, 0); // Recently added and unplayed
+        from_template(st, app, "Recently added and unplayed");
     });
     step!(1500, |st, app, r| {
         let id = id_named(st, "Recently added and unplayed");
@@ -397,7 +399,7 @@ pub fn run() {
         playback::toggle_play(st);
     });
     step!(500, |st, app, _r| {
-        from_template(st, app, 2); // Most played this year
+        from_template(st, app, "Most played this year");
     });
     step!(1500, |st, app, r| {
         let shown = shown_ids(st);
