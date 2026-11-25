@@ -1,5 +1,19 @@
-//! The desktop Server sign-in. Both providers use the original `navidrome.json` path and
-//! platform secret storage. Existing Subsonic files open without migration.
+//! The server sign-in kept between runs: `navidrome.json` in the data folder, beside
+//! `lastfm.json` (docs/architecture.md, "Files"), for a Plex server too (the name stays, so
+//! existing Subsonic files open without migration). It holds the address, what the server said
+//! it is, and for a Subsonic server the user, for a Plex one the machine and client identifiers
+//! and the library chosen; and the secret, sealed (`platform::secret`: DPAPI for the current
+//! Windows user; on Linux and macOS the file is the user's alone, mode 0600): a Subsonic
+//! server's salt and token that sign each request (the password is never kept anywhere: sign-in
+//! makes the token from it and drops it), a Plex server's access token. That token is the one
+//! plex.tv gives for the server, which for a server the account owns is as a rule the account's
+//! own token: it opens more than this one server (docs/features/navidrome.md says so).
+//!
+//! Read once at start. A file that does not read as one is kept as `navidrome.json.bad` and the
+//! app starts signed out (as `lastfm.json`); a secret that does not open here (the portable
+//! edition's drive taken to another PC, another Windows account, a damaged seal) leaves the
+//! account to sign in again with (`Loaded::Locked`). Written to a temporary file, flushed and
+//! renamed, so a crash never leaves half a file.
 
 use std::path::{Path, PathBuf};
 
@@ -138,10 +152,12 @@ impl Session {
 }
 
 /// The secret travels back only to be sealed in the sign-in file.
-pub fn sign_in(is_plex: bool, url: &str, user: &str, secret: &str) -> Result<(Session, String), Error> {
+/// `plex_client_id`: this installation's identifier at Plex (`browser::client_id`), unused for a
+/// Subsonic server.
+pub fn sign_in(is_plex: bool, url: &str, user: &str, secret: &str, plex_client_id: &str) -> Result<(Session, String), Error> {
     if is_plex {
         let token = secret.trim();
-        let (client, info) = plex::sign_in(url, token)?;
+        let (client, info) = plex::sign_in(url, token, plex_client_id)?;
         Ok((plex_session(client, info), token.into()))
     } else {
         let (credentials, info) = subsonic::sign_in(url, user, secret)?;
@@ -158,17 +174,22 @@ pub(super) fn plex_session(client: plex::Client, info: plex::ServerInfo) -> Sess
     Session { account, about, client: Client::Plex(client) }
 }
 
+/// As stored.
 #[derive(Serialize, Deserialize)]
 struct File {
     #[serde(flatten)]
     account: Account,
+    /// `platform::secret::SCHEME` of the sealing.
     sealed_with: String,
+    /// The sealed secret, as hex: a Subsonic server's "salt\ntoken", a Plex server's token.
     secret: String,
     #[serde(default)]
     server: About,
 }
 
+/// What the file gave at start.
 pub enum Loaded {
+    /// No file (never signed in, or signed out).
     None,
     SignedIn(Box<Session>),
     /// The account to show in Settings when its saved secret cannot be opened.

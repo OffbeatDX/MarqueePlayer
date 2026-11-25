@@ -28,7 +28,9 @@ impl Client {
                 let scanning = refreshing.as_bool() == Some(true) || refreshing == "true" || number(refreshing) == Some(1);
                 // Only the selected library's state decides whether removals are safe.
                 let revision = ["updatedAt", "scannedAt", "contentChangedAt"].map(|field| number(&section[field]));
-                catalog = Some(CatalogState { sections: vec![Some(key.clone())], scanning, last_scan: Some(format!("{key}:{revision:?}")) });
+                // (`updatedAt` alone is the section's settings, not its music.)
+                let dated = revision[1].is_some() || revision[2].is_some();
+                catalog = Some(CatalogState { sections: vec![Some(key.clone())], scanning, last_scan: Some(format!("{key}:{revision:?}")), dated });
             }
             let title = string(section, "title").unwrap_or_else(|| format!("Music library {key}"));
             libraries.push(MusicLibrary { key, title });

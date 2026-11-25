@@ -18,20 +18,25 @@ pub(super) struct Login {
     servers: Vec<Resource>,
 }
 
+/// This installation's identifier at Plex, made once and kept in the settings: the browser
+/// sign-in and a manual connection send the same one, so the Plex account lists one device for
+/// this app however often it connects.
+pub(super) fn client_id(st: &State) -> String {
+    let mut settings = st.settings.borrow_mut();
+    if settings.plex_client_id.is_empty() {
+        settings.plex_client_id = subsonic::new_salt();
+        st.save_settings_soon();
+    }
+    settings.plex_client_id.clone()
+}
+
 pub fn start(st: &Rc<State>) {
     let Some(app) = st.app.upgrade() else { return };
     let s = app.global::<crate::Server>();
     if !s.get_plex() || with(|c| c.plex_login.is_some() || c.signed_in.is_some() || c.signing_in || c.signing_out) {
         return;
     }
-    let client_id = {
-        let mut settings = st.settings.borrow_mut();
-        if settings.plex_client_id.is_empty() {
-            settings.plex_client_id = subsonic::new_salt();
-            st.save_settings_soon();
-        }
-        settings.plex_client_id.clone()
-    };
+    let client_id = client_id(st);
     let login = Login::default();
     let cancelled = login.cancelled.clone();
     let attempt = with(|c| {

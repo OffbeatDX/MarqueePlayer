@@ -31,8 +31,11 @@ pub struct ServerInfo {
     pub version: String,
 }
 
-pub fn sign_in(url: &str, token: &str) -> Result<(Client, ServerInfo), Error> {
-    let mut client = Client::connection(url, token, &subsonic::new_salt())?;
+/// A manual connection (an address and a token). `client_id` is this installation's, the one
+/// the browser sign-in uses too: Plex lists a device per identifier, so one made here each time
+/// would leave a new device in the account at every connection.
+pub fn sign_in(url: &str, token: &str, client_id: &str) -> Result<(Client, ServerInfo), Error> {
+    let mut client = Client::connection(url, token, client_id)?;
     let info = client.identity()?;
     client.machine_id.clone_from(&info.machine_id);
     // /identity is public. Test the token against a protected resource before saving it.

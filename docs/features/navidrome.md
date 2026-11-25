@@ -27,6 +27,32 @@ are kept in Marquee. Use **Sync now** to pick up changes, or choose a different 
 under **Music library** to change what Marquee syncs. Marquee remembers your choice after
 a restart. **Sign out** removes the connection, downloaded tracks and server-only entries from Marquee.
 
+**What is kept of the sign-in.** The access token for the chosen server, in `navidrome.json`
+(sealed with DPAPI on Windows; on Linux and macOS the file is the user's alone, mode 0600), and
+nothing else of the account: the token Plex hands over in the browser lives for the one request
+that lists your servers. For a server shared with you that token opens that server only. For a
+server you own, Plex as a rule gives your account's own token as the server's: it opens
+everything your Plex account does, so treat the file as you would the account's password. The
+token is sent in a header, only to the server it was given for (and only after that server has
+shown the machine identifier Plex named), never in an address and never to the log.
+
+**Sign out** deletes the token from this computer; it does not tell Plex. Marquee Player stays
+listed among your account's devices: to revoke it, open Plex's web app, **Settings > Authorized
+devices**, and remove "Marquee Player" there. One device is listed however often you connect,
+in the browser or manually (one identifier per installation, kept in the settings).
+
+**Away from home.** Marquee tries the server's addresses in order: encrypted before plain,
+direct before Plex's relay, your own network before the internet (plain http only to an address
+on your own network). The relay is the last resort, for a server that cannot be reached
+directly: the audio then passes through Plex's servers, which limit its bitrate, so an
+original lossless file may stall there. Choose an MP3 target under **Streaming quality**, or
+enable Remote Access on the server so that a direct address works.
+
+**When the library is read again.** At start and when the window comes back after hours away,
+Marquee asks the server when the chosen library was last scanned or changed, and lists nothing
+when that is as the last complete sync saw it; **Sync now** always lists. (A server that dates
+neither is listed every time.)
+
 ## Navidrome
 
 Settings > Library > Server adds the music on a Navidrome server (or another Subsonic or

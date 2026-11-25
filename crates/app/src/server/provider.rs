@@ -27,6 +27,11 @@ pub(super) struct CatalogState {
     pub sections: Vec<Option<String>>,
     pub scanning: bool,
     pub last_scan: Option<String>,
+    /// `last_scan` tells a catalog that changed from one that did not: a sync that is not
+    /// forced lists nothing when it is the one the last complete sync saw. A Subsonic server's
+    /// scan status always; a Plex library only when the server dates its scans or its content
+    /// (one that gives neither would never be listed again).
+    pub dated: bool,
 }
 
 pub(super) struct ListedAlbum {
@@ -72,7 +77,7 @@ impl Client {
         match self {
             Self::Subsonic(c) => {
                 let status = c.scan_status()?;
-                Ok(CatalogState { sections: vec![None], scanning: status.scanning, last_scan: status.last_scan })
+                Ok(CatalogState { sections: vec![None], scanning: status.scanning, last_scan: status.last_scan, dated: true })
             }
             Self::Plex(c) => c.catalog_state(),
         }

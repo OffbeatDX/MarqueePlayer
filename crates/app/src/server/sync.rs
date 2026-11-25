@@ -2,12 +2,20 @@
 //! UI thread; `server/mod.rs` decides when, and words what happened.
 //!
 //! **A sync** (`run`, on a thread of its own with its own database connection):
-//! 1. On Plex, read the music sections and their revisions. On Subsonic, ask for
-//!    `getScanStatus`. A complete Subsonic catalog at the same scan revision can be skipped
-//!    unless `Job::force` is set. A skipped listing can still read favourites (`getStarred2`).
-//! 2. List albums in each Plex music section, or use Subsonic `getAlbumList2` by name.
-//!    Read up to 500 per page. A repeated page or reaching `MAX_PAGES` marks the listing
-//!    incomplete. Read tracks for three albums at a time using Plex children or `getAlbum`.
+//! 1. On Plex, read the music sections and the chosen one's revision (when it was scanned and
+//!    when its content changed). On Subsonic, ask for `getScanStatus`. Unless asked to list
+//!    anyway (`Job::force`: sign-in, Sync now, a removal confirmed), a server that has not
+//!    scanned since the last sync that saw its whole catalog is not listed again: nothing on it
+//!    can have changed (`UpToDate`). A Plex library that dates neither is listed every time
+//!    (`CatalogState::dated`). With favourites synced, a Subsonic server's stars are read then
+//!    (`getStarred2`, one request): a star changed on the server needs no scan of its own.
+//! 2. List albums in each Plex music section, or use Subsonic `getAlbumList2` by name, 500 a
+//!    page (the most Navidrome gives), until a page comes back short (or brings no album not
+//!    listed already, or `MAX_PAGES`: then the listing is not complete); then each album with
+//!    its songs (Plex children or `getAlbum`), three at a time: gentle on a home server, three
+//!    times faster than one by one. (`search3` with an empty query would list songs faster, but
+//!    whether every server answers it with everything is not known; the album route is the one
+//!    the Subsonic API documents for every server.)
 //! 3. Every `CHUNK` albums read, they are written (`remote::sync` of what was read, not
 //!    `complete`): the first albums are in the library within seconds of signing in, and the
 //!    open page takes them in as it does a scan's batches. At the end, the whole catalog once
@@ -228,7 +236,7 @@ pub fn run(job: &Job, tell: &(dyn Fn(Step) + Sync)) -> Outcome {
         Err(e) => return Outcome::Server(e),
     };
     if !job.force
-        && job.client.as_subsonic().is_some()
+        && status.dated
         && earlier.is_none()
         && let Ok(Some(s)) = remote::server(&conn)
         && s.synced_at.is_some()

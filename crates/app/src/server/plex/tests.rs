@@ -81,7 +81,7 @@ fn capped_pages_and_playback_use_stable_ids_and_current_media_parts() {
         container("/library/metadata/20", json!({"size":1,"Metadata":[track]})),
         Response { method: "GET", token: Some(TOKEN), path: PART, status: 206, headers: "Content-Type: audio/flac\r\nContent-Range: bytes 2-3/4\r\nETag: \"abc\"\r\n", data: b"34".to_vec() },
     ]);
-    let (client, info) = sign_in(&url, TOKEN).unwrap();
+    let (client, info) = sign_in(&url, TOKEN, "mock").unwrap();
     assert_eq!(info.machine_id, MACHINE);
     let albums = client.albums("3", 500, 0).unwrap();
     assert_eq!(albums.len(), 2);
@@ -137,8 +137,8 @@ fn failed_auth_partial_listings_and_server_replacement_are_errors() {
         container("/library/sections/3/all?type=9&X-Plex-Container-Start=0&X-Plex-Container-Size=500", json!({"size":0,"totalSize":5})),
         container("/identity", json!({"machineIdentifier":"different"})),
     ]);
-    assert!(matches!(sign_in(&url, TOKEN), Err(Error::WrongCredentials { .. })));
-    let Err(error) = sign_in(&url, TOKEN) else { panic!("a video-only account has no music libraries") };
+    assert!(matches!(sign_in(&url, TOKEN, "mock"), Err(Error::WrongCredentials { .. })));
+    let Err(error) = sign_in(&url, TOKEN, "mock") else { panic!("a video-only account has no music libraries") };
     assert!(super::super::sign_in_words(&error, true).contains("music library"));
     let client = Client::new(&url, TOKEN, MACHINE, "mock").unwrap();
     assert!(client.albums("3", 500, 0).is_err());
@@ -203,6 +203,7 @@ fn music_library_selection_scopes_the_catalog_and_fails_closed_when_absent() {
     client.select_library(Some("7")).unwrap();
     let selected = client.catalog_state().unwrap();
     assert_eq!(selected.sections, [Some("7".into())]);
+    assert!(selected.dated, "the server dates the library's content: unchanged, it is not listed again");
     assert!(!selected.scanning, "a scan in another music library does not affect the selection");
     let (other, catalog) = client.library_catalog().unwrap();
     assert_eq!(other.len(), 1);
@@ -210,5 +211,27 @@ fn music_library_selection_scopes_the_catalog_and_fails_closed_when_absent() {
     assert!(client.catalog_state().is_err(), "a partial final listing cannot authorize pruning");
     let (none, catalog) = client.library_catalog().unwrap();
     assert!(none.is_empty() && catalog.is_none());
+    join.join().unwrap();
+}
+
+#[test]
+fn a_library_the_server_does_not_date_is_listed_at_every_sync() {
+    // Neither `scannedAt` nor `contentChangedAt`: its revision would never change, and a sync
+    // skipped on it would never see new music. The section's own `updatedAt` is its settings'.
+    let undated = json!({"size":1,"Directory":[{"key":"7","title":"Albums","type":"artist","updatedAt":5}]});
+    let scanned = json!({"size":1,"Directory":[{"key":"7","title":"Albums","type":"artist","scannedAt":9}]});
+    let mut replies = Vec::new();
+    for listing in [&undated, &scanned] {
+        replies.push(container("/identity", json!({"machineIdentifier":MACHINE})));
+        replies.push(container("/library/sections", listing.clone()));
+    }
+    let (url, join) = server(replies);
+    let mut client = Client::new(&url, TOKEN, MACHINE, "mock").unwrap();
+    client.select_library(Some("7")).unwrap();
+    let first = client.catalog_state().unwrap();
+    assert!(!first.dated);
+    let second = client.catalog_state().unwrap();
+    assert!(second.dated);
+    assert_ne!(first.last_scan, second.last_scan, "a scan is a new revision");
     join.join().unwrap();
 }

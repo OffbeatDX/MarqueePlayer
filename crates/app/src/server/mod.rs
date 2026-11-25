@@ -318,8 +318,9 @@ pub fn connect(st: &Rc<State>, url: &str, user: &str, password: &str) {
         c.attempt
     });
     log::info!("server: signing in");
+    let plex_client_id = if plex { browser::client_id(st) } else { String::new() };
     let spawned = std::thread::Builder::new().name("mp-server-signin".into()).spawn(move || {
-        let result = account::sign_in(plex, &url, &user, &password);
+        let result = account::sign_in(plex, &url, &user, &password, &plex_client_id);
         drop(password);
         state::post(move |st| signed_in(st, attempt, plex, result));
     });
