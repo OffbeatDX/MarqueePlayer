@@ -891,6 +891,7 @@ struct LiveRefresh {
 thread_local! {
     static LIVE: std::cell::RefCell<LiveRefresh> = std::cell::RefCell::default();
     static GROUP_COVERS_DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static HOME_HERO_DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Server art may arrive well after the catalog scan ends. Album cards observe each
@@ -926,14 +927,21 @@ pub(crate) fn server_covers_written(st: &Rc<State>, updates: &[CoverUpdate]) {
             // the first image was stored, even when all albums are already on screen.
             if st.settings.borrow().shelves.iter().enumerate().any(|(i, s)| {
                 s.visible && s.query == ShelfQuery::Random && s.layout == ShelfLayout::Hero && !heroes.contains(&i)
-            }) {
+            })
+                // (Once per interval: a shelf that stays away for another reason would have
+                // every batch of covers read all of Home's shelves again.)
+                && !HOME_HERO_DUE.with(|due| due.replace(true))
+            {
                 refresh_home_live(st, true);
+                slint::Timer::single_shot(LIVE_EVERY, || HOME_HERO_DUE.with(|due| due.set(false)));
             }
         }
         Page::Artists | Page::Genres | Page::Labels if !GROUP_COVERS_DUE.with(|due| due.replace(true)) => {
             // Many albums can contribute to one group. Recompute the visible index once
-            // per interval, preserving search results and scroll position.
-            slint::Timer::single_shot(LIVE_EVERY, || {
+            // per interval, preserving search results and scroll position. The slow interval,
+            // as during a scan: these pages read every group again, on the UI thread, and a
+            // pass over a large library's covers lasts minutes.
+            slint::Timer::single_shot(LIVE_SLOW, || {
                 GROUP_COVERS_DUE.with(|due| due.set(false));
                 crate::state::with(|st| {
                     if let Some(app) = st.app.upgrade() {

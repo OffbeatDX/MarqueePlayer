@@ -709,11 +709,18 @@ pub(super) fn covers_start(db: PathBuf, art: ArtCache, written: impl Fn(u64, Vec
         let c = COVERS.get().expect("set above");
         let mut conn: Option<rusqlite::Connection> = None;
         let mut retry = CoverRetry::default();
+        // The client `retry` was gathered against: another server's (or account's) albums are
+        // not the ones set aside, and its pass is not paused.
+        let mut retry_generation = 0;
         loop {
             let (client, generation, wanted) = {
                 let mut w = c.work.lock().unwrap_or_else(|e| e.into_inner());
                 while w.client.is_none() || (!w.kicked && (w.wanted.is_empty() || retry.paused)) {
                     w = c.ready.wait(w).unwrap_or_else(|e| e.into_inner());
+                }
+                if w.generation != retry_generation {
+                    retry_generation = w.generation;
+                    retry = CoverRetry::default();
                 }
                 if std::mem::take(&mut w.kicked) {
                     retry.kicked();
@@ -841,10 +848,11 @@ fn fetch(client: &Client, art: &ArtCache, cover: &str) -> Fetched {
 fn unfetched(e: Error) -> Fetched {
     match e {
         Error::NotFound(_) | Error::BadResponse(_) => Fetched::Missing,
-        // Subsonic can also report an item error in a successful HTTP response. A cover the
+        // Subsonic can also report an item error in a successful HTTP response (no status is
+        // kept for those). A cover the
         // account may not read is one item's too: recorded as missing it would never be asked
         // for again, and as a pause it would stop every other cover.
-        Error::Server { http_status: Some(200 | 500) | None, .. } | Error::NotPermitted(_) => Fetched::Deferred,
+        Error::Server { http_status: Some(500) | None, .. } | Error::NotPermitted(_) => Fetched::Deferred,
         e => Fetched::Pause(e),
     }
 }
