@@ -186,6 +186,21 @@ export component VisualizerStage inherits Rectangle {
         stroke: Visualizer.ripples-brush;
         stroke-width: Visualizer.ripples-width;
     }
+    // A snare's rings: thinner and lighter than the ripples, quickly out and gone.
+    if Visualizer.ring: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: root.height / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.rings;
+        fill: transparent;
+        stroke: Visualizer.rings-brush;
+        stroke-width: Visualizer.rings-width;
+    }
     // Sparks (the ring's, the bonfire's): the discs of light, the old ones' dots, the young.
     for s in [
         { c: Visualizer.sparks-glow, b: Visualizer.sparks-glow-brush },

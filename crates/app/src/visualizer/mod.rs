@@ -24,6 +24,7 @@
 //! detection.
 
 pub(crate) mod beat;
+mod meter;
 pub(crate) mod draw;
 pub(crate) mod look;
 pub(crate) mod presets;
@@ -658,6 +659,7 @@ fn set_paths(g: &Visualizer, p: &draw::Paths) {
     g.set_top_h(p.top_h);
     g.set_refl_h(p.refl_h);
     g.set_ripples(p.ripples.as_str().into());
+    g.set_rings(p.rings.as_str().into());
     g.set_sparks(p.sparks.as_str().into());
     g.set_sparks_old(p.sparks_old.as_str().into());
     g.set_sparks_glow(p.sparks_glow.as_str().into());
@@ -683,10 +685,12 @@ fn set_brushes(g: &Visualizer, b: &Brushes) {
     g.set_refl_brush5(b.refl[5].clone());
     g.set_bloom_brush(b.bloom.clone());
     g.set_ripples_brush(b.ripples.clone());
+    g.set_rings_brush(b.rings.clone());
     g.set_sparks_brush(b.sparks.clone());
     g.set_sparks_old_brush(b.sparks_old.clone());
     g.set_sparks_glow_brush(b.sparks_glow.clone());
     g.set_ripples_width(b.ripple_width);
+    g.set_rings_width(b.ring_width);
     g.set_line_width(b.line_width);
     g.set_glow_width(b.glow_width);
 }
@@ -828,7 +832,7 @@ fn frame(st: &Rc<State>) {
             // The beat, for the looks that move with it: listened for in the same samples.
             if l.style.beats() {
                 let heard = z.beat.update(&z.samples, rate, dt);
-                z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period });
+                z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low });
                 #[cfg(feature = "bench")]
                 HEARD.with(|h| {
                     let (bpm, hits) = h.get();

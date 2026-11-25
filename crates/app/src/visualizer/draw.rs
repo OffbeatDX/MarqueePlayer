@@ -78,6 +78,8 @@ pub struct Paths {
     pub punch: f32,
     /// The ring's ripples: the contours that left the cover on a beat, on their way out.
     pub ripples: String,
+    /// The ring's snare rings: thin, quick, gone well before the ripples' way ends.
+    pub rings: String,
     /// Sparks (the ring's, the bonfire's): the young ones' dots, the old ones' (fainter),
     /// and the soft discs of light round them.
     pub sparks: String,
@@ -270,6 +272,14 @@ pub struct Pulse {
     pub snap: f32,
     /// The beat's length in seconds, 0 while no tempo is known.
     pub period: f32,
+    /// How bright the sound is now (`beat::Heard::bright`).
+    pub bright: f32,
+    /// One of the music's beats fell in this frame; where in the beat the frame is (0 at
+    /// the beat, toward 1 before the next); and the low notes' onset over what is usual
+    /// (`beat::Heard`).
+    pub beat: bool,
+    pub phase: f32,
+    pub low: f32,
 }
 
 /// Draws frames, keeping what must carry over between them (the ring's ripples on their
@@ -329,6 +339,7 @@ impl Draw {
         p.refl.iter_mut().for_each(String::clear);
         (p.pulse, p.punch) = (0.0, 0.0);
         p.ripples.clear();
+        p.rings.clear();
         p.sparks.clear();
         p.sparks_old.clear();
         p.sparks_glow.clear();
@@ -559,38 +570,110 @@ fn closed_curve(out: &mut String, pts: &[(f32, f32)]) {
     out.push('Z');
 }
 
-/// A ripple's longest life, from leaving the contour to the end of its way (seconds), and
-/// its speed on the way (pixels a second): with less room it is gone sooner, not slower.
+/// The longest a ripple's way out takes, from leaving the contour to where it is gone
+/// (seconds), and its speed without a tempo to go by (pixels a second): with less room it is
+/// gone sooner, not slower.
 const RIPPLE_LIFE: f32 = 3.2;
 const RIPPLE_SPEED: f32 = 95.0;
 /// The most on their way at once, where there is room for them (`ripple_room`).
 const RIPPLE_MAX: usize = 5;
 /// The least room a ripple has to itself, on average (pixels of the way out).
 const RIPPLE_PITCH: f32 = 36.0;
-/// The least time between two, however fast the beats and however much room.
+/// The least time between two, however fast the kicks.
 const RIPPLE_GAP: f32 = 0.16;
-/// With sound but no beat, one this often at the least.
+/// Without kicks: the least time between two that leave on a swell, and how long the music
+/// may go without one before one leaves anyway (long enough not to be heard as a clock).
 const RIPPLE_REST: f32 = 0.46;
+const RIPPLE_LULL: f32 = 2.4;
+/// While the music has no beat to go by, a hit weaker than this is not taken for a kick
+/// (music without any has its low notes' wavering told as weak ones, a few a second).
+const RIPPLE_SURE: f32 = 0.55;
+/// With a beat to go by, what sends a ripple depends on where in the beat it is. A kick is
+/// told this long after it started (seconds); it is on the beat, or on the half beat,
+/// within this share of a beat. On the beat: any kick told, or an onset of the low notes
+/// this many times the usual (`GRID_LOW.0`: a kick the tracker missed under a bass line,
+/// a bass note with the beat; never much before the beat, `GRID_EARLY`). On the half beat: a firm kick (`GRID_HIT`) that the low
+/// notes bear out (`GRID_LOW.1`). Off both: nothing. Measured over the steady excerpts of
+/// a real library (3,964 beats): of the kicks told, 57% were on the beat, 19% on the half
+/// beat and 24% off both, as strong off the beat as on it (a bass line's notes, which
+/// fall anywhere: they are what made the ripples leave at random); the low notes had an
+/// onset of 3 times the usual on three beats in four.
+const RIPPLE_LATE: f32 = 0.025;
+const GRID_NEAR: f32 = 0.14;
+const GRID_LOW: (f32, f32) = (3.0, 3.0);
+/// An onset of the low notes sends its ripple no sooner than this share of a beat before
+/// the beat (the low notes waver: one that only leads up to the kick is not it).
+const GRID_EARLY: f32 = 0.05;
+const GRID_HIT: f32 = 0.75;
+/// How a ripple's way out is made up. The throw: the share of the way the kick that sent
+/// it throws it (the hardest kick's; a soft one's is 0.6 of that), dying away over this
+/// share of the way's time, and how long after it left the low notes still say how hard the
+/// kick was (seconds: a kick is told before its peak). The push: the share of the way every
+/// later kick pushes it (a full one), and how fast a push dies away (per second). The rest
+/// of the way it drifts, so that it is gone when the way's time is up.
+const RIPPLE_THROW: f32 = 0.55;
+const RIPPLE_THROW_TIME: f32 = 0.3;
+const RIPPLE_WINDUP: f32 = 0.15;
+const RIPPLE_PUSH: f32 = 0.1;
+const RIPPLE_PUSH_RATE: f32 = 6.0;
 /// How far round a ripple turns on its way out (radians): they swirl a little.
 const RIPPLE_TWIST: f32 = 0.34;
 /// A ripple's shape is the contour's, this much more pronounced (an echo that reads as one
 /// from a distance, where it is faint).
 const RIPPLE_SHAPE: f32 = 1.5;
-/// Where the ripples of a still frame are in their lives.
+/// Where the ripples of a still frame are on their way.
 const RIPPLE_STILL: [f32; 6] = [0.84, 0.68, 0.52, 0.38, 0.24, 0.1];
+/// A snare's ring: how far of the ripples' way it goes (all of it, in two beats:
+/// it overtakes them; its brush is gone there), the most at once and the least time between
+/// two. A snap is any sharp edge: a snare's, a clap's, but also a kick's own, a plucked
+/// note's. What tells them apart is whether the sound is still bright a moment later (a
+/// snare's noise lasts, a kick's edge is over in milliseconds, a note was never bright): a
+/// ring is shown once it is `RING_HOLD` old (two frames), if the sound since it was told
+/// has been at least `RING_CRACK` bright.
+const RING_REACH: f32 = 1.0;
+const RING_MAX: usize = 4;
+const RING_GAP: f32 = 0.1;
+const RING_HOLD: f32 = 0.03;
+const RING_CRACK: f32 = 0.07;
 /// How fast a spark slows (per second): the ring's, thrown outward; the bonfire's, rising.
 const SPARK_DRAG: f32 = 1.1;
 const FIRE_DRAG: f32 = 0.9;
 
 /// How many ripples a ring has room for at once (a small stage's would be crowded by as
 /// many as the full page's; and each is a long curve to draw, most of what this style
-/// costs); and so the least time between two, the wait for one without a beat, and how
-/// long one lives (the same speed whatever the room).
-fn ripple_room(g: &Halo) -> (usize, f32, f32, f32) {
+/// costs), and how long the way out takes without a tempo to go by (the same speed whatever
+/// the room).
+fn ripple_room(g: &Halo) -> (usize, f32) {
     let most = ((g.travel / RIPPLE_PITCH) as usize).clamp(3, RIPPLE_MAX);
-    let life = (g.travel / RIPPLE_SPEED).clamp(1.2, RIPPLE_LIFE);
-    let gap = (life / most as f32).max(RIPPLE_GAP);
-    (most, gap, (gap * 1.5).max(RIPPLE_REST), life)
+    (most, (g.travel / RIPPLE_SPEED).clamp(1.2, RIPPLE_LIFE))
+}
+
+/// What of the ripples' ways is left out, for comparing (`MP_HALO_WITHOUT`, words separated
+/// by commas: `throw`, `push`, `swells`). Those are the design. The snares' rings are not:
+/// tried on real music on 2026-11-25, a ring could not be connected to any sound heard as
+/// it appeared, and they are off unless `MP_HALO_WITH=rings` asks for them (kept for another
+/// try at tuning them).
+#[derive(Clone, Copy)]
+struct Tune {
+    /// A kick throws its ripple, harder the harder it is; without: every ripple drifts.
+    throw: bool,
+    /// Every kick pushes the ripples on their way.
+    push: bool,
+    /// A snare sends a ring (off unless asked for).
+    rings: bool,
+    /// Without kicks a ripple leaves on a swell of the music; without: after each rest.
+    swells: bool,
+}
+
+fn tune() -> Tune {
+    static TUNE: std::sync::OnceLock<Tune> = std::sync::OnceLock::new();
+    *TUNE.get_or_init(|| {
+        let listed = |var: &str, word: &str| std::env::var(var).unwrap_or_default().split(',').any(|w| w.trim().eq_ignore_ascii_case(word));
+        let on = |word: &str| !listed("MP_HALO_WITHOUT", word);
+        // The rings are off unless asked for (`MP_HALO_WITH=rings`), and on in the tests,
+        // which are about them too.
+        Tune { throw: on("throw"), push: on("push"), rings: (cfg!(test) && on("rings")) || listed("MP_HALO_WITH", "rings"), swells: on("swells") }
+    })
 }
 
 /// A beat, found in a level over time: a rise above where it has been, told when the rise
@@ -626,15 +709,29 @@ impl Beat {
 }
 
 /// The ring's ripples between frames.
-#[derive(Default)]
 struct Ripples {
     list: Vec<Ripple>,
-    /// Since the last one left.
+    rings: Vec<Ring>,
+    /// Since the last ripple left, since the last ring did, and since the last beat.
     since: f32,
+    ring_since: f32,
+    quiet: f32,
+    /// How far apart the kicks' ripples have lately left (seconds; 0: not known yet), for
+    /// the way's time while no tempo is known.
+    pace: f32,
+    /// A ripple waiting for the next beat to leave on (how hard it will be thrown): a
+    /// swell's or a lull's, where the music has a beat but no kicks.
+    due: Option<f32>,
     beat: Beat,
     /// The last beat's strength, dying away in an eighth of a second: the contour jumps
     /// with each kick, and the bloom with it.
     punch: f32,
+}
+
+impl Default for Ripples {
+    fn default() -> Self {
+        Ripples { list: Vec::new(), rings: Vec::new(), since: 0.0, ring_since: 0.0, quiet: 0.0, pace: 0.0, due: None, beat: Beat::default(), punch: 0.0 }
+    }
 }
 
 struct Ripple {
@@ -642,23 +739,60 @@ struct Ripple {
     /// smoothed: it relaxes toward that as it travels, as a wave on water does.
     shape: Vec<f32>,
     soft: Vec<f32>,
+    /// How far out it is (0..1 of its way), and for how long it has been going.
+    far: f32,
     age: f32,
-    /// How long its way out takes (with a tempo known, a whole number of beats, so those
-    /// on their way are a beat apart).
-    life: f32,
+    /// The throw that sent it: the share of the way it is good for, the speed left of it
+    /// (ways a second) and the time that dies away in.
+    throw: f32,
+    v: f32,
+    tau: f32,
+    /// The speed left of the kicks' pushes since (ways a second).
+    pushed: f32,
+    /// Making room for a newer one: on its way out quickly.
+    leaving: bool,
 }
 
 impl Ripple {
-    /// The contour as it is, `age` into a life of `life`; `hit`: the beat that sent it
-    /// (a harder one sends a larger ripple).
-    fn new(mut shape: Vec<f32>, age: f32, life: f32, hit: f32) -> Ripple {
+    /// The contour as it is, `far` along its way; `hit`: the beat that sent it (a harder
+    /// one sends a larger ripple).
+    fn new(mut shape: Vec<f32>, far: f32, hit: f32) -> Ripple {
         let mean = shape.iter().sum::<f32>() / shape.len().max(1) as f32;
         shape.iter_mut().for_each(|v| *v = ((mean + (*v - mean) * RIPPLE_SHAPE) * (1.0 + 0.3 * hit)).max(0.0));
         let mut soft = shape.clone();
         smooth_ring(&mut soft, 6);
         let mean = soft.iter().sum::<f32>() / soft.len().max(1) as f32;
         soft.iter_mut().for_each(|v| *v = mean + (*v - mean) * 0.75);
-        Ripple { shape, soft, age, life }
+        Ripple { shape, soft, far, age: 0.0, throw: 0.0, v: 0.0, tau: 1.0, pushed: 0.0, leaving: false }
+    }
+
+    /// Thrown `throw` of the way (more than it was: the kick turned out harder).
+    fn thrown(&mut self, throw: f32) {
+        self.v += (throw - self.throw).max(0.0) / self.tau;
+        self.throw = self.throw.max(throw);
+    }
+}
+
+/// A snare's ring between frames.
+struct Ring {
+    /// The contour as it left, smoothed (0..1 of the contour's reach, around the ring).
+    soft: Vec<f32>,
+    age: f32,
+    life: f32,
+    leaving: bool,
+    /// Whether it shows: not before it is known to be a snare's (`RING_CRACK`); until then,
+    /// how bright the sound has been since it was told, summed over the frames.
+    shown: bool,
+    bright: f32,
+    frames: f32,
+}
+
+impl Ring {
+    /// How far out it is (0..1 of the ripples' way): quickly out and slowing, to where its
+    /// brush is gone.
+    fn far(&self) -> f32 {
+        let u = (self.age / self.life).clamp(0.0, 1.0);
+        RING_REACH * (1.0 - (-u / 0.5).exp()) / (1.0 - (-2.0f32).exp())
     }
 }
 
@@ -819,10 +953,14 @@ fn dot(out: &mut String, x: f32, y: f32, r: f32) {
 /// cover's radius, flattening and fading as it goes, and sparks are thrown off the contour
 /// where it is loudest; a few leave it all the time (`dt` moves them all on; with none, a
 /// still frame: a few as a moment would leave them). The beat is the one heard (`heard`:
-/// each kick is a jump of the whole contour, a ripple and a burst, harder for a harder one;
-/// with the tempo known the ripples take a whole number of beats over their way, so they
-/// travel a beat apart), or without that a rise in the levels. Its foot follows the cover,
-/// round or square.
+/// each kick is a jump of the whole contour, a ripple and a burst, harder for a harder one),
+/// or without that a rise in the levels. Every kick has its ripple (one too many on their
+/// way: the oldest hurries out); a kick throws its ripple, faster the harder it is, and
+/// pushes those already on their way, which drift between kicks, so the whole field moves
+/// with the beat and takes as many beats over the way as there is room for ripples. A
+/// snare sends a thin quick ring. Without kicks a ripple leaves when the music swells (a
+/// rise in the levels topping out), not by the clock. Its foot follows the cover, round or
+/// square.
 fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
     let (n, bands) = layout(look, stage);
     let g = halo(stage);
@@ -845,11 +983,17 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
     let energy = lv.iter().sum::<f32>() / n.max(1) as f32;
     // The beat: as heard, or (nobody listening) a rise in the low notes and a little of
     // everything, told when it tops out.
-    let (hit, snap, period) = match heard {
-        _ if dt <= 0.0 => (0.0, 0.0, 0.0),
-        Some(h) => (h.hit.clamp(0.0, 1.0), h.snap.clamp(0.0, 1.0), h.period),
-        None => (if rip.beat.step(0.7 * swell + 0.3 * energy, dt) { 0.7 } else { 0.0 }, 0.0, 0.0),
+    // A rise in the levels topping out is followed whoever listens: without kicks it is what
+    // sends a ripple.
+    let level = 0.7 * swell + 0.3 * energy;
+    let rise = (level - rip.beat.slow).max(0.0);
+    let topped = dt > 0.0 && rip.beat.step(level, dt);
+    let (hit, snap, period, bright) = match heard {
+        _ if dt <= 0.0 => (0.0, 0.0, 0.0, 0.0),
+        Some(h) => (h.hit.clamp(0.0, 1.0), h.snap.clamp(0.0, 1.0), h.period, h.bright),
+        None => (if topped { 0.7 } else { 0.0 }, 0.0, 0.0, 0.0),
     };
+    let (phase, onset, on_beat) = heard.map_or((0.0, 0.0, false), |h| (h.phase, h.low, h.beat));
     rip.punch = if dt > 0.0 { (rip.punch * (-dt / 0.13).exp()).max(hit) } else { 0.0 };
     // The kick's jump on top, all round; then bent toward the contour's reach, never past
     // it (`shape`).
@@ -899,27 +1043,162 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
     // The ripples: a third as many points as the contour (they are smoother than it, and
     // their cost is their curves: measured, they are most of what this style costs to draw).
     let m = (n / 3).max(3);
-    let now: Vec<f32> = (0..m)
-        .map(|j| {
-            // The contour's level where this point is (between two of its points).
-            let at = (j as f32 + 0.5) / m as f32 * n as f32 - 0.5;
-            let (i0, t) = (at.floor().max(0.0) as usize, at - at.floor());
-            lv[i0.min(n - 1)] * (1.0 - t) + lv[(i0 + 1) % n] * t
-        })
-        .collect();
-    let (most, gap, rest, life) = ripple_room(&g);
-    // With the tempo known a ripple's way out takes as many beats as there is room for
-    // ripples, and one leaves on each beat: those on their way are a beat apart, moving in
-    // time. Without it, as fast as they go, as often as there is room.
-    let (gap, life) = if period > 0.0 { ((period * 0.85).max(RIPPLE_GAP), (most as f32 * period).clamp(1.0, RIPPLE_LIFE)) } else { (gap, life) };
+    // The contour's level at each of `k` points round it (between two of its own).
+    let sample = |k: usize| -> Vec<f32> {
+        (0..k)
+            .map(|j| {
+                let at = (j as f32 + 0.5) / k as f32 * n as f32 - 0.5;
+                let (i0, t) = (at.floor().max(0.0) as usize, at - at.floor());
+                lv[i0.min(n - 1)] * (1.0 - t) + lv[(i0 + 1) % n] * t
+            })
+            .collect()
+    };
+    // A ring is rounder still: half the ripples' points.
+    let mr = (m / 2).max(12);
+    let tune = tune();
+    let (most, life) = ripple_room(&g);
+    let lane = life / most as f32;
     if dt > 0.0 {
-        rip.list.iter_mut().for_each(|r| r.age += dt);
-        rip.list.retain(|r| r.age < r.life && r.shape.len() == m);
+        // Where in the beat what is told now started: how far past the beat (before it:
+        // negative), and from the half beat.
+        let at = if period > 0.0 { (phase - RIPPLE_LATE / period).rem_euclid(1.0) } else { 0.0 };
+        let (past, to_half) = (if at < 0.5 { at } else { at - 1.0 }, (at - 0.5).abs());
+        // What is a kick to the ripples. Without a beat to go by: a hit that is surely one.
+        // With one: it depends on where in the beat it is.
+        let hit = if period <= 0.0 {
+            if hit >= RIPPLE_SURE { hit } else { 0.0 }
+        } else if past.abs() <= GRID_NEAR {
+            // An onset of the low notes with no kick told: a soft one, harder the stronger.
+            if hit > 0.0 {
+                hit
+            } else if onset >= GRID_LOW.0 && past >= -GRID_EARLY {
+                (0.3 + 0.08 * (onset - GRID_LOW.0)).min(0.7)
+            } else {
+                0.0
+            }
+        } else if to_half <= GRID_NEAR && hit >= GRID_HIT && onset >= GRID_LOW.1 {
+            hit
+        } else {
+            0.0
+        };
+        // The kick itself told a moment after its onset sent the ripple: the ripple is the
+        // kick's, thrown as hard.
+        if hit > 0.0
+            && rip.since < 0.08
+            && let Some(r) = rip.list.last_mut()
+        {
+            r.thrown(if tune.throw { RIPPLE_THROW * (0.6 + 0.4 * (0.5 * hit).max(swell.clamp(0.0, 1.0))) } else { 0.0 });
+        }
+        rip.quiet = if hit > 0.0 { 0.0 } else { rip.quiet + dt };
+        // No kick for more than a beat and a half: a breakdown, an intro, music without any.
+        let beatless = rip.quiet > if period > 0.0 { 1.6 * period } else { 1.0 };
+        if beatless || rip.pace <= 0.0 {
+            rip.pace = lane;
+        }
+        // A beat's length: the tempo's, or as far apart as the kicks' ripples have left.
+        let beat = if period > 0.0 { period } else { rip.pace };
+        // The way out takes as many beats as there is room for ripples: one leaves on each
+        // kick, so those on their way are a beat apart. Without kicks, as long as it takes
+        // at the ripples' own speed.
+        let way = if beatless { life } else { (most as f32 * beat).clamp(1.0, if period > 0.0 { RIPPLE_LIFE } else { life }) };
+        // What the kicks to come will push a ripple, of its way (so the drift makes up the
+        // rest, and it is gone when the way's time is up).
+        let pushes = if tune.push && !beatless { (RIPPLE_PUSH * 0.75 * (way / beat - 1.0).max(0.0)).min(0.3) } else { 0.0 };
+        let push = if tune.push && hit > 0.0 { RIPPLE_PUSH * RIPPLE_PUSH_RATE * (0.4 + 0.6 * hit) } else { 0.0 };
+        let low = swell.clamp(0.0, 1.0);
+        let throw = |power: f32| if tune.throw { RIPPLE_THROW * (0.6 + 0.4 * power) } else { 0.0 };
+        for r in &mut rip.list {
+            r.age += dt;
+            // A kick is told before its peak: how loud the low notes get in its first
+            // moments says how hard it was.
+            if r.age < RIPPLE_WINDUP {
+                r.thrown(throw(low));
+            }
+            r.pushed += push;
+            let (e, f) = ((-dt / r.tau).exp(), (-dt * RIPPLE_PUSH_RATE).exp());
+            let drift = (1.0 - r.throw - pushes).max(0.12) / way;
+            r.far += r.v * r.tau * (1.0 - e) + r.pushed * (1.0 - f) / RIPPLE_PUSH_RATE + (drift + if r.leaving { 3.0 } else { 0.0 }) * dt;
+            r.v *= e;
+            r.pushed *= f;
+        }
+        rip.list.retain(|r| r.far < 1.0 && r.shape.len() == m);
         rip.since += dt;
-        // Never more than there is room for: the gap between two is a ripple's life
-        // shared among them, so the oldest is gone by the time the next would crowd it.
-        if energy > 0.03 && rip.list.len() < most && ((hit > 0.0 && (rip.since >= gap || rip.list.is_empty())) || rip.since >= rest.max(gap * 1.5)) {
-            rip.list.push(Ripple::new(now, 0.0, life, hit));
+        // The rings: a snare's, a clap's. Every sharp edge is a snap and has its ring, kept
+        // back for two frames: shown if the sound has stayed bright since (`RING_CRACK`),
+        // dropped unseen if not (a kick's own edge, a plucked note).
+        rip.ring_since += dt;
+        let mut shown = false;
+        rip.rings.retain_mut(|r| {
+            r.age += if r.leaving { 4.0 * dt } else { dt };
+            if r.shown {
+                return r.age < r.life && r.soft.len() == mr;
+            }
+            r.bright += bright;
+            r.frames += 1.0;
+            if r.age >= RING_HOLD {
+                r.shown = r.bright / r.frames >= RING_CRACK;
+                shown |= r.shown;
+                return r.shown;
+            }
+            true
+        });
+        // Never more than there is room for: the oldest makes room.
+        if shown
+            && rip.rings.iter().filter(|r| r.shown && !r.leaving).count() > RING_MAX
+            && let Some(old) = rip.rings.iter_mut().find(|r| r.shown && !r.leaving)
+        {
+            old.leaving = true;
+        }
+        // With a beat to go by, a ring is a snare's or a clap's on the beat: an open hat on
+        // every half beat is bright too, and three rings a second were the hats'.
+        if tune.rings && snap > 0.0 && energy > 0.03 && (period <= 0.0 || past.abs() <= GRID_NEAR) && (rip.ring_since >= (0.42 * beat).clamp(RING_GAP, 0.3) || rip.rings.is_empty()) {
+            let mut soft = sample(mr);
+            smooth_ring(&mut soft, 3);
+            rip.rings.push(Ring { soft, age: 0.0, life: if period > 0.0 { (2.0 * period).clamp(0.6, 1.2) } else { 0.9 }, leaving: false, shown: false, bright: 0.0, frames: 0.0 });
+            rip.ring_since = 0.0;
+        }
+        // What sends a ripple now, and how hard: a kick (every one that is not right on the
+        // last one's heels); without kicks a swell of the music, or a long lull.
+        let send = if energy <= 0.03 {
+            None
+        } else if hit > 0.0 {
+            (rip.since >= (0.42 * beat).clamp(RIPPLE_GAP, 0.3) || rip.list.is_empty()).then_some((0.5 * hit).max(low))
+        } else if !beatless {
+            None
+        } else if !tune.swells {
+            (rip.since >= (lane * 1.5).max(RIPPLE_REST)).then_some(0.0)
+        } else if period > 0.0 {
+            // No kicks, but the music keeps a beat: a swell's ripple, or a lull's, waits
+            // for the next beat and leaves on it.
+            if topped && rip.since >= RIPPLE_REST {
+                rip.due = Some((0.3 + 2.0 * rise).min(0.8).max(rip.due.unwrap_or(0.0)));
+            } else if rip.since >= RIPPLE_LULL && rip.due.is_none() {
+                rip.due = Some(0.0);
+            }
+            if on_beat { rip.due.take() } else { None }
+        } else if topped && rip.since >= RIPPLE_REST {
+            Some((0.3 + 2.0 * rise).min(0.8))
+        } else {
+            (rip.since >= RIPPLE_LULL).then_some(0.0)
+        };
+        if hit > 0.0 || period <= 0.0 {
+            rip.due = None;
+        }
+        if let Some(power) = send {
+            if hit > 0.0 {
+                rip.pace += (rip.since.min(lane) - rip.pace) * 0.35;
+            }
+            // Never more than there is room for: the oldest makes room, out at the edge
+            // where it is all but gone.
+            if rip.list.iter().filter(|r| !r.leaving).count() >= most
+                && let Some(old) = rip.list.iter_mut().find(|r| !r.leaving)
+            {
+                old.leaving = true;
+            }
+            let mut r = Ripple::new(sample(m), 0.0, hit);
+            r.tau = RIPPLE_THROW_TIME * way;
+            r.thrown(throw(power));
+            rip.list.push(r);
             rip.since = 0.0;
         }
     } else {
@@ -927,19 +1206,19 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
         if energy > 0.03 {
             // As many as there is room for, spread over the way out.
             let k = most.min(RIPPLE_STILL.len());
-            rip.list = (0..k).map(|i| Ripple::new(now.clone(), RIPPLE_STILL[i * RIPPLE_STILL.len() / k] * life, life, 0.0)).collect();
+            rip.list = (0..k).map(|i| Ripple::new(sample(m), RIPPLE_STILL[i * RIPPLE_STILL.len() / k], 0.0)).collect();
         }
     }
     let around = g.frame(m);
     let mut pts = Vec::with_capacity(m);
     for r in &rip.list {
-        let u = (r.age / r.life).clamp(0.0, 1.0);
-        // Steadily out, easing a little toward the end, where it fades (the brush); its
-        // shape kept, lower and softer the farther it is: an echo of the contour.
-        let out = g.travel * (0.75 * u + 0.25 * (1.0 - (1.0 - u) * (1.0 - u)));
+        // Its shape kept, lower and softer the farther it is: an echo of the contour. It
+        // fades with the distance (the brush).
+        let u = r.far.clamp(0.0, 1.0);
+        let out = g.travel * u;
         let amp = g.len * (1.0 - u);
         let relax = (u * 1.25).min(1.0);
-        // Turned round by its age: the shape read a little back along the ring.
+        // Turned round as it goes: the shape read a little back along the ring.
         let shift = RIPPLE_TWIST * u / std::f32::consts::TAU * m as f32;
         let (whole, part) = (shift.floor() as usize, shift - shift.floor());
         let turned = |v: &[f32], j: usize| {
@@ -953,6 +1232,20 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
             (x + dx * d, y + dy * d)
         }));
         closed_curve(&mut p.ripples, &pts);
+    }
+    // The rings: off the contour (smoothed), quickly out and slowing, to where their brush
+    // is gone.
+    let around = g.frame(mr);
+    for r in rip.rings.iter().filter(|r| r.shown) {
+        let u = (r.age / r.life).clamp(0.0, 1.0);
+        let out = g.travel * r.far();
+        let amp = g.len * (1.0 - u);
+        pts.clear();
+        pts.extend(around.iter().zip(&r.soft).map(|(&((x, y), (dx, dy)), &s)| {
+            let d = (s * amp + out).min(g.travel);
+            (x + dx * d, y + dy * d)
+        }));
+        closed_curve(&mut p.rings, &pts);
     }
 }
 
@@ -1528,6 +1821,9 @@ pub struct Brushes {
     /// The ring's ripples, and their line's width.
     pub ripples: Brush,
     pub ripple_width: f32,
+    /// The ring's snare rings, and their line's width.
+    pub rings: Brush,
+    pub ring_width: f32,
     /// Sparks: the young ones' dots, the old ones', the discs of light round them.
     pub sparks: Brush,
     pub sparks_old: Brush,
@@ -1587,8 +1883,14 @@ pub fn brushes(look: &Look, stage: &Stage, top_h: f32, refl_h: f32, stops: &[(f3
             b.caps = b.fill.clone();
             // The ripples: through the colours on their way out, gone at the reach (a ripple
             // cannot fade by its age in one path: where it is says how old it is).
-            b.ripples = radial(1.0, &|t| 0.95 * (1.0 - t).powf(0.8));
+            b.ripples = radial(1.0, &|t| 0.95 * (1.0 - t.powf(1.5)).powf(0.9));
             b.ripple_width = (g.len * 0.022).clamp(1.25, 2.25);
+            // The snare's rings: the look's colours most of the way to white (they are to be
+            // told from the ripples at a glance), bright for most of their way and gone
+            // where it ends.
+            let glare: Vec<(f32, [u8; 3], f32)> = stops.iter().map(|&(t, c, al)| (t, c.map(|v| (f32::from(v) + (255.0 - f32::from(v)) * 0.7).round() as u8), al.max(0.75))).collect();
+            b.rings = radial_of(&glare, (g.hub + g.gap + RING_REACH * g.travel) / reach, &|t| 1.0 - t * t * t);
+            b.ring_width = b.ripple_width;
             // The sparks: as the ripples, fainter the farther out (and smaller the older).
             b.sparks = radial_of(&hot, 1.0, &|t| 0.95 * (1.0 - t).powf(0.6));
             b.sparks_old = radial_of(&hot, 1.0, &|t| 0.5 * (1.0 - t).powf(0.6));
@@ -1743,6 +2045,10 @@ pub fn swatch(look: &Look, colours: Colours, accent: [u8; 3], palette: &[[u8; 3]
     }
     linear(90.0, &s, 1.0)
 }
+
+#[cfg(test)]
+#[path = "trace.rs"]
+mod trace;
 
 #[cfg(test)]
 mod tests {
@@ -2025,12 +2331,14 @@ mod tests {
             last = now;
         }
         assert!(spread(&last) < first_spread * 0.6, "flatter: {} then {}", first_spread, spread(&last));
-        // With sound and no beat, one after each rest; never more than the most at once.
-        let mut most = 0;
+        // With sound and nothing happening in it, one after a long lull (not by a clock that
+        // can be heard as one); never more than the most at once.
+        let (mut most, mut left) = (0, 0);
         for _ in 0..600 {
             most = most.max(loops(&frame(&mut d, &quiet)).len());
+            left += d.ripples.list.iter().filter(|r| r.age == 0.0).count();
         }
-        assert!((2..=ripple_room(&g).0).contains(&most), "{most}");
+        assert!((1..=ripple_room(&g).0).contains(&most) && (2..=(10.0 / RIPPLE_LULL) as usize).contains(&left), "{most} at once, {left} left");
         // Silence: those on their way finish it, and no more leave.
         let silent = vec![0.0; bands];
         for _ in 0..(RIPPLE_LIFE / dt) as usize + 2 {
@@ -2046,7 +2354,7 @@ mod tests {
         // in the panel, they are not crowded.
         // A ripple is gone sooner there too: the same speed, a shorter way.
         let (small, big) = (ripple_room(&halo(&stage(300.0, 300.0))), ripple_room(&halo(&stage(1100.0, 1100.0))));
-        assert!(small.0 < big.0 && small.3 < big.3 && big.0 == RIPPLE_MAX && big.3 == RIPPLE_LIFE, "{small:?} {big:?}");
+        assert!(small.0 < big.0 && small.1 < big.1 && big.0 == RIPPLE_MAX && big.1 == RIPPLE_LIFE, "{small:?} {big:?}");
         // Intensity: the same music, a bigger swing.
         let swing = |intensity: f32| {
             let l = Look { intensity, ..look(Style::Radial) };
@@ -2059,6 +2367,178 @@ mod tests {
         d.draw(&look(Style::Bars), &s, true, &quiet, &quiet);
         d.tick(dt);
         assert!(d.draw(&l, &s, true, &quiet, &quiet).ripples.is_empty());
+    }
+
+    #[test]
+    fn every_kick_has_its_ripple_and_the_field_moves_with_the_beat() {
+        let l = look(Style::Radial);
+        let s = stage(1100.0, 1100.0);
+        let g = halo(&s);
+        let (_, bands) = layout(&l, &s);
+        let (most, _) = ripple_room(&g);
+        assert_eq!(most, RIPPLE_MAX);
+        let foot = g.hub + g.gap;
+        let r = |q: &(f32, f32)| ((q.0 - g.cx).powi(2) + (q.1 - g.cy).powi(2)).sqrt();
+        let quiet: Vec<f32> = (0..bands).map(|i| if i < bands / 8 { 0.1 } else { 0.15 + 0.5 * ((i as f32) * 0.21).sin().abs() }).collect();
+        let loud: Vec<f32> = quiet.iter().enumerate().map(|(i, &v)| if i < bands / 8 { 0.9 } else { v }).collect();
+        let dt = 1.0 / 60.0;
+        let frame = |d: &mut Draw, levels: &[f32], hit: f32, snap: f32, period: f32| {
+            d.tick(dt);
+            d.pulse(Pulse { hit, snap, period, bright: 0.6, ..Pulse::default() });
+            d.draw(&l, &s, true, levels, levels).clone()
+        };
+        // A kick on every beat at 120 a minute, the tempo heard a hair long and a hair short
+        // (a way's time of just over and just under five beats: with room for five, the
+        // sixth kick used to find the first one's ripple still on its way and go without).
+        for heard in [0.5015, 0.4985] {
+            let mut d = Draw::default();
+            let (mut kicks, mut left) = (0, 0);
+            for i in 0..30 * 40 {
+                let kick = i % 30 == 0;
+                frame(&mut d, &quiet, if kick { 0.7 } else { 0.0 }, 0.0, if i < 90 { 0.0 } else { heard });
+                let new = d.ripples.list.iter().filter(|r| r.age == 0.0).count();
+                kicks += usize::from(kick);
+                left += new;
+                assert_eq!(new, usize::from(kick), "frame {i}: a ripple on the kick, none between");
+                assert!(d.ripples.list.iter().filter(|r| !r.leaving).count() <= most && d.ripples.list.len() <= most + 1, "frame {i}: {} on their way", d.ripples.list.len());
+            }
+            assert_eq!((kicks, left), (40, 40));
+            // In time: those on their way about a beat's share of the way apart.
+            let far: Vec<f32> = d.ripples.list.iter().filter(|r| !r.leaving).map(|r| r.far).collect();
+            assert!(far.len() >= most - 1 && far.windows(2).all(|w| w[0] > w[1] + 0.08), "{far:?}");
+        }
+        // A kick pushes those on their way: they surge with it, and drift between kicks.
+        let mut d = Draw::default();
+        for i in 0..30 * 8 - 1 {
+            frame(&mut d, &quiet, if i % 30 == 0 { 0.7 } else { 0.0 }, 0.0, 0.5);
+        }
+        let before = d.ripples.list[1].far;
+        frame(&mut d, &quiet, 0.0, 0.0, 0.5);
+        let drifted = d.ripples.list[1].far - before;
+        frame(&mut d, &quiet, 0.7, 0.0, 0.5);
+        let pushed = d.ripples.list[1].far - before - drifted;
+        assert!(drifted > 0.0 && pushed > drifted * 2.5, "a frame's way: {drifted} between kicks, {pushed} on one");
+        // A harder kick throws its ripple faster; and the low notes' swell in its first
+        // moments says how hard it was (the kick is told before its peak).
+        let flown = |hit: f32, levels: &[f32]| {
+            let mut d = Draw::default();
+            frame(&mut d, &quiet, hit, 0.0, 0.5);
+            for _ in 0..12 {
+                frame(&mut d, levels, 0.0, 0.0, 0.5);
+            }
+            d.ripples.list[0].far
+        };
+        let (soft, hard, loudest) = (flown(0.3, &quiet), flown(1.0, &quiet), flown(0.3, &loud));
+        assert!(soft < hard && hard < loudest && soft > 0.05, "{soft} {hard} {loudest}");
+        // A snare sends a ring: one closed curve off the contour, shown two frames on (by
+        // then a kick it might have been the edge of has been told), quickly out to the end
+        // of the ripples' way; and no ripple.
+        let mut d = Draw::default();
+        let p = frame(&mut d, &quiet, 0.0, 0.8, 0.5);
+        assert!(d.ripples.rings.len() == 1 && p.rings.is_empty() && p.ripples.is_empty());
+        assert!(frame(&mut d, &quiet, 0.0, 0.0, 0.5).rings.is_empty(), "not before it is known for a snare's");
+        let mut last = foot;
+        for i in 0..56 {
+            let p = frame(&mut d, &quiet, 0.0, 0.0, 0.5);
+            let ring = loops(&p.rings).remove(0);
+            let mean = ring.iter().map(r).sum::<f32>() / ring.len() as f32;
+            assert!(mean > last && ring.iter().all(|q| r(q) <= foot + g.travel + 0.2), "frame {i}: {mean} after {last}");
+            last = mean;
+        }
+        assert!((last - foot - RING_REACH * g.travel).abs() < g.travel * 0.06, "at its way's end: {last}");
+        for _ in 0..6 {
+            frame(&mut d, &quiet, 0.0, 0.0, 0.5);
+        }
+        assert!(frame(&mut d, &quiet, 0.0, 0.0, 0.5).rings.is_empty(), "gone after two beats");
+        // A roll: never more than there is room for, the oldest making room.
+        for i in 0..60 {
+            frame(&mut d, &quiet, 0.0, if i % 7 == 0 { 0.6 } else { 0.0 }, 0.5);
+            assert!(d.ripples.rings.iter().filter(|r| r.shown && !r.leaving).count() <= RING_MAX && d.ripples.rings.len() <= RING_MAX + 2);
+        }
+        assert!(d.ripples.rings.len() >= 3);
+        // A snap is any sharp edge. A kick's own (told a frame before the kick, the sound
+        // bright for that frame only) and a plucked note's (never bright) send no ring; a
+        // clap on a kick does (still bright two frames on).
+        let pulse = |d: &mut Draw, hit: f32, snap: f32, bright: f32| {
+            d.tick(dt);
+            d.pulse(Pulse { hit, snap, period: 0.5, bright, ..Pulse::default() });
+            d.draw(&l, &s, true, &quiet, &quiet).clone()
+        };
+        let mut d = Draw::default();
+        for i in 0..30 * 8 {
+            let p = pulse(&mut d, if i % 30 == 1 { 0.9 } else { 0.0 }, if i % 30 == 0 { 0.9 } else { 0.0 }, if i % 30 == 0 { 0.4 } else { 0.004 });
+            assert!(p.rings.is_empty(), "a kick's edge, frame {i}");
+        }
+        let mut d = Draw::default();
+        for i in 0..30 * 8 {
+            let p = pulse(&mut d, 0.0, if i % 15 == 0 { 0.8 } else { 0.0 }, 0.03);
+            assert!(p.rings.is_empty(), "a plucked note, frame {i}");
+        }
+        let mut d = Draw::default();
+        let mut shown = 0;
+        for i in 0..30 * 8 {
+            let clap = i % 60 < 12;
+            let before = d.ripples.rings.iter().filter(|r| r.shown).count();
+            pulse(&mut d, if i % 30 == 1 { 0.9 } else { 0.0 }, if i % 30 == 0 { 0.9 } else { 0.0 }, if i % 30 == 0 { 0.4 } else if clap { 0.14 } else { 0.004 });
+            shown += usize::from(d.ripples.rings.iter().filter(|r| r.shown).count() > before);
+        }
+        assert_eq!(shown, 4, "one for each clap");
+        // With a beat to go by, what sends a ripple depends on where in the beat it is: on
+        // the beat any kick told, or an onset of the low notes; on the half beat a firm kick
+        // the low notes bear out; off both nothing (a bass line's notes fall anywhere).
+        let sent = |hit: f32, low: f32, phase: f32| {
+            let mut d = Draw::default();
+            d.tick(dt);
+            d.pulse(Pulse { hit, period: 0.5, phase, low, ..Pulse::default() });
+            !d.draw(&l, &s, true, &quiet, &quiet).ripples.is_empty()
+        };
+        // (A kick is told a twentieth of a beat after it started, at this tempo.)
+        for (hit, low, phase, goes) in [
+            (0.35, 0.0, 0.05, true),
+            (0.35, 0.0, 0.97, true),
+            (0.0, 4.0, 0.06, true),
+            (0.0, 4.0, 0.95, false),
+            (0.0, 2.0, 0.06, false),
+            (0.6, 9.0, 0.55, false),
+            (0.8, 2.0, 0.55, false),
+            (0.8, 4.0, 0.55, true),
+            (0.0, 9.0, 0.55, false),
+            (1.0, 9.0, 0.3, false),
+            (1.0, 9.0, 0.8, false),
+        ] {
+            assert_eq!(sent(hit, low, phase), goes, "a hit of {hit}, an onset of {low}, at {phase} of the beat");
+        }
+        // While no tempo is known a weak hit is no kick (music without any has them all the
+        // time): no ripple, and the music still counts as having no beat.
+        let mut d = Draw::default();
+        for i in 0..120 {
+            d.tick(dt);
+            d.pulse(Pulse { hit: if i % 12 == 0 { 0.44 } else { 0.0 }, snap: 0.0, period: 0.0, ..Pulse::default() });
+            assert!(d.draw(&l, &s, true, &quiet, &quiet).ripples.is_empty(), "frame {i}");
+        }
+        d.tick(dt);
+        d.pulse(Pulse { hit: 0.8, snap: 0.0, period: 0.0, ..Pulse::default() });
+        assert_eq!(loops(&d.draw(&l, &s, true, &quiet, &quiet).ripples).len(), 1, "a real one");
+        // Without kicks (a breakdown, the tempo still held): nothing leaves by the clock;
+        // a ripple leaves when the music swells and the swell tops out.
+        let mut d = Draw::default();
+        for i in 0..120 {
+            assert!(frame(&mut d, &quiet, 0.0, 0.0, 0.5).ripples.is_empty(), "frame {i}: nothing to send one");
+        }
+        assert!(frame(&mut d, &loud, 0.0, 0.0, 0.5).ripples.is_empty(), "still rising");
+        assert!(frame(&mut d, &quiet, 0.0, 0.0, 0.5).ripples.is_empty(), "the swell topped out: its ripple waits for the beat");
+        frame(&mut d, &quiet, 0.0, 0.0, 0.5);
+        d.tick(dt);
+        d.pulse(Pulse { period: 0.5, beat: true, ..Pulse::default() });
+        assert_eq!(loops(&d.draw(&l, &s, true, &quiet, &quiet).ripples).len(), 1, "and leaves on it");
+        // With kicks, a swell sends none of its own.
+        let mut d = Draw::default();
+        let mut left = 0;
+        for i in 0..30 * 6 {
+            frame(&mut d, if i % 30 < 5 { &loud } else { &quiet }, if i % 30 == 0 { 0.7 } else { 0.0 }, 0.0, 0.5);
+            left += d.ripples.list.iter().filter(|r| r.age == 0.0).count();
+        }
+        assert_eq!(left, 6);
     }
 
     /// The centres of a path of dots (each two arcs: its leftmost point, its rightmost, back).
@@ -2153,7 +2633,7 @@ mod tests {
         assert!(!a.line.is_empty() && !a.front_glow.is_empty() && a.fill.is_empty());
         // It turns: a frame later the grains have moved, and a beat pushes the ring out.
         d.tick(0.1);
-        d.pulse(Pulse { hit: 1.0, snap: 0.0, period: 0.0 });
+        d.pulse(Pulse { hit: 1.0, snap: 0.0, period: 0.0, ..Pulse::default() });
         let b = d.draw(&l, &s, true, &levels, &levels).clone();
         assert!(b.front != a.front && b.pulse >= 0.99);
         let pushed = dots(&b.sparks_old).iter().chain(&dots(&b.front)).map(r).fold(0.0, f32::max);
@@ -2172,7 +2652,7 @@ mod tests {
             let sound: Vec<f32> = (0..bands).map(|i| 0.3 + 0.5 * ((i as f32) * 0.3).sin().abs()).collect();
             let frame = |d: &mut Draw, hit: f32, levels: &[f32]| {
                 d.tick(1.0 / 60.0);
-                d.pulse(Pulse { hit, snap: 0.0, period: 0.5 });
+                d.pulse(Pulse { hit, snap: 0.0, period: 0.5, ..Pulse::default() });
                 d.draw(&l, &s, true, levels, levels).clone()
             };
             // A still frame has something to show, the same each time, round the cover.

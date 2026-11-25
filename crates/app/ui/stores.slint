@@ -576,6 +576,10 @@ export global Visualizer {
     // The ring's ripples: the contours that left the cover on a beat, on their way out.
     in-out property <string> ripples;
     in-out property <brush> ripples-brush;
+    // The ring's snare rings: thin and quick, gone well inside the ripples' way.
+    in-out property <string> rings;
+    in-out property <brush> rings-brush;
+    in-out property <length> rings-width: 1.5px;
     // Sparks (the ring's, the bonfire's): the young ones' dots, the old ones', and the soft
     // discs of light round them.
     in-out property <string> sparks;
