@@ -4,9 +4,12 @@ Now playing shows the music moving (`visualizer/mod.rs` runs it, `visualizer/dra
 `visualizer/look.rs` is its look and its settings; the engine's tap and the analysis are
 `player_core::spectrum`). By default it is the look it always had, Classic: faint bars in the
 playing cover's accent along the bottom of the page, behind the cover and the panel, with peak
-caps and their mirrored reflection, which now sits between the bars and the player bar where it
-can be seen (it used to lie entirely behind the bar's frosted glass, where nothing of it
-showed). Settings > Visualizer, or `V`, turns it on and off (on by default).
+caps and their mirrored reflection. Behind the page the bars rise from the player bar's top
+edge (as the bonfire's coals do) and the reflection lies under the bar, seen only through its
+frosted glass, drawn stronger by what the glass's tint holds back (`1 / (1 - its alpha)`, about
+4 times: visualizer/mod.rs `brush`) so it shows there as the dimmer copy its strength says (with
+the glass off the bar is opaque and hides it); in the panel, on the full page
+and in the Settings preview it sits under the bars in the stage. Settings > Visualizer, or `V`, turns it on and off (on by default).
 
 **Styles** (`visualizer::look::Style`), each drawn by a few `Path`s rebuilt per frame:
 
@@ -126,7 +129,9 @@ quarter of a second long), and
 beats played in 8 s, 176.0 for the hip-hop track's 88 (twice it: its eighth notes).
 
 **Where it shows** (`Placement`): behind the page (a band along the bottom; the bars at most a
-quarter of the page tall, `[visualizer] height` at most), as a Visualizer tab of Now playing's
+quarter of the page tall, `[visualizer] height` at most, their baseline at the player bar's top
+edge and their reflection under the bar, its share of the bars' height but no taller than the
+bar: `VisualizerStage.refl-room`, `Stage::refl_room`, `draw::split`), as a Visualizer tab of Now playing's
 panel beside Up next and Lyrics (`Y` gives way to the lyrics), or the full page (the cover and
 title in the top left corner, the stage everywhere else). `Shift+V` (remappable: "Where the
 visualizer shows") moves it to the next (`visualizer::look::cycle_placement`).
@@ -321,8 +326,8 @@ running, the app is idle as before (`MP_BENCH=viz-idle`): 0.0 ms of CPU in 45 s 
 runs before and after (one run of the new build saw a single 15.6 ms scheduler tick), and in a
 paired run 2 context switches in 35 s before and after (counted outside, from the threads' raw
 performance counters; another run of the old build saw 27). With the software renderer every style draws (gradients, the
-ring's radial and conic gradients), and the reflection, now above the opaque bar,
-shows there too.
+ring's radial and conic gradients); behind the page the reflection lies under the bar, which
+is opaque there (no glass), so it does not show.
 
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the

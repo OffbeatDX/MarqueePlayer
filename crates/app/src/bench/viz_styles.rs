@@ -160,6 +160,18 @@ pub fn run() {
             show(st, app, Preset::Classic, Placement::Behind);
             check(r, "running behind the page", crate::visualizer::running() == (true, true), state(app));
         });
+        // Behind the page the bars rise from the player bar's top edge and their reflection
+        // lies under the bar (seen through its glass), no taller than it.
+        for preset in [Preset::Classic, Preset::Prism] {
+            step!(400, move |st, app, _r| show(st, app, preset, Placement::Behind));
+            step!(100, move |_st, app, r| {
+                let (g, bar) = (app.global::<Visualizer>(), app.global::<crate::Theme>().get_bar_height());
+                let (h, top, refl) = (g.get_stage_height(), g.get_top_h(), g.get_refl_h());
+                let detail = format!("stage {h:.1}, bars {top:.1}, reflection {refl:.1} (room {:.1}), bar {bar:.1}", g.get_stage_refl_room());
+                let ok = refl > 1.0 && refl <= bar && (top + refl - h).abs() < 0.01 && (g.get_stage_refl_room() - refl).abs() < 0.01;
+                check(r, &format!("{}, behind: the baseline at the bar's top, the reflection under the bar", preset.id()), ok, detail);
+            });
+        }
     }
 
     // ---- Colour schemes, by height and across, on the full page -------------------------

@@ -628,6 +628,9 @@ export global Visualizer {
     // The halo's hub on the stage shown (the cover it surrounds: its half size), which the
     // stage lays out (VisualizerStage.hub).
     in-out property <length> stage-hub;
+    // The most room the reflection has at the stage's foot (VisualizerStage.refl-room):
+    // behind the page, what lies under the player bar; below 0, the look's share.
+    in-out property <length> stage-refl-room: -1px;
     // The look drawn is the halo (the ring style), around the cover's round shape or, with
     // `square`, its rounded square (visualizer/mod.rs, MP_HALO_SHAPE).
     in-out property <bool> ring;

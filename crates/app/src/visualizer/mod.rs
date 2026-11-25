@@ -746,6 +746,7 @@ fn stage_of(app: &AppWindow) -> Stage {
     Stage {
         hub: g.get_stage_hub().max(0.0),
         corner: if g.get_square() { t.get_radius_card() } else { -1.0 },
+        refl_room: g.get_stage_refl_room(),
         ..Stage::new(g.get_stage_width().max(1.0), g.get_stage_height().max(1.0), (t.get_viz_bar_width(), t.get_viz_bar_gap()))
     }
 }
@@ -754,6 +755,19 @@ fn stage_of(app: &AppWindow) -> Stage {
 fn brush(z: &mut Viz, app: &AppWindow, l: &Look, s: &Stage, at: Where, behind: bool) {
     let accent = rgb(app.global::<Theme>().get_accent());
     let alpha = l.strength(at == Where::Behind || (at == Where::Preview && behind));
+    // Behind the page the reflection lies under the player bar, whose glass lets through
+    // only what its tint does not cover (about a quarter): drawn that much stronger, it
+    // shows through the glass as the dimmer copy its strength says. Without glass the bar
+    // is opaque and hides it.
+    let t = app.global::<Theme>();
+    let glassed;
+    let l = if s.refl_room > 0.0 && t.get_glass() {
+        let through = (1.0 - t.get_glass_tint().alpha() as f32 / 255.0).max(0.2);
+        glassed = Look { reflection_strength: l.reflection_strength / through, ..l.clone() };
+        &glassed
+    } else {
+        l
+    };
     let key = BrushKey { look: l.clone(), stage: *s, top: z.draw.paths.top_h, refl: z.draw.paths.refl_h, accent, palette: z.palette.clone(), alpha };
     if z.brushes.as_ref() == Some(&key) {
         return;

@@ -50,11 +50,14 @@ pub struct Stage {
     pub hub: f32,
     /// The cover's corner radius when the halo follows its square shape; below 0: round.
     pub corner: f32,
+    /// The most room the reflection's box has at the stage's foot (behind the page: what
+    /// lies under the player bar, `VisualizerStage.refl-room`); below 0: no bound.
+    pub refl_room: f32,
 }
 
 impl Stage {
     pub fn new(w: f32, h: f32, bar: (f32, f32)) -> Stage {
-        Stage { w, h, bar, hub: 0.0, corner: -1.0 }
+        Stage { w, h, bar, hub: 0.0, corner: -1.0, refl_room: -1.0 }
     }
 }
 
@@ -264,10 +267,14 @@ impl Halo {
     }
 }
 
-/// The top box and the reflection's, for a stage of height `h`.
-pub fn split(look: &Look, h: f32, reflect_here: bool) -> (f32, f32) {
-    if reflect_here && look.reflection && look.style.reflects() {
-        let top = (h / (1.0 + look.reflection_size)).floor();
+/// The top box and the reflection's, for a stage of height `h`: the reflection's box no
+/// taller than `room` (below 0: no bound; 0: none), the top box then taking the rest.
+pub fn split(look: &Look, h: f32, room: f32, reflect_here: bool) -> (f32, f32) {
+    if reflect_here && look.reflection && look.style.reflects() && room != 0.0 {
+        let mut top = (h / (1.0 + look.reflection_size)).floor();
+        if room > 0.0 {
+            top = top.max((h - room).floor());
+        }
         (top, h - top)
     } else {
         (h, 0.0)
@@ -488,7 +495,7 @@ impl Draw {
         p.sparks_glow.clear();
         p.front.clear();
         p.front_glow.clear();
-        let (top, refl) = split(look, stage.h, reflect_here);
+        let (top, refl) = split(look, stage.h, stage.refl_room, reflect_here);
         p.top_h = top;
         p.refl_h = refl;
         let strips = look.colour_by == ColourBy::Frequency && !matches!(look.colours, Colours::Accent);
@@ -2497,8 +2504,15 @@ mod tests {
     fn the_reflection_mirrors_the_bars_below_the_baseline_and_fades() {
         let l = look(Style::Bars);
         let s = stage(140.0, 150.0);
-        let (top, refl) = split(&l, s.h, true);
+        let (top, refl) = split(&l, s.h, -1.0, true);
         assert_eq!((top, refl), (100.0, 50.0));
+        // Behind the page the reflection's box is no taller than the room under the bar:
+        // the bars keep their height, the baseline where that room begins.
+        assert_eq!(split(&l, 130.0, 30.0, true), (100.0, 30.0));
+        assert_eq!(split(&l, 150.0, 88.0, true), (100.0, 50.0), "room to spare: the look's share");
+        let roomy = Stage { refl_room: 30.0, ..stage(140.0, 130.0) };
+        let p = Draw::default().draw(&l, &roomy, true, &[0.6; 8], &[0.0; 8]).clone();
+        assert_eq!((p.top_h, p.refl_h), (100.0, 30.0));
         let (_, bands) = layout(&l, &s);
         let mut levels = vec![0.0; bands];
         levels[2] = 0.6;
@@ -2517,9 +2531,10 @@ mod tests {
             assert!(points(&p.refl[k]).iter().all(|q| q.1 >= s0 - 0.06 && q.1 <= s1 + 0.06), "strip {k}");
         }
         // Not where the stage has no room for it (the ring), or off.
-        assert_eq!(split(&look(Style::Radial), 150.0, true), (150.0, 0.0));
-        assert_eq!(split(&Look { reflection: false, ..l.clone() }, 150.0, true), (150.0, 0.0));
-        assert_eq!(split(&l, 150.0, false), (150.0, 0.0));
+        assert_eq!(split(&look(Style::Radial), 150.0, -1.0, true), (150.0, 0.0));
+        assert_eq!(split(&Look { reflection: false, ..l.clone() }, 150.0, -1.0, true), (150.0, 0.0));
+        assert_eq!(split(&l, 150.0, -1.0, false), (150.0, 0.0));
+        assert_eq!(split(&l, 150.0, 0.0, true), (150.0, 0.0), "no room: none");
     }
 
     #[test]

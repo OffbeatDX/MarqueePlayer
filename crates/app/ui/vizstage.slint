@@ -43,11 +43,19 @@ export component VisualizerStage inherits Rectangle {
     in property <length> hub-size: 0px;
     in property <bool> cover;
     out property <length> hub: root.hub-size > 0 ? root.hub-size : max(6px, (min(root.width, root.height) / 2 - 2px) * 0.58);
+    // The most room the reflection's box has at the stage's foot: behind the page, what
+    // lies under the player bar. Below 0: the look's share of the stage.
+    in property <length> refl-room: -1px;
     accessible-role: none;
     init => {
         Visualizer.stage-width = self.width;
         Visualizer.stage-height = self.height;
         Visualizer.stage-hub = self.hub;
+        Visualizer.stage-refl-room = self.refl-room;
+        Actions.visualizer-wake();
+    }
+    changed refl-room => {
+        Visualizer.stage-refl-room = self.refl-room;
         Actions.visualizer-wake();
     }
     changed width => {
