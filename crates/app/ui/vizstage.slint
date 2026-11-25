@@ -155,6 +155,11 @@ export component VisualizerStage inherits Rectangle {
         width: root.width;
         height: Visualizer.refl-h;
         visible: Visualizer.active;
+        // Under the player bar's glass it is drawn stronger by what the tint holds back
+        // (visualizer/mod.rs brush). With the bar slid away (auto-hide) nothing holds it
+        // back: fainter by as much, the reflection as strong as the look says.
+        opacity: root.refl-room > 0 && Theme.glass && !Player.bar-up ? max(0.2, 1 - Theme.glass-tint.alpha / 255) : 1;
+        animate opacity { duration: Theme.dur-sidebar; easing: ease-out; }
         for r in [
             { c: Visualizer.refl0, b: Visualizer.refl-brush0 },
             { c: Visualizer.refl1, b: Visualizer.refl-brush1 },

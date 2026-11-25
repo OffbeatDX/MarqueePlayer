@@ -3422,7 +3422,9 @@ mod tests {
             let (levels, hit, slide) = at(d, i, t);
             d.tick(dt);
             d.level(slide);
-            d.pulse(Pulse { hit, period, phase: if period > 0.0 { (t / period).fract() } else { 0.0 }, ..Pulse::default() });
+            // A hit told has the low notes bearing it out (a weak one counts only so, `GRID_WEAK`).
+            let low = if hit > 0.0 { GRID_WEAK.1 } else { 0.0 };
+            d.pulse(Pulse { hit, period, phase: if period > 0.0 { (t / period).fract() } else { 0.0 }, low, ..Pulse::default() });
             out.push(d.draw(l, s, true, &levels, &levels).clone());
         }
         out
