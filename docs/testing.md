@@ -289,7 +289,7 @@ refused, the quick menu's Your presets ▸, and settings.json read back after ea
 `vl-*.png` and a count of failed checks at the end of `bench-viz-look.txt`. It never touches
 the real clipboard and opens no file dialog.
 
-**The halo, traced** (`visualizer/trace.rs`, an ignored test: a tool, not a check). Nobody can watch the window move from a terminal, so this runs the real beat tracker, analysis and drawing over a stretch of sound at 60 frames a second and writes what happened: `trace.jsonl` (every frame: the kick, snap, tempo, beat, phase and brightness told, where each ripple and ring is) and the frames of chosen moments as SVG (the frame's own paths under its own brushes, to scale: what is too faint there is too faint in the window).
+**The halo, traced** (`visualizer/trace.rs`, an ignored test: a tool, not a check). Nobody can watch the window move from a terminal, so this runs the real beat tracker, analysis and drawing over a stretch of sound at 60 frames a second and writes what happened: `trace.jsonl` (every frame: the kick, snap, tempo (`per`, the beat's length), beat, phase, the low notes' onset (`low`) and brightness told, what the looks were given as the beat after `beat_hit` and `one_hit` (`given`, 0 for nothing), where each ripple and ring is) and the frames of chosen moments as SVG (the frame's own paths under its own brushes, to scale: what is too faint there is too faint in the window).
 
     ffmpeg -i track.flac -f f32le -ac 1 -ar 48000 track.pcm
     MP_TRACE_PCM=track.pcm MP_TRACE_OUT=<folder> MP_TRACE_FRAMES=12-12.7 cargo test -p marquee-player halo_trace -- --ignored

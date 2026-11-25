@@ -105,6 +105,8 @@ fn halo_trace() {
     let mut analyzer = Analyzer::new(analysis(&look));
     let mut tracker = Tracker::default();
     let mut d = Draw::default();
+    // What the looks are given as the beat (`beat_hit`, then `one_hit`), apart from the drawing.
+    let mut gate = Draw::default();
     let n = Analyzer::fft_size(rate);
     let dt = 1.0 / 60.0;
     let mut window = vec![0.0f32; n];
@@ -119,14 +121,16 @@ fn halo_trace() {
         }
         analyzer.update(Some((&window, rate)), bands, dt);
         let heard = tracker.update(&window, rate, dt);
-        d.pulse(Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low });
+        let pulse = Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low };
+        let given = gate.one_hit(beat_hit(&pulse), pulse.period, dt);
+        d.pulse(pulse);
         d.tick(dt);
         d.level(analyzer.level_slide_db());
         let (lv, pk) = (analyzer.levels().to_vec(), analyzer.peaks().to_vec());
         d.draw(&look, &stage, true, &lv, &pk);
         let low = (bands / 8).max(1);
         let swell = lv[..low].iter().sum::<f32>() / low as f32;
-        let _ = write!(lines, "{{\"t\":{t:.4},\"hit\":{:.3},\"kick\":{},\"snap\":{:.3},\"bpm\":{:.1},\"swell\":{swell:.3},\"punch\":{:.3},\"bright\":{:.4},\"beat\":{},\"phase\":{:.3},\"low\":{:.2},\"rip\":[", heard.hit, heard.kick, heard.snap, heard.bpm(), d.paths.punch, heard.bright, heard.beat, heard.phase, heard.low);
+        let _ = write!(lines, "{{\"t\":{t:.4},\"hit\":{:.3},\"kick\":{},\"snap\":{:.3},\"bpm\":{:.1},\"swell\":{swell:.3},\"punch\":{:.3},\"bright\":{:.4},\"beat\":{},\"phase\":{:.3},\"low\":{:.2},\"per\":{:.4},\"given\":{given:.3},\"rip\":[", heard.hit, heard.kick, heard.snap, heard.bpm(), d.paths.punch, heard.bright, heard.beat, heard.phase, heard.low, heard.period);
         for (i, r) in d.ripples.list.iter().enumerate() {
             let _ = write!(lines, "{}[{:.4},{:.3},{},{:.3}]", if i > 0 { "," } else { "" }, r.far, r.throw, u8::from(r.leaving), r.age);
         }
