@@ -172,6 +172,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_HALO_SHAPE=square` | Measurement and comparison only: the halo follows the cover's rounded square instead of a circle (the cover drawn square), as tried and left out. Works in every build |
 | `MP_HALO_WITHOUT=<words>` | Comparison only: the halo's ripples without some of what moves them (comma-separated: `throw`, a kick throwing its ripple; `push`, kicks pushing those on their way; `swells`, a ripple on a swell where there are no kicks, a timer instead). Works in every build |
 | `MP_HALO_WITH=rings` | The halo's snare rings, which are off: a thin white ring on a snare or a clap on the beat. Tried on real music and left out (a ring could not be connected to a sound heard); kept for another try at tuning them. Works in every build |
+| `MP_SATURN=<words>` | Which ways Saturn's ring shows the cover's weight, while the owner chooses (comma-separated: `kepler`, every grain at its distance's speed in a ring reaching nearer the cover; `pull`, a beat draws the ring in, spinning up; `infall`, dust spiralling down into the cover; `moons`, two moons on elliptical orbits; `none`, the ring as it was). Unset or empty: `kepler,pull,infall`. Read once. The tests set it their own way (`saturn_with`) and do not read it. Works in every build |
 | `MP_BARS_WITH=flash` | The bars' flash, which is off: the bars' area and reflection brighter on the beat (their alpha 1.3 times at a full one, settled before the next). Watched on real music and left out (too jarring, and at times with nothing much heard); kept for another try. Works in every build |
 | `MP_REDUCED_MOTION=1\|0` | Stand in for Windows' "Show animations in Windows" (off: the visualizer's default look is Calm). Works in every build |
 | `MP_BENCH_SKIP_ALBUM=<title>` | With `skip`: the album to play (default: the first of four tracks or more) |
@@ -296,9 +297,9 @@ the real clipboard and opens no file dialog.
 
 `MP_TRACE_STAGE=1300x1300x340` (width, height, hub), `MP_TRACE_STRENGTH=0.85` (the look's opacity) and `MP_HALO_WITHOUT` apply. A timeline of the ripples' distance against time, with the kicks and snaps on it, shows skipped beats, ripples by the clock and rings on the wrong sounds at a glance.
 
-**Saturn, traced** (`saturn_trace`, beside it). Saturn's frames over made-up music (120 and 170 a minute with a kick on every beat, 72 a minute with soft beats only, 120 a minute going quiet for four seconds), 60 a second for 12 seconds each, behind the page's size (a cover 300 px across): every grain's place, size and layer each frame (`<tag>-<case>.bin`, the format in its comment) and the brushes (`saturn.json`), for an animation of the look as drawn, before and after a change (run it on each, `MP_TRACE_TAG=before` and `after`).
+**Saturn, traced** (`saturn_trace`, beside it). Saturn's frames over made-up music (120 and 170 a minute with a kick on every beat, 72 a minute with soft beats only, weak kicks the low notes bear out, and 120 a minute going quiet for four seconds), 60 a second for 12 seconds each, behind the page's size (a cover 300 px across), in each of its ways (`plain`, the ring as it was; `kepler`, `pull`, `infall` and `moons` alone; `default`; `MP_TRACE_LOOKS` picks some): every grain's and moon's place, size and layer each frame (`<look>-<case>.bin`, the format in its comment) and the brushes (`saturn.json`), for an animation of each as drawn.
 
-    MP_TRACE_OUT=<folder> MP_TRACE_TAG=after cargo test -p marquee-player saturn_trace -- --ignored
+    MP_TRACE_OUT=<folder> cargo test -p marquee-player saturn_trace -- --ignored
 
 `MP_BENCH=server` (`bench/server.rs`) runs on any library of two albums of two tracks or more (the
 runner gives it the `formats` set). It starts a Navidrome stand-in on 127.0.0.1 itself
