@@ -51,8 +51,6 @@ fn style_name(s: Style) -> &'static str {
         Style::Radial => "ring",
         Style::Bonfire => "bonfire",
         Style::Saturn => "saturn",
-        Style::Galaxy => "galaxy",
-        Style::Swarm => "swarm",
         Style::Eclipse => "eclipse",
     }
 }
@@ -303,8 +301,13 @@ pub fn parse(text: &str) -> Result<Shared, Refusal> {
                     "ring" | "radial" | "halo" | "shockwave" => Style::Radial,
                     "bonfire" | "embers" | "sparks" | "fireworks" => Style::Bonfire,
                     "saturn" => Style::Saturn,
-                    "galaxy" => Style::Galaxy,
-                    "swarm" => Style::Swarm,
+                    // Galaxy and Swarm were taken out on 2026-11-25: a preset shared before
+                    // shows as Saturn, dust round the cover too, and says so.
+                    old @ ("galaxy" | "swarm") => {
+                        let was = if old == "galaxy" { "Galaxy" } else { "Swarm" };
+                        notes.push(format!("its look, {was}, is no longer in this version: Saturn is shown instead"));
+                        Style::Saturn
+                    }
                     "eclipse" => Style::Eclipse,
                     _ => return Err(bad("style")),
                 }
@@ -420,6 +423,22 @@ mod tests {
         assert_eq!(s.look.colours, Look::classic(&ThemeViz::default()).colours);
         let s = parse("MarqueeViz/1").unwrap();
         assert_eq!(s.name, None);
+    }
+
+    #[test]
+    fn a_look_taken_out_shows_as_saturn_and_says_so() {
+        for (old, was) in [("galaxy", "Galaxy"), ("Swarm", "Swarm")] {
+            let text = format!("MarqueeViz/1 name=\"Old dust\" style={old} colours=ice by=frequency motion=snappy sensitivity=-2 opacity=60% behind=70% cover-pulse=off");
+            let s = parse(&text).unwrap_or_else(|e| panic!("{e:?} for {text}"));
+            assert_eq!(s.name.as_deref(), Some("Old dust"));
+            assert_eq!((s.look.style, s.look.colours, s.look.colour_by, s.look.motion, s.look.sensitivity, s.look.cover_pulse), (Style::Saturn, Colours::Ice, ColourBy::Frequency, Motion::Snappy, -2, false));
+            assert!((s.look.opacity - 0.6).abs() < 1e-6 && (s.look.prominence - 0.7).abs() < 1e-6);
+            assert_eq!(s.notes.len(), 1, "{:?}", s.notes);
+            assert!(s.notes[0].contains(was) && s.notes[0].contains("no longer") && s.notes[0].contains("Saturn"), "{:?}", s.notes);
+            // As a file, too; and written out again it names Saturn.
+            assert_eq!(parse(&to_file("Old dust", &s.look)).unwrap().look.style, Style::Saturn);
+            assert!(to_text("Old dust", &s.look).contains("style=saturn"));
+        }
     }
 
     #[test]

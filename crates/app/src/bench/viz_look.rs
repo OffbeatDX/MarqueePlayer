@@ -190,15 +190,9 @@ pub fn run() {
                 }
             }
         }
-        // The bonfire, and the other kinds of ring (Saturn, Galaxy, Swarm, Eclipse: the
-        // Halo preset, its kind chosen), in each placement, at both sizes.
-        let looks: [(&'static str, Preset, Option<usize>); 5] = [
-            ("bonfire", Preset::Bonfire, None),
-            ("saturn", Preset::Halo, Some(1)),
-            ("galaxy", Preset::Halo, Some(2)),
-            ("swarm", Preset::Halo, Some(3)),
-            ("eclipse", Preset::Halo, Some(4)),
-        ];
+        // The bonfire, and the other kinds of ring (Saturn, Eclipse: the Halo preset, its
+        // kind chosen), in each placement, at both sizes.
+        let looks: [(&'static str, Preset, Option<usize>); 3] = [("bonfire", Preset::Bonfire, None), ("saturn", Preset::Halo, Some(1)), ("eclipse", Preset::Halo, Some(2))];
         for (what, preset, kind) in looks {
             for (w, h, size) in [(1920, 1080, "1080p"), (960, 620, "min")] {
                 for place in Placement::ALL {
@@ -223,8 +217,8 @@ pub fn run() {
                             "bonfire" => ("sparks rising from the line along the foot", g.get_tall() && !g.get_ring() && dots > 5 && !g.get_line().is_empty()),
                             // Its dust behind the cover and in front of it, round a round cover.
                             "saturn" => ("dust round the cover, behind it and in front", g.get_ring() && g.get_ring_kind() == 1 && g.get_sparks_old().matches('M').count() > 30 && g.get_front().matches('M').count() > 30),
-                            // The rest: sparks or dust round a round cover, and its thin contour.
-                            _ => ("sparks or dust round the cover", g.get_ring() && g.get_ring_kind() == kind.unwrap_or(0) as i32 && dots > 20 && g.get_line().starts_with('M') && g.get_front().is_empty()),
+                            // The eclipse: sparks round a round cover, and its thin contour.
+                            _ => ("sparks round the cover", g.get_ring() && g.get_ring_kind() == kind.unwrap_or(0) as i32 && dots > 20 && g.get_line().starts_with('M') && g.get_front().is_empty()),
                         };
                         check(r, &format!("{name}: {said}"), running && ok, format!("{dots} sparks; {}", state(app)));
                     });

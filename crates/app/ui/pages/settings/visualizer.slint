@@ -396,28 +396,12 @@ export component VisualizerSection inherits VerticalLayout {
         }
         if Visualizer.style == 2: SettingRow {
             label: "Around the cover";
-            hint: Visualizer.ring-kind == 1 ? "Saturn: a tilted ring of dust in orbit, passing behind the cover and in front, each grain as bright as its note." : Visualizer.ring-kind == 2 ? "Galaxy: two spiral arms of dust turning round the cover, winding tighter with the bass." : Visualizer.ring-kind == 3 ? "Swarm: dust caught in a whirl round the cover; every beat blows it outward and it spirals back." : Visualizer.ring-kind == 4 ? "Eclipse: a glow at the cover's rim, and on each beat a flare of sparks arcing out and falling back." : "Ripples: the music as a glowing line round the cover; every beat sends a ripple out and throws sparks off it.";
-            VerticalLayout {
-                spacing: 6px;
-                alignment: center;
-                HorizontalLayout {
-                    alignment: end;
-                    Segmented {
-                        label: "Around the cover";
-                        options: ["Ripples", "Saturn", "Galaxy"];
-                        selected: Visualizer.ring-kind >= 0 && Visualizer.ring-kind < 3 ? Visualizer.ring-kind : -1;
-                        chosen(i) => { Actions.viz-choose("ring", i); }
-                    }
-                }
-                HorizontalLayout {
-                    alignment: end;
-                    Segmented {
-                        label: "Around the cover, more";
-                        options: ["Swarm", "Eclipse"];
-                        selected: Visualizer.ring-kind >= 3 ? Visualizer.ring-kind - 3 : -1;
-                        chosen(i) => { Actions.viz-choose("ring", i + 3); }
-                    }
-                }
+            hint: Visualizer.ring-kind == 1 ? "Saturn: a tilted ring of dust in orbit, passing behind the cover and in front, each grain as bright as its note." : Visualizer.ring-kind == 2 ? "Eclipse: a glow at the cover's rim, and on each beat a flare of sparks arcing out and falling back." : "Ripples: the music as a glowing line round the cover; every beat sends a ripple out and throws sparks off it.";
+            Segmented {
+                label: "Around the cover";
+                options: ["Ripples", "Saturn", "Eclipse"];
+                selected: Visualizer.ring-kind;
+                chosen(i) => { Actions.viz-choose("ring", i); }
             }
         }
         if Visualizer.style == 2: SwitchRow {
