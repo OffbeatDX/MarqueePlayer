@@ -5,6 +5,7 @@
 //! - `build`: the release build, copied beside Cargo.toml (`build.rs` here);
 //! - `check`: the checks before a push, and the opt-in pre-push hook (`check.rs`);
 //! - `bench`: every bench mode through the bench runner (`bench/mod.rs`);
+//! - `perf`: what a change costs to draw against its base, two builds compared (`perf/`);
 //! - `release`: a numbered release for this system, packaged (`release/`).
 //!
 //! Where cargo builds, for every command: `--target-dir DIR`, else `CARGO_TARGET_DIR`, else
@@ -15,6 +16,7 @@ mod bench;
 mod build;
 mod check;
 mod cmd;
+mod perf;
 mod release;
 mod report;
 mod workspace;
@@ -29,6 +31,8 @@ Commands:
   check    the checks before a push (whitespace, formatting, clippy, tests); installs the
            opt-in pre-push hook
   bench    every bench mode on fresh fixtures, through the bench runner
+  perf     what the working tree costs to draw against a base (default: where it left
+           master): both built, scenes measured on each, one table with verdicts
   release  a numbered release for this system, in dist/: Windows, the portable zip and the
            installer; Linux, the AppImage; macOS, the disk image
   help     this text (`cargo xtask help <command>`, or `<command> --help`, for one command)
@@ -63,12 +67,13 @@ fn run(command: &str, args: Vec<String>) -> Result<(), Fail> {
         "release" => release::run(args),
         "check" => check::run(args),
         "bench" => bench::run(args),
+        "perf" => perf::run(args),
         "help" | "--help" | "-h" => match args.first().map(String::as_str) {
             None => {
                 println!("{HELP}");
                 Ok(())
             }
-            Some(c @ ("build" | "check" | "bench" | "release")) => run(c, vec!["--help".into()]),
+            Some(c @ ("build" | "check" | "bench" | "perf" | "release")) => run(c, vec!["--help".into()]),
             Some(other) => Err(Fail::usage(format!("no command is called `{other}` (cargo xtask --help lists them)"))),
         },
         other => Err(Fail::usage(format!("no command is called `{other}` (cargo xtask --help lists them)"))),

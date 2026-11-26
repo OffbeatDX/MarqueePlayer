@@ -25,6 +25,12 @@ pub fn init() {
     }
 }
 
+/// The backend for a test window: as it is (only macOS has to stop the application being
+/// activated at launch; here an inactive window is enough).
+pub fn backend(s: slint::BackendSelector) -> slint::BackendSelector {
+    s
+}
+
 /// The window attributes for `MP_WINDOW=secondary`: the usual ones, maximized, inactive.
 pub fn attributes(attrs: slint::winit_030::winit::window::WindowAttributes) -> slint::winit_030::winit::window::WindowAttributes {
     super::window::attributes(attrs).with_active(false).with_maximized(true)

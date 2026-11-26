@@ -100,6 +100,7 @@ mod messy_library; // home, library: several artists and genres per track, forgi
 mod metadata; // metadata: View metadata
 mod output_default; // output-default (Linux): the system default output device changing
 mod output_devices; // phase5: output devices, Last.fm, formats, playlist files, lyrics, no ratings
+pub(crate) mod perf; // perf: the scenes `cargo xtask perf` compares two builds on
 mod player_bar; // cleanup: the auto-hiding player bar, the queue, sorting, the pill, Settings > Keys
 mod playlist; // playlist (second part): Shuffle and playlist name clashes
 mod row_hover; // row-hover: a track row's hover under its play button
@@ -376,6 +377,7 @@ pub fn install(app: &AppWindow) {
             "output-default" => crate::bench::output_default::run(),
             "row-hover" => crate::bench::row_hover::run(),
             "listenbrainz" => crate::bench::listenbrainz::run(),
+            "perf" => crate::bench::perf::run(frames.clone()),
             _ => tour(),
         }
     });

@@ -6,22 +6,25 @@ The bench runner, the scripted benches and the environment variables for measure
 
 `cargo xtask bench` (on Linux inside a desktop session or
 `packaging/linux/headless-session.sh`) builds the app with the bench harness, the fixture tools and
-`crates/bench-runner` at below-normal priority (in `target/bench` by default), then runs every
-bench mode in sequence and prints one pass/fail table; the arguments after `--` go to the
-runner, and it exits with the runner's exit code:
+`crates/bench-runner` at below-normal priority, then runs the bench modes and prints one pass/fail
+table; the arguments after `--` go to the runner, and it exits with the runner's exit code:
 
-    cargo xtask bench                       # everything (about half an hour)
-    cargo xtask bench -- --only skip,gapless
+    cargo xtask bench                                    # quick working loop (fast profile, parallel)
+    cargo xtask bench -- --only skip,gapless             # named modes (overrides --quick)
+    cargo xtask bench -- --changed                       # modes for uncommitted changes
+    cargo xtask bench -- --for crates/app/src/visualizer # modes for a path
     cargo xtask bench -- --list
-    cargo xtask bench --profile fast -- --quick   # while working
+    cargo xtask bench --profile release --all            # full release pass (including long modes)
 
-While working on a change, use the `fast` profile (`Cargo.toml`; `--profile fast`, and
-`cargo build --profile fast` for the app alone): the same
-optimization without the whole-program link step, so a one-line change rebuilds in 10 to 20
-seconds where the release profile takes 3 to 5 minutes. `--quick` leaves out the modes that are
-long by design (`soak`, `bigscan`, `slowscan`). What a mode checks is the same on either profile;
-frame and CPU timings, the exe's size and the bit-exact audio tests are only meaningful on the
-release profile, which the full pass and `cargo xtask release` use.
+By default `cargo xtask bench` is the working loop: the `fast` profile (`Cargo.toml`, shared with
+`cargo build --profile fast` and `cargo xtask check` in `target/fast`, so dependencies are compiled
+once), the modes that are long by design (`soak`, `bigscan`, `slowscan`) left out (`--quick`),
+pre-scanned library templates reused across modes, and several parallel-safe modes running at once
+(`--jobs`, scaled from the core count, capped at 6). Pass `--profile release` (built into
+`target/bench` so it never overwrites or LTO-relinks the release binary) and `--all` for the full
+pass before a release. What a mode checks is the same on either profile; frame and CPU timings, the
+exe's size and the bit-exact audio tests are only meaningful on the release profile, which the full
+pass and `cargo xtask release` use.
 
 The runner (`crates/bench-runner`, never shipped):
 
@@ -34,16 +37,38 @@ The runner (`crates/bench-runner`, never shipped):
   playlist bench's 120), `meta` and `edit` (marked `.mp-edit-fixtures`). The runner makes them in
   `%TEMP%\mp-bench-fixtures` the first time, and `big` (about 29,000 tracks, `messy_library` with
   2,600 albums, 600 MB) the first time `bigscan` runs.
-- **Each mode** gets a fresh copy of its sets (the editing and metadata benches change theirs), a
-  fresh data folder with a connected Last.fm session, and local mocks of LRCLIB (the "Words" album's
-  titles say what it answers) and Last.fm, at `MP_LRCLIB_API` and `MP_LASTFM_API`: nothing leaves
-  the machine. Always `MP_VOLUME=0` and `MP_WINDOW=secondary`; bench builds open no native dialog
-  and never touch the real clipboard (`explorer::copy_text` keeps the text for the bench).
+- **Zero-copy read-only sets, CoW clones, and pre-scanned templates.** Single-set read-only modes
+  point `MP_MUSIC` straight at `<fixtures>/<set>` with no copy; modes that mutate their music
+  (`editing`, `metadata`, `lyrics`, `guard`, `session`), multi-set modes, and `--cold` runs get
+  their own copy cloned copy-on-write where the file system allows (`clonefile` on APFS, `FICLONE`
+  reflinks on Linux, falling back to a plain copy; plain copy on Windows). Each shared fixture set
+  is scanned once into `<fixtures>/.mp-templates/<set>` (stamped with the app executable's and
+  fixtures' sizes and mtimes so a rebuild or fixture change invalidates it automatically); eligible
+  modes start from a clone of `library.db` and `cache/art` only (fresh `settings.json`, logs and
+  session). Modes whose subject is the scan, grouping, guard, session moves, damaged files, or
+  mutated fixtures still scan from nothing. Pass `--cold --jobs 1` to reproduce the original serial
+  cold-scan run.
+- **Parallel execution and `alone` modes.** Each mode gets its own data folder (and single-instance
+  socket), output folder, and local mocks of LRCLIB and Last.fm on ephemeral loopback ports
+  (`MP_LRCLIB_API`, `MP_LASTFM_API`: nothing leaves the machine), always with `MP_VOLUME=0` and
+  `MP_WINDOW=secondary` (on macOS, parallel workers also pass `MP_WINDOW_SLOT=k/n` to stagger
+  windows so none completely covers another and triggers `WindowEvent::Occluded`). Modes that
+  measure frame intervals, CPU %, idle wake-ups, UI lag, real-time audio/beat timing, or change the
+  system output device (`grid`, `sidebar`, `covers`, `playlist`, `gapless`, `skip`, `skip-damaged`,
+  `idle-paused`, `idle-stopped`, `autoscroll`, `tray`, `visualizer`, `viz-idle`, `viz-styles`,
+  `viz-cost`, `viz-look`, `output-default`, `soak`, `xfade-rates`, `streaming`, `bigscan`,
+  `slowscan`, `two-instances`) are marked `alone` in `MODES` and run strictly one at a time after
+  the parallel batch finishes.
+- **Filtering by path.** `--for <path>` (repeatable or comma-separated) and `--changed [<git ref>]`
+  map changed source paths to the modes whose subject lives there (`PATH_RULES` beside `MODES`);
+  any unmapped or shared path falls back to running all selected modes.
 - **Verdicts.** Every bench module counts its failed checks in one place (`bench::count_fail`, and
   `bench::verdict` for the modes that only reported text before); the app exits with code 3 when any
   failed. The runner: exit 0 and no `[FAIL]` line is PASS, 3 is FAIL, 101 or "panicked" in the log
   is PANIC, any other code CRASH, a run outliving its limit HANG (stopped by its handle). Reports,
-  snapshots, the log and stderr of each mode are kept in `%TEMP%\mp-bench-runs\<mode>`.
+  snapshots, the log and stderr of each mode are kept in `%TEMP%\mp-bench-runs\<mode>`, and the
+  summary table records each mode's total, prep and scan seconds alongside the whole run's wall
+  time against the sum of mode times.
 - **`playlist`** (`bench/mod.rs`, then `bench/playlist.rs` and `bench/selection.rs`; the `core` set): a playlist of the library's
   first 3,000 tracks (2,550), how fast it opens, its scroll kept through Back; then Shuffle on it
   and playlist name clashes (`bench/playlist.rs`); then its selection
@@ -151,11 +176,12 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_VOLUME=0` | Start at this volume |
 | `--minimized` (argument) | Start in the tray, the window made but not shown ("Start with Windows" passes it). Ignored without a tray |
 | `--version` (argument) | Print `Marquee Player <version>` and exit (the AppImage's launcher uses it to check the libraries load) |
-| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|play-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) come from Slint's rendering notifier, set for those three modes only (Skia draws a window with one without partial rendering, so they measure with it off and the other modes as the app draws without the bench); on Skia's wgpu surface (Metal, Direct3D 12, Vulkan) the notifier is called only with Slint's `unstable-wgpu-30` feature, which the `bench` feature turns on. `SLINT_BACKEND=winit-skia-opengl` with a build with `--features bench-opengl` times them on OpenGL instead. A run that saw no frame says so and why, rather than reporting zeros. Memory in the bench's reports (`soak`, `bigscan`, `viz-cost`) is the physical footprint on macOS (Activity Monitor's "Memory", GPU memory included on Apple silicon; its lifetime peak as the peak), private bytes on Windows, the resident size on Linux |
+| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|perf\|play-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) come from Slint's rendering notifier, set for those three modes only (Skia draws a window with one without partial rendering, so they measure with it off and the other modes as the app draws without the bench); on Skia's wgpu surface (Metal, Direct3D 12, Vulkan) the notifier is called only with Slint's `unstable-wgpu-30` feature, which the `bench` feature turns on. `SLINT_BACKEND=winit-skia-opengl` with a build with `--features bench-opengl` times them on OpenGL instead. A run that saw no frame says so and why, rather than reporting zeros. Memory in the bench's reports (`soak`, `bigscan`, `viz-cost`) is the physical footprint on macOS (Activity Monitor's "Memory", GPU memory included on Apple silicon; its lifetime peak as the peak), private bytes on Windows, the resident size on Linux |
 | `MP_BENCH_GRID_PAGE=genres` | With `grid`: scroll the Genres page instead of Albums (the same grid with other tiles, to compare; it needs a library with a few hundred genres to have anywhere to scroll) |
 | `MP_BENCH_GRID_SIZE=<w>x<h>` | With `grid`: resize the window's client area to this many physical pixels first (`2560x1392`: a maximized window on a 1440p monitor), for the columns and rows of a monitor larger than the one the bench's window opens on. The slow frames of a grid grow with the tiles on screen, so a stutter on a large window can be invisible at 1080p |
 | `MP_BENCH_IDLE_SECS=<s>` | How long `idle-paused` / `idle-stopped` stay idle, hidden, before quitting (default 90) |
 | `MP_WINDOW=secondary` | Open the window maximized on a monitor other than the primary one, without ever taking the foreground or keyboard focus (also when shown again from the tray); click into it to use it. One monitor: normal placement, still never activated. Bench runs honour it too | On Linux (no monitor to keep clear under a headless compositor): the window opens maximized and never asks for the focus, and the benches size it themselves |
+| `MP_WINDOW_SLOT=k/n` | macOS with `MP_WINDOW=secondary`: stagger parallel bench windows (`0 <= k < n`, `n > 1`) so each window keeps its top-left corner uncovered by every other slot and macOS never marks it occluded (`ticker.rs`) |
 | `MP_AUDIO=alsa` | Linux: play through ALSA's `default` device instead of PipeWire (the fallback where there is no PipeWire) |
 | `MP_BENCH_PART=open` | With `phase5`: only files from outside (command line, a second launch, posted `WM_DROPFILES` of `MP_BENCH_DROP`, `;`-separated paths) |
 | `MP_LASTFM_API=<url>` | Bench and test builds only: send Last.fm calls to this API root instead (a local mock). A release build ignores it, so nothing in the environment can send the session key elsewhere |
@@ -169,6 +195,8 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_VIZ_AA=all\|fills\|strokes\|none` | Measurement and comparison only: which of the visualizer's paths ARE anti-aliased (`all` the drawing on Windows, Linux and 1x; `strokes` only the line and its glow, the macOS policy at a scale factor of 2 or more; `fills` the fills, the ripples and the rings; `none`). Unset: the policy (`visualizer::aa_policy`). Bars stay without anti-aliasing either way. Works in every build |
 | `MP_BENCH_VIZ_PART=<parts>` | With `viz-styles`: only these parts (comma-separated: presets, colours, min, settings, menu, moments, sheet, idle; `none` for just the start) |
 | `MP_BENCH_VIZ_CASES=<words>` | With `viz-cost`: only the cases whose name contains one of these (comma-separated). One case's whole name (`halo, behind`) is that case alone; with a semicolon, the parts between semicolons, each a name or a piece of one (`halo, behind; saturn, panel`) |
+| `MP_PERF_SCENES=<scenes>`, `MP_PERF_SECS=<s>`, `MP_PERF_SETTLE_MS=<ms>` | With `perf`: the scenes in order (`home`, `np-off`, `bars`, `halo`, `grid`, `prep`; default `home,bars`), seconds measured (default 8) and settling (default 2500 ms) each; lines of JSON after `MP-PERF ` on standard output (see [Comparing two builds](#comparing-two-builds-cargo-xtask-perf)) |
+| `MP_PERF_SOUND=made-up`, `MP_PERF_SNAP=<n>` | With `perf`: the visualizer hears a sound made up from its frame number, its time step 1/60 s (two builds draw the same frames); the window's picture after frame n of a visualizer scene (`perf-<scene>-<n>.png` and `.rgba`) |
 | `MP_BENCH_LOOK_PART=<parts>` | With `viz-look`: only these parts (comma-separated: halo, pin, keys, opacity, presets) |
 | `MP_HALO_SHAPE=square` | Measurement and comparison only: the halo follows the cover's rounded square instead of a circle (the cover drawn square), as tried and left out. Works in every build |
 | `MP_HALO_WITHOUT=<words>` | Comparison only: the halo's ripples without some of what moves them (comma-separated: `throw`, a kick throwing its ripple; `push`, kicks pushing those on their way; `swells`, a ripple on a swell where there are no kicks, a timer instead). Works in every build |
@@ -415,3 +443,159 @@ kana and featured-artist names and time queries on it:
 `cargo test -p player-core --release` checks gapless and seek against generated
 fixtures. With `MP_REAL_ALBUM=<folder of .opus/.flac>` it also decodes a real album
 and compares it, sample by sample, to ffmpeg's libopus decode.
+
+## Comparing two builds: cargo xtask perf
+
+`cargo xtask perf` answers one question about the working tree: is it cheaper to draw than its
+base, by how much, and how sure is that. It builds both, runs a few short scenes of the real app
+on each, interleaved, and prints one table with a verdict for each scene:
+
+    cargo xtask perf                              home and bars, against where this branch left master
+    cargo xtask perf --base HEAD --scenes all     the uncommitted change, every scene
+    cargo xtask perf --snap 300 --scenes bars     and whether both draw the same picture
+
+**The builds.** The change is the working tree as it is; the base is `--base <ref>` (any commit,
+branch or tag), else the merge base with master, checked out in a detached `git worktree` of its
+own under `<target>/xtask-perf/base-src` and kept between runs (the user's checkout and branches
+are never touched; an unchanged base is not checked out again, so it costs no rebuild). Both
+build at once, on the `fast` profile with the bench feature, each in its own target folder
+(`<target>/xtask-perf/change`, `.../base`): one target folder shared by two checkouts keeps the
+first one's UI, as slint-build records the absolute paths of the `.slint` files it read. The
+first time, each folder is seeded by cloning one already built (`target/bench/fast`, else
+`target/fast`; `cp -c -R`, copy-on-write on APFS, instant), and the build-script outputs of the
+workspace's own crates that name another checkout's files are removed, so they run again here
+(once). A base from before the perf bench existed gets this checkout's `bench/perf.rs` grafted in,
+registered in `bench/mod.rs`, with the bench feature's `slint/unstable-wgpu-30`: bench-only code,
+said in the output.
+
+**The scenes** (`MP_BENCH=perf`, `crates/app/src/bench/perf.rs`), each a steady state of the real
+app, left to settle (2.5 s) and measured (8 s): `home` (music playing on Home, nothing else
+moving), `np-off` (Now playing, the visualizer off), `bars` (the default visualizer behind the
+page), `halo` (the halo behind the page), `grid` (All albums scrolled up and down at 2,400 px a
+second). They run on the bench fixtures (`<temp>/mp-bench-fixtures`, made if missing: the core
+set's 300 grid albums with covers and the visualizer's "Night Shift", cloned once into
+`<temp>/mp-perf-music`), at volume 0, on `MP_WINDOW=secondary`. Each build first scans its own
+copy of that library and brings every cover on screen once (both at once); each pass then starts
+from a fresh copy of that folder. The app reports, for each measured span, the visualizer's frames
+and their spacing and work, the window's own frames (Skia's wgpu surface calls the rendering
+notifier only with Slint's `unstable-wgpu-30`, which the bench feature turns on; that surface
+draws the whole window every frame either way), its CPU time and its memory (the physical
+footprint on macOS); from outside the command reads the window server's CPU time (`ps` of
+`WindowServer`) and the GPU's utilisation once a second (`ioreg`, "Device Utilization %") over the
+same span.
+
+**The made-up sound.** The visualizer follows the sound, so two runs never draw the same frames.
+In these scenes it hears a sound made up from its frame number instead (a kick on the beat, a
+bass line, a chord, hi-hats), its time step fixed at 1/60 s: two builds draw the same frames, so
+the comparison is quieter, and with `--snap N` the window's own picture after frame N
+(`take_snapshot`, not a capture of the screen) is saved from each build and compared pixel for
+pixel (how many differ, by how much, where). N counts from the scene's start, its settling
+included, so up to about 600 at 60 frames a second. The time label moves with the clock, so a few
+pixels there always differ: with no change, frame 300 of bars and of the halo differed in 18 to 26
+of 5.4 million pixels, all in the time label under the seek bar; the visualizer itself was the
+same to the pixel. A base whose visualizer cannot hear it (from before it
+existed) hears the fixtures' music on both sides, said in the output; `--real-sound` asks for that.
+
+**Why with the clock held.** On this Mac a CPU percentage counts time, not work: light periodic
+work (a frame every 16.7 ms, then idle) runs 4 to 5 times slower than the same work back to back,
+on the efficiency cores or at a low clock, and the figure moves with whatever else the machine
+does (bars behind the page showed 34% of a core on a quiet machine, 9.3% with two other cores kept
+busy). With two busy processes (`yes`) running for the length of the measuring the clock holds,
+and the app's CPU repeats from run to run to about a tenth of a point. So the measuring passes run
+with two cores kept busy, and a cost is CPU time per frame (per visualizer frame for `bars` and
+`halo`, per window frame for `grid`, per second for `home` and `np-off`, where little is drawn).
+The figures are therefore smaller than what the machine shows in normal use, where the same work
+runs slower: compare them with each other, never with Activity Monitor. The display is kept awake
+(`caffeinate -d`) for the measuring only.
+
+**Watts.** CPU alone can mislead: a change that moves work to the window server or the GPU can cut
+the app's CPU and raise the machine's power (it happened: the visualizer in a layer of its own,
+the app's CPU to a third, the whole machine's power up by half). So every scene also has the
+window server and the GPU; and where `sudo -n` may run exactly `/usr/bin/powermetrics --samplers
+cpu_power,gpu_power -i 1000 -n 10` (a sudoers rule allowing that one command without a password;
+the command never asks for one), a second pass without the busy processes gives the CPU's and the
+GPU's watts, ten samples a second apart over each scene, one pass a build, compared by the
+samples' standard error. Where it may not, the output says so. The rule, made by the machine's
+owner (`sudo visudo -f /etc/sudoers.d/powermetrics`):
+
+    <user> ALL=(root) NOPASSWD: /usr/bin/powermetrics --samplers cpu_power,gpu_power -i 1000 -n 10
+
+The command asks `sudo -n -l` whether that command would run, running nothing and never asking
+for a password. (Its reading of `powermetrics`' text was written from the tool's documented
+layout and has not yet met its real output on this Mac: check the first table that has watts.) `--confirm` adds the slow check: the battery controller's own figure of the whole
+machine (`ioreg -rw0 -c AppleSmartBattery`, "PowerTelemetryData"; it refreshes once a minute, so
+each scene runs about three minutes on each build), for a final word, not for every change. It
+is one reading a build of everything the machine does: with no change, Home read 6.37 W and 5.58 W
+while another agent worked on the same Mac, so it means something only on a machine left alone.
+
+**What a verdict means.** The passes alternate, base then change, then change then base, and so
+on, so a drift of the machine over the run weighs on both sides alike. For each measure: the
+base's and the change's mean over the rounds, the difference (as a share of the base) and the
+spread between rounds (the larger of the two sides' ranges, as a share of the base). A difference
+counts only when it is larger than that spread, larger than the floor, and the rounds do not
+overlap (every round of one side below every round of the other). The floors are the tool's own
+noise, measured with no change: 7% for the app's CPU, 10% and 4 points of a core for the window
+server, 10% and 10 points for the GPU (both move with whatever else draws on the screen), 10% for
+memory, 5% for watts. The scene's verdict is the app's CPU's: **cheaper**, **dearer** or **within
+the noise**; "moved, not saved" when the app is cheaper but the window server or the GPU is
+dearer. One round gives figures but no verdict; `--rounds 4` (about twice as long) when a
+difference sits near the floor.
+
+What a verdict does not mean: that the change is cheaper everywhere (only in these scenes, on
+this machine, with the clock held: a change that only helps at a low clock does not show here,
+and a change of how often something wakes shows only as far as these scenes wake it), that it
+looks the same (`--snap` for that), or anything under the floor (a 3% gain is within the noise
+however often it repeats).
+
+**The tool's own noise**, measured on 2026-11-26 with the base equal to the change (`--base HEAD`,
+nothing changed), another agent running the app's benches on the same Mac at the time: the app's
+CPU differed by -5.8% (Home), -1.7% (Now playing, off), -1.8% (bars), +1.4% (halo), +0.4% (grid)
+in one run of two rounds; by -6.6% (Home) and -5.3% (bars) in another, which the 3% floor first
+tried called "cheaper": hence 7%; with four rounds, bars +1.3% (single runs within ±2.5%). The
+window server differed by up to 36% (3 points of a core) and the GPU by up to 33% (9 points) with
+no change. A known change was found with the right sign and about its size: the position's timer
+at 50 ms instead of 100 ms (Home's window frames 9.9 to 19.7 a second) read Home dearer, +66% and
++51% in two runs; the visualizer's paths built twice a frame read bars +9.8% a frame, dearer, in
+one run (its own measured work +0.15 ms of the +0.19 ms found) and +6.7%, within the noise (its
+rounds ±13.6% apart), in another. So with another app at work beside it, two rounds resolve a
+change of about 10% only some of the time; a change of 15% or more, reliably; under 7%, never.
+
+**Other work on the machine.** The busy processes hold the clock, but they do not make the
+measure immune to other work: with a `cargo build` looping in another folder, the same build read
+19% dearer on bars, the window server 18%. So over each span the command reads the whole machine's
+busy cores (`iostat`) and takes away the app, the two busy processes and the window server: what
+is left is other work, shown in the table (0.3 to 0.6 cores while the other agent's app ran
+quietly beside it). More than one core of it in any run, or half a core
+more on one side than the other, and the scene's verdict is "not trusted" (what it would have
+read is shown beside it); when no scene is left to trust, the exit code is 3. It caught every
+false verdict seen while another agent ran benches beside it (halo and grid read 25% and 38%
+cheaper with no change, with 1.8 to 3.4 other cores busy during the base's passes) and under the
+looping build (bars read 21% cheaper, 3.8 other cores during the base's passes, 1.6 during the
+change's); it cannot see
+work that costs little CPU and much drawing (another app animating: the window server and the GPU
+then move, and are judged with their own wide floors).
+
+**It refuses rather than mislead.** A locked screen (nothing draws; `IOConsoleLocked`), before or
+during the run, stops it with exit code 3 and says so. A scene where a build drew fewer than half
+the frames it should (the window covered, hidden or asleep) is "not measured", without a verdict;
+a busy machine makes it "not trusted"; when no scene is left, the exit code is 3. A scene that did
+not hold its frame rate (under 90% of the display's) is said to be so beside its verdict. A base
+that does not build stops it with the end of its build log. Watts not readable, the window's
+frames not counted, the made-up sound not heard by a build: said in the output.
+
+**What it takes**, measured on the M5 MacBook Air (another agent at work on it): the first run
+against a new base, from a checkout whose target folder was cloned from another checkout, 183 s
+(the base's checkout and the seeding 4 s, both builds at once 68 s, mostly the UI crate, which
+runs its build script again once in each new target folder; the libraries 15 s; measuring 96 s).
+A later run with the same base, only the change rebuilt: 117 to 124 s for the default two scenes
+and two rounds (builds 6 to 10 s, the libraries 17 s, measuring 95 s); every scene, 243 to 265 s
+(measuring 224 s). A pass is about 24 s for two scenes, 56 s for all five; watts add a pass a
+build (11 s a scene), `--confirm` about six minutes a scene.
+
+The JSON of the whole run (every pass's lines, every comparison, the notes and times) is written
+to `<target>/xtask-perf/last.json`, and with `--json FILE` there too. Each pass's app log,
+snapshots and the build logs are in `<temp>/mp-perf-runs` until the next run.
+
+On Windows and Linux it builds and runs the same and compares the app's own figures; the window
+server (or compositor), the GPU, watts and the screen's lock are not read there, said in the
+output. Busy threads in place of `yes` on Windows. Not tried there yet.

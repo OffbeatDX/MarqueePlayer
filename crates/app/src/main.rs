@@ -572,9 +572,7 @@ fn select_renderer() -> bool {
             // Same backend and renderer, through the selector so the placement applies
             // ("winit-skia-opengl": backend "winit", renderer "skia-opengl").
             let (backend, renderer) = forced.split_once('-').unwrap_or((forced.as_str(), ""));
-            let mut s = slint::BackendSelector::new()
-                .backend_name(backend.into())
-                .with_winit_window_attributes_hook(platform::devwindow::attributes);
+            let mut s = platform::devwindow::backend(slint::BackendSelector::new().backend_name(backend.into())).with_winit_window_attributes_hook(platform::devwindow::attributes);
             if !renderer.is_empty() {
                 s = s.renderer_name(renderer.into());
             }
@@ -608,7 +606,7 @@ fn select_renderer() -> bool {
 fn selector() -> slint::BackendSelector {
     let s = slint::BackendSelector::new().backend_name("winit".into());
     if platform::devwindow::enabled() {
-        s.with_winit_window_attributes_hook(platform::devwindow::attributes)
+        platform::devwindow::backend(s).with_winit_window_attributes_hook(platform::devwindow::attributes)
     } else {
         s.with_winit_window_attributes_hook(platform::window::attributes)
     }

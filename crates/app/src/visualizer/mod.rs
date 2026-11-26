@@ -954,6 +954,9 @@ fn frame(st: &Rc<State>) {
         };
         let started = Instant::now();
         let dt = z.last.map_or(1.0 / 60.0, |t| (started - t).as_secs_f32()).min(0.1);
+        // The perf bench's made-up sound moves the looks by the frame, not the clock.
+        #[cfg(feature = "bench")]
+        let dt = crate::bench::perf::frame_dt(dt);
         z.last = Some(started);
         // Another track, or a seek: the tempo and the beat of what was heard are not this
         // music's (held, they would keep the looks still until the meter let go of them).
@@ -971,6 +974,10 @@ fn frame(st: &Rc<State>) {
             z.tap.set_active(true);
             z.samples.resize(Analyzer::fft_size(rate), 0.0);
             let rate = z.tap.read(&mut z.samples, true);
+            // The perf bench's made-up sound in place of the tap's (`bench/perf.rs`): two
+            // builds compared draw the same frames.
+            #[cfg(feature = "bench")]
+            crate::bench::perf::made_up(&mut z.samples, rate);
             z.analyzer.update(Some((&z.samples, rate)), bands, dt);
             // The beat, for the looks that move with it: listened for in the same samples.
             if l.hears_beat() {
