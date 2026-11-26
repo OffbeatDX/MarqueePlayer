@@ -6,22 +6,25 @@ The bench runner, the scripted benches and the environment variables for measure
 
 `cargo xtask bench` (on Linux inside a desktop session or
 `packaging/linux/headless-session.sh`) builds the app with the bench harness, the fixture tools and
-`crates/bench-runner` at below-normal priority (in `target/bench` by default), then runs every
-bench mode in sequence and prints one pass/fail table; the arguments after `--` go to the
-runner, and it exits with the runner's exit code:
+`crates/bench-runner` at below-normal priority, then runs the bench modes and prints one pass/fail
+table; the arguments after `--` go to the runner, and it exits with the runner's exit code:
 
-    cargo xtask bench                       # everything (about half an hour)
-    cargo xtask bench -- --only skip,gapless
+    cargo xtask bench                                    # quick working loop (fast profile, parallel)
+    cargo xtask bench -- --only skip,gapless             # named modes (overrides --quick)
+    cargo xtask bench -- --changed                       # modes for uncommitted changes
+    cargo xtask bench -- --for crates/app/src/visualizer # modes for a path
     cargo xtask bench -- --list
-    cargo xtask bench --profile fast -- --quick   # while working
+    cargo xtask bench --profile release --all            # full release pass (including long modes)
 
-While working on a change, use the `fast` profile (`Cargo.toml`; `--profile fast`, and
-`cargo build --profile fast` for the app alone): the same
-optimization without the whole-program link step, so a one-line change rebuilds in 10 to 20
-seconds where the release profile takes 3 to 5 minutes. `--quick` leaves out the modes that are
-long by design (`soak`, `bigscan`, `slowscan`). What a mode checks is the same on either profile;
-frame and CPU timings, the exe's size and the bit-exact audio tests are only meaningful on the
-release profile, which the full pass and `cargo xtask release` use.
+By default `cargo xtask bench` is the working loop: the `fast` profile (`Cargo.toml`, shared with
+`cargo build --profile fast` and `cargo xtask check` in `target/fast`, so dependencies are compiled
+once), the modes that are long by design (`soak`, `bigscan`, `slowscan`) left out (`--quick`),
+pre-scanned library templates reused across modes, and several parallel-safe modes running at once
+(`--jobs`, scaled from the core count, capped at 6). Pass `--profile release` (built into
+`target/bench` so it never overwrites or LTO-relinks the release binary) and `--all` for the full
+pass before a release. What a mode checks is the same on either profile; frame and CPU timings, the
+exe's size and the bit-exact audio tests are only meaningful on the release profile, which the full
+pass and `cargo xtask release` use.
 
 The runner (`crates/bench-runner`, never shipped):
 
@@ -34,16 +37,38 @@ The runner (`crates/bench-runner`, never shipped):
   playlist bench's 120), `meta` and `edit` (marked `.mp-edit-fixtures`). The runner makes them in
   `%TEMP%\mp-bench-fixtures` the first time, and `big` (about 29,000 tracks, `messy_library` with
   2,600 albums, 600 MB) the first time `bigscan` runs.
-- **Each mode** gets a fresh copy of its sets (the editing and metadata benches change theirs), a
-  fresh data folder with a connected Last.fm session, and local mocks of LRCLIB (the "Words" album's
-  titles say what it answers) and Last.fm, at `MP_LRCLIB_API` and `MP_LASTFM_API`: nothing leaves
-  the machine. Always `MP_VOLUME=0` and `MP_WINDOW=secondary`; bench builds open no native dialog
-  and never touch the real clipboard (`explorer::copy_text` keeps the text for the bench).
+- **Zero-copy read-only sets, CoW clones, and pre-scanned templates.** Single-set read-only modes
+  point `MP_MUSIC` straight at `<fixtures>/<set>` with no copy; modes that mutate their music
+  (`editing`, `metadata`, `lyrics`, `guard`, `session`), multi-set modes, and `--cold` runs get
+  their own copy cloned copy-on-write where the file system allows (`clonefile` on APFS, `FICLONE`
+  reflinks on Linux, falling back to a plain copy; plain copy on Windows). Each shared fixture set
+  is scanned once into `<fixtures>/.mp-templates/<set>` (stamped with the app executable's and
+  fixtures' sizes and mtimes so a rebuild or fixture change invalidates it automatically); eligible
+  modes start from a clone of `library.db` and `cache/art` only (fresh `settings.json`, logs and
+  session). Modes whose subject is the scan, grouping, guard, session moves, damaged files, or
+  mutated fixtures still scan from nothing. Pass `--cold --jobs 1` to reproduce the original serial
+  cold-scan run.
+- **Parallel execution and `alone` modes.** Each mode gets its own data folder (and single-instance
+  socket), output folder, and local mocks of LRCLIB and Last.fm on ephemeral loopback ports
+  (`MP_LRCLIB_API`, `MP_LASTFM_API`: nothing leaves the machine), always with `MP_VOLUME=0` and
+  `MP_WINDOW=secondary` (on macOS, parallel workers also pass `MP_WINDOW_SLOT=k/n` to stagger
+  windows so none completely covers another and triggers `WindowEvent::Occluded`). Modes that
+  measure frame intervals, CPU %, idle wake-ups, UI lag, real-time audio/beat timing, or change the
+  system output device (`grid`, `sidebar`, `covers`, `playlist`, `gapless`, `skip`, `skip-damaged`,
+  `idle-paused`, `idle-stopped`, `autoscroll`, `tray`, `visualizer`, `viz-idle`, `viz-styles`,
+  `viz-cost`, `viz-look`, `output-default`, `soak`, `xfade-rates`, `streaming`, `bigscan`,
+  `slowscan`, `two-instances`) are marked `alone` in `MODES` and run strictly one at a time after
+  the parallel batch finishes.
+- **Filtering by path.** `--for <path>` (repeatable or comma-separated) and `--changed [<git ref>]`
+  map changed source paths to the modes whose subject lives there (`PATH_RULES` beside `MODES`);
+  any unmapped or shared path falls back to running all selected modes.
 - **Verdicts.** Every bench module counts its failed checks in one place (`bench::count_fail`, and
   `bench::verdict` for the modes that only reported text before); the app exits with code 3 when any
   failed. The runner: exit 0 and no `[FAIL]` line is PASS, 3 is FAIL, 101 or "panicked" in the log
   is PANIC, any other code CRASH, a run outliving its limit HANG (stopped by its handle). Reports,
-  snapshots, the log and stderr of each mode are kept in `%TEMP%\mp-bench-runs\<mode>`.
+  snapshots, the log and stderr of each mode are kept in `%TEMP%\mp-bench-runs\<mode>`, and the
+  summary table records each mode's total, prep and scan seconds alongside the whole run's wall
+  time against the sum of mode times.
 - **`playlist`** (`bench/mod.rs`, then `bench/playlist.rs` and `bench/selection.rs`; the `core` set): a playlist of the library's
   first 3,000 tracks (2,550), how fast it opens, its scroll kept through Back; then Shuffle on it
   and playlist name clashes (`bench/playlist.rs`); then its selection
@@ -156,6 +181,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_BENCH_GRID_SIZE=<w>x<h>` | With `grid`: resize the window's client area to this many physical pixels first (`2560x1392`: a maximized window on a 1440p monitor), for the columns and rows of a monitor larger than the one the bench's window opens on. The slow frames of a grid grow with the tiles on screen, so a stutter on a large window can be invisible at 1080p |
 | `MP_BENCH_IDLE_SECS=<s>` | How long `idle-paused` / `idle-stopped` stay idle, hidden, before quitting (default 90) |
 | `MP_WINDOW=secondary` | Open the window maximized on a monitor other than the primary one, without ever taking the foreground or keyboard focus (also when shown again from the tray); click into it to use it. One monitor: normal placement, still never activated. Bench runs honour it too | On Linux (no monitor to keep clear under a headless compositor): the window opens maximized and never asks for the focus, and the benches size it themselves |
+| `MP_WINDOW_SLOT=k/n` | macOS with `MP_WINDOW=secondary`: stagger parallel bench windows (`0 <= k < n`, `n > 1`) so each window keeps its top-left corner uncovered by every other slot and macOS never marks it occluded (`ticker.rs`) |
 | `MP_AUDIO=alsa` | Linux: play through ALSA's `default` device instead of PipeWire (the fallback where there is no PipeWire) |
 | `MP_BENCH_PART=open` | With `phase5`: only files from outside (command line, a second launch, posted `WM_DROPFILES` of `MP_BENCH_DROP`, `;`-separated paths) |
 | `MP_LASTFM_API=<url>` | Bench and test builds only: send Last.fm calls to this API root instead (a local mock). A release build ignores it, so nothing in the environment can send the session key elsewhere |
