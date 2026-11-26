@@ -132,6 +132,28 @@ struct Frames {
     recording: bool,
 }
 
+/// The modes that read the rendering notifier's frame timings (`Frames`, `report`); `install`
+/// sets the notifier for these only.
+const FRAME_TIMING_MODES: &[&str] = &["grid", "sidebar", "playlist"];
+
+thread_local! {
+    /// Why Slint refused the rendering notifier (`set_rendering_notifier`'s error), for the
+    /// report of a run that then has no frame timings.
+    static NOTIFIER_REFUSED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// What a frame-timing report says when the notifier saw no frame: why there is nothing,
+/// rather than zeros that read as a measurement. Skia calls the notifier only through its
+/// surface's graphics API: Skia's wgpu surface has it only with Slint's `unstable-wgpu-30`
+/// feature (which the `bench` feature turns on); OpenGL always has it.
+fn no_frames_note(name: &str, frames: usize) -> String {
+    let why = match NOTIFIER_REFUSED.with(|r| r.borrow().clone()) {
+        Some(e) => format!("Slint refused the rendering notifier ({e})"),
+        None => "the rendering notifier was not called: on Skia's wgpu surface it needs Slint's `unstable-wgpu-30` feature (the `bench` feature turns it on); otherwise frame timings need SLINT_BACKEND=winit-skia-opengl and a build with --features bench-opengl".to_owned(),
+    };
+    format!("{name}: no frame timings ({frames} frames seen): {why}\n")
+}
+
 /// Failed checks of this run, across every bench module (each module's own `check` counts
 /// here too). The process exits with code 3 when any failed (`exit_code`), so a runner needs
 /// no parsing to tell a pass from a fail (`tools/bench-runner`).
@@ -187,6 +209,9 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 }
 
 fn report(name: &str, frames: &[(Instant, Duration)]) -> String {
+    if frames.len() < 2 {
+        return no_frames_note(name, frames.len());
+    }
     let mut intervals: Vec<f64> = frames.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64() * 1000.0).collect();
     let mut render: Vec<f64> = frames.iter().map(|f| f.1.as_secs_f64() * 1000.0).collect();
     intervals.sort_by(f64::total_cmp);
@@ -268,7 +293,11 @@ pub fn install(app: &AppWindow) {
         return;
     }
     let frames = Rc::new(RefCell::new(Frames::default()));
-    {
+    // The rendering notifier only for the modes that read its frame timings (`Frames`): Skia
+    // turns partial rendering off for a window that has one (it cannot know where the callback
+    // draws), so every other mode measures and snapshots the window as it is drawn without the
+    // bench. The frame-timing modes themselves measure with partial rendering off.
+    if FRAME_TIMING_MODES.contains(&mode.as_str()) {
         let frames = frames.clone();
         let res = app.window().set_rendering_notifier(move |state, _| {
             let mut f = frames.borrow_mut();
@@ -286,6 +315,7 @@ pub fn install(app: &AppWindow) {
         });
         if let Err(e) = res {
             log::warn!("rendering notifier unavailable: {e:?}");
+            NOTIFIER_REFUSED.set(Some(format!("{e:?}")));
         }
     }
     // A timer that keeps requesting frames while recording, so idle frames are not
@@ -333,6 +363,7 @@ pub fn install(app: &AppWindow) {
             "eq" => crate::bench::eq::run(),
             "viz-styles" => crate::bench::viz_styles::run(),
             "viz-cost" => crate::bench::viz_styles::run_cost(),
+            "play-cost" => crate::bench::viz_styles::run_play_cost(),
             "soak" => crate::bench::bigscan::run_soak(),
             "xfade-rates" => crate::bench::xfade_rates::run(),
             "eq-paste" => crate::bench::eq_paste::run(),
@@ -1237,6 +1268,7 @@ fn big_playlist(frames: Rc<RefCell<Frames>>) {
                 (*t - at).as_secs_f64() * 1000.0,
                 render.as_secs_f64() * 1000.0
             ),
+            None if data.is_empty() => no_frames_note("first frame", 0).trim_end().to_owned(),
             None => "no frame".to_owned(),
         }
     }

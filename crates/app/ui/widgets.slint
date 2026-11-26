@@ -397,6 +397,25 @@ export component Cover inherits Rectangle {
     }
 }
 
+// The drop shadow a Cover of `size` and `radius` casts, on its own: for the ring's cover, which
+// pulses with the beat over it with no shadow of its own. Slint renders a shadow into a texture
+// kept by its size, so a shadow that pulsed with the cover was a new texture each frame (the
+// dead ones filled Skia's cache, 534-553 MB behind the page against 299-306 MB); this one keeps
+// the cover's resting size and is rendered once. Its fill is 1px inside the cover's edge, grown
+// back out by the spread: the cover's own shadow shape, the fill hidden under the cover's rim.
+export component CoverShadow inherits Rectangle {
+    in property <bool> has-cover: true;
+    in property <color> tint: Theme.surface-hi;
+    in property <length> size: 120px;
+    in property <length> radius: Theme.radius-cover;
+    width: size - 2px;
+    height: size - 2px;
+    border-radius: max(0px, radius - 1px);
+    // The Cover's own fill: an opaque one casts the shape alone, whatever its colour.
+    background: has-cover ? Theme.surface : @linear-gradient(135deg, tint.brighter(35%) 0%, tint 55%, tint.darker(45%) 100%);
+    drop-shadow-spread: 1px;
+}
+
 // A cover with title and artist under it, play button on hover. As a browse tile
 // (`group`: an artist, a genre, a label), the second line is plain text ("12 albums"),
 // with no play button and no album menu; `round` for an artist.

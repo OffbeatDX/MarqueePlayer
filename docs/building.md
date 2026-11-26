@@ -85,3 +85,9 @@ the 1.19 pre-release branch (its crates say 1.20.0), which has `backdrop-blur` a
 window icon fix the app needs: move to the 1.19 release when it ships (replace the
 `git`/`rev` pair with the version), checking the app on it. The
 first build downloads Skia's prebuilt binaries (needs network once; about 6 minutes).
+Slint's Skia renderer is used from a patched copy of this commit
+(`crates/patches/i-slint-renderer-skia`, [crates/patches/README.md](../crates/patches/README.md)),
+so moving Slint to another commit or a release means making the copy again from it, its
+manifest naming the same commit: the copy must have the same version number as the rest of
+Slint, or the `[patch]` does not apply and Cargo warns "patch was not used" (and builds the
+unpatched renderer).

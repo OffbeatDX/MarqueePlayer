@@ -124,6 +124,9 @@ fn app_version() -> Version {
             println!("cargo:rerun-if-changed={}", c.join("src").display());
         }
     }
+    // The patched dependencies (`fingerprint` reads them too): not under a crates/<name>
+    // with a Cargo.toml of its own, so the loop above misses them.
+    println!("cargo:rerun-if-changed={}", workspace.join("crates").join("patches").display());
     // The UI markup: crates/ui compiles it, so its changes no longer rerun this script on
     // their own.
     println!("cargo:rerun-if-changed={}", Path::new(&dir).join("ui").display());

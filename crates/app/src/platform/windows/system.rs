@@ -21,6 +21,10 @@ pub const HAS_SKIA_OPENGL: bool = false;
 /// The tray icon's bars move while music plays (`tray::anim`, Settings > Window).
 pub const TRAY_ANIMATES: bool = true;
 
+/// The visualizer's paths are all anti-aliased at any scale factor (`visualizer::aa_policy`;
+/// only macOS draws its fills without at 2x).
+pub const VIZ_FILLS_ALIASED_AT_2X: bool = false;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia-wgpu", "Skia (wgpu)")];
 
 /// The theme's default font (theme.toml, `[type] font_family`).

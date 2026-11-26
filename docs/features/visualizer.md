@@ -327,6 +327,59 @@ performance counters; another run of the old build saw 27). With the software re
 ring's radial and conic gradients); behind the page the reflection lies under the bar, which
 is opaque there (no glass), so it does not show.
 
+**Anti-aliasing on macOS** (2026-11-25, M5 MacBook Air, Retina, 2940 x 1844): Slint's Skia
+renderer (Ganesh on Metal through wgpu) has no MSAA, so every anti-aliased path that is large
+or concave is rasterised on the CPU (Skia's software path renderer) into a mask the size of
+its bounds and uploaded as a new texture, every frame: with Halo behind the page that was 54%
+of the busy CPU samples. With no path anti-aliased Halo behind the page took 27% of a core
+where it took 47%, Bonfire 29% where 40%, Eclipse 30% where 43%, and the footprint was 342 MB
+where 556 MB; bars (Classic) are drawn without anti-aliasing anyway (`draw::crisp`) and did
+not change. So on macOS at a scale factor of 2 or more (the monitor's times the interface
+size) the filled paths (the area, caps, reflection, sparks and their discs of light, Saturn's
+grains in front of the cover) are drawn without it, and with them the ripples and the
+snare's rings (thin, faint strokes that never stand still); only the line and its glow keep
+it: at 2x the stair steps of a soft fill or of a faint ripple on its way out are hard to see,
+those of the line, which is all a look draws, are not (`visualizer::aa_policy`, `Visualizer.fills-aa` and
+`strokes-aa`, `platform::system::VIZ_FILLS_ALIASED_AT_2X`; followed as the interface size or
+the monitor changes, `zoom::apply`). Windows, Linux and 1x displays draw as before.
+`MP_VIZ_AA` picks the groups by hand for comparing. The ring's pulsing cover casts no shadow
+of its own: the shadow is drawn under it at the cover's resting size (`CoverShadow`,
+widgets.slint), because Skia renders a shadow into a texture kept by its size, and a shadow
+that pulsed with the cover was a new texture every frame, the dead ones piling up in Skia's
+GPU cache (with no path anti-aliased, 534 to 553 MB with a ring look behind the page where
+the bars and the line took 299 to 306 MB, and the ring looks in the panel 315 to 337 MB).
+With all of it, and Skia's cache trimmed (`crates/patches/README.md`), the same run before and
+after (2026-11-26, `MP_BENCH=viz-cost`, 8 s a case behind the page, 60 frames a second held
+both ways): Halo 47.9% of a core then 32.2%, Bonfire 40.6% then 31.8%, Eclipse 43.5% then
+33.0%, Saturn 31.3% then 29.1%, bars 28.8% then 28.5%, the line 26.7% then 28.4% (the runs
+differ by about two points either way); the footprint at the end of the run 643 MB then
+330 MB. What is left, 26 to 33% of a core whatever the look, is the whole window being redrawn
+60 times a second (about 3 ms of CPU a frame at this size; the visualizer off, playing, is
+6 to 7%): Slint's Skia renderer on wgpu redraws everything for any change, and redrawing only
+what changed was tried in it and gained nothing here (the glass panels take in their whole
+area whenever anything under them changes, so nearly the whole window was redrawn anyway).
+
+**What the share of a core means on a Mac** (2026-11-26, the same M5 MacBook Air, on battery,
+`MP_BENCH=play-cost`): the figures above are time on a core, as Activity Monitor shows it, and
+this Mac runs light periodic work slowly. The bars behind the page took 33 to 35% of a core
+and 2.3 ms in the renderer a frame; with two other cores kept busy by something else (so the
+processor ran at speed), the same 60 frames a second took 9.3% and 0.56 ms a frame, and playing
+on Home 2.0% where it took 8.6% (0.82 ms a frame where 4.5 ms). A plain arithmetic loop shows
+the same without the app: a piece of work taking 0.68 ms back to back takes 3.3 ms when it is
+run once every 16.7 ms or every 100 ms. So about three quarters of what Activity Monitor
+shows for the player is the processor taking its time over cheap work, not work; compare
+changes by the renderer's time a frame within one run, or with the machine otherwise busy.
+What the work is, by samples of the main thread with the bars behind the page: two thirds
+redrawing the scene that did not change (Skia recording it 15%, Metal render passes 15%, the
+flush 9%, Slint's item tree 7%, the event loop and display link 7%, the glass 6%, text 5%),
+one third the visualizer's own (the analysis 11%, the paths written as text and parsed back
+by Slint 11%, triangulating the bars 7%, the rest of a frame 5%); the main thread is three
+quarters of the process, Metal's submission thread a seventh, decoding and output a twentieth.
+Redrawing one pixel 60 times a second (`MP_VIZ_DRAW=minimal`) costs 29 to 30% of a core as
+shown, the same 40% of the GPU and the same 13 points more of WindowServer as the bars do;
+analysing without drawing (`none`) 10%. Playing on any page with nothing else moving is ten
+whole-window frames a second for the position (7 to 9% as shown, 2% at speed); hidden, 0.9%.
+
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the
 auto level and the +3 dB tilt. It is at its best on the full page. Skyline is the bar

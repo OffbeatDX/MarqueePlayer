@@ -2,7 +2,7 @@
 
 import { Theme } from "theme.slint";
 import { Player, Actions, Visualizer } from "stores.slint";
-import { Cover } from "widgets.slint";
+import { Cover, CoverShadow } from "widgets.slint";
 
 // What a look draws in front of the cover (Saturn's near grains): over the cover, where the
 // stage itself is under it. Same box as the stage it belongs to.
@@ -21,6 +21,7 @@ export component VisualizerFront inherits Rectangle {
         viewbox-height: root.height / 1px;
         visible: Visualizer.active;
         commands: s.c;
+        anti-alias: Visualizer.fills-aa;
         fill: s.b;
         stroke-width: 0;
     }
@@ -90,7 +91,7 @@ export component VisualizerStage inherits Rectangle {
         viewbox-height: max(1px, Visualizer.top-h) / 1px;
         visible: Visualizer.active;
         commands: Visualizer.fill;
-        anti-alias: !Visualizer.crisp;
+        anti-alias: !Visualizer.crisp && Visualizer.fills-aa;
         // Brighter on the beat, or fainter when quiet (`fill-light`); at rest the brush as it is.
         fill: Visualizer.fill-light == 0 ? Visualizer.fill-brush : Visualizer.fill-brush.transparentize(-Visualizer.fill-light);
         stroke-width: 0;
@@ -109,6 +110,7 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.line;
         fill: transparent;
+        anti-alias: Visualizer.strokes-aa;
         stroke: Visualizer.glow-brush;
         stroke-width: Visualizer.glow-width * Visualizer.glow-swell;
         stroke-line-join: round;
@@ -127,6 +129,7 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.line;
         fill: transparent;
+        anti-alias: Visualizer.strokes-aa;
         stroke: Visualizer.line-brush;
         stroke-width: Visualizer.line-width * Visualizer.line-swell;
         stroke-line-join: round;
@@ -144,7 +147,7 @@ export component VisualizerStage inherits Rectangle {
         viewbox-height: max(1px, Visualizer.top-h) / 1px;
         visible: Visualizer.active;
         commands: Visualizer.caps;
-        anti-alias: !Visualizer.crisp;
+        anti-alias: !Visualizer.crisp && Visualizer.fills-aa;
         fill: Visualizer.caps-brush;
         stroke-width: 0;
     }
@@ -178,7 +181,7 @@ export component VisualizerStage inherits Rectangle {
         fit: preserve;
             viewbox-height: Visualizer.refl-h / 1px;
             commands: r.c;
-        anti-alias: !Visualizer.crisp;
+        anti-alias: !Visualizer.crisp && Visualizer.fills-aa;
             fill: Visualizer.fill-light == 0 ? r.b : r.b.transparentize(-Visualizer.fill-light);
             stroke-width: 0;
         }
@@ -197,6 +200,8 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.ripples;
         fill: transparent;
+        // Faint, thin and always moving: with the fills, not with the line (stores.slint).
+        anti-alias: Visualizer.fills-aa;
         stroke: Visualizer.ripples-brush;
         stroke-width: Visualizer.ripples-width;
     }
@@ -212,6 +217,8 @@ export component VisualizerStage inherits Rectangle {
         visible: Visualizer.active;
         commands: Visualizer.rings;
         fill: transparent;
+        // Faint, thin and always moving: with the fills, not with the line (stores.slint).
+        anti-alias: Visualizer.fills-aa;
         stroke: Visualizer.rings-brush;
         stroke-width: Visualizer.rings-width;
     }
@@ -230,11 +237,24 @@ export component VisualizerStage inherits Rectangle {
         viewbox-height: root.height / 1px;
         visible: Visualizer.active;
         commands: s.c;
+        anti-alias: Visualizer.fills-aa;
         fill: s.b;
         stroke-width: 0;
     }
     // The halo's hub: the playing cover, round (or its own rounded square), over the
-    // contour's foot; at rest the contour is a thin lit line around it.
+    // contour's foot; at rest the contour is a thin lit line around it. A cover that pulses
+    // with the beat casts its shadow from under it, at its resting size (rendered once, not
+    // each frame of a beat: widgets.slint).
+    if root.cover && Visualizer.ring && Visualizer.cover-pulse: CoverShadow {
+        size: root.hub * 2;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        has-cover: Player.has-cover;
+        radius: Visualizer.square ? Theme.radius-card : root.hub;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000090;
+        drop-shadow-offset-y: 4px;
+    }
     if root.cover && Visualizer.ring: Cover {
         size: root.hub * 2 * Visualizer.cover-scale;
         x: (root.width - self.width) / 2;
@@ -243,7 +263,7 @@ export component VisualizerStage inherits Rectangle {
         has-cover: Player.has-cover;
         radius: Visualizer.square ? Theme.radius-card : self.width / 2;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #00000090;
+        drop-shadow-color: Visualizer.cover-pulse ? transparent : #00000090;
         drop-shadow-offset-y: 4px;
     }
     if root.cover && Visualizer.ring: VisualizerFront { x: 0; y: 0; width: root.width; height: root.height; }

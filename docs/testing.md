@@ -151,7 +151,7 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_VOLUME=0` | Start at this volume |
 | `--minimized` (argument) | Start in the tray, the window made but not shown ("Start with Windows" passes it). Ignored without a tray |
 | `--version` (argument) | Print `Marquee Player <version>` and exit (the AppImage's launcher uses it to check the libraries load) |
-| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) need `SLINT_BACKEND=winit-skia-opengl` and a build with `--features bench-opengl` |
+| `MP_BENCH=grid\|sidebar\|tour\|gapless\|theme\|skip\|session-save\|session-check\|guard\|idle-paused\|idle-stopped\|covers\|playlist\|phase4\|phase5\|cleanup\|visualizer\|viz-idle\|settings\|autoscroll\|tray\|details\|metadata\|about\|home\|home-shelves\|library\|editing\|smart\|eq\|eq-paste\|viz-styles\|viz-cost\|play-cost\|viz-look\|server\|listenbrainz\|soak\|bigscan\|xfade-rates\|streaming\|zoom\|zoom-check` | Run a scripted measurement, write results and PNG snapshots to `MP_BENCH_OUT`, then quit (see `bench/mod.rs`). The frame timings (`grid`, `sidebar`, `playlist`) come from Slint's rendering notifier, set for those three modes only (Skia draws a window with one without partial rendering, so they measure with it off and the other modes as the app draws without the bench); on Skia's wgpu surface (Metal, Direct3D 12, Vulkan) the notifier is called only with Slint's `unstable-wgpu-30` feature, which the `bench` feature turns on. `SLINT_BACKEND=winit-skia-opengl` with a build with `--features bench-opengl` times them on OpenGL instead. A run that saw no frame says so and why, rather than reporting zeros. Memory in the bench's reports (`soak`, `bigscan`, `viz-cost`) is the physical footprint on macOS (Activity Monitor's "Memory", GPU memory included on Apple silicon; its lifetime peak as the peak), private bytes on Windows, the resident size on Linux |
 | `MP_BENCH_GRID_PAGE=genres` | With `grid`: scroll the Genres page instead of Albums (the same grid with other tiles, to compare; it needs a library with a few hundred genres to have anywhere to scroll) |
 | `MP_BENCH_GRID_SIZE=<w>x<h>` | With `grid`: resize the window's client area to this many physical pixels first (`2560x1392`: a maximized window on a 1440p monitor), for the columns and rows of a monitor larger than the one the bench's window opens on. The slow frames of a grid grow with the tiles on screen, so a stutter on a large window can be invisible at 1080p |
 | `MP_BENCH_IDLE_SECS=<s>` | How long `idle-paused` / `idle-stopped` stay idle, hidden, before quitting (default 90) |
@@ -166,8 +166,9 @@ feature (`--features bench`) or a test build; the rest work in every build:
 | `MP_BENCH_DETAILS=off` | With `details`: the same views with the setting off (`off-*` snapshots), and no name prompts |
 | `MP_BENCH_TRAY_SECS=<s>` | How long `tray` plays with the tray animation off, then on (default 30 each) |
 | `MP_VIZ_DRAW=none\|minimal` | Measurement only: analyse without drawing, or redraw a 1 px rectangle per frame instead of the bars |
+| `MP_VIZ_AA=all\|fills\|strokes\|none` | Measurement and comparison only: which of the visualizer's paths ARE anti-aliased (`all` the drawing on Windows, Linux and 1x; `strokes` only the line and its glow, the macOS policy at a scale factor of 2 or more; `fills` the fills, the ripples and the rings; `none`). Unset: the policy (`visualizer::aa_policy`). Bars stay without anti-aliasing either way. Works in every build |
 | `MP_BENCH_VIZ_PART=<parts>` | With `viz-styles`: only these parts (comma-separated: presets, colours, min, settings, menu, moments, sheet, idle; `none` for just the start) |
-| `MP_BENCH_VIZ_CASES=<words>` | With `viz-cost`: only the cases whose name contains one of these (comma-separated) |
+| `MP_BENCH_VIZ_CASES=<words>` | With `viz-cost`: only the cases whose name contains one of these (comma-separated). One case's whole name (`halo, behind`) is that case alone; with a semicolon, the parts between semicolons, each a name or a piece of one (`halo, behind; saturn, panel`) |
 | `MP_BENCH_LOOK_PART=<parts>` | With `viz-look`: only these parts (comma-separated: halo, pin, keys, opacity, presets) |
 | `MP_HALO_SHAPE=square` | Measurement and comparison only: the halo follows the cover's rounded square instead of a circle (the cover drawn square), as tried and left out. Works in every build |
 | `MP_HALO_WITHOUT=<words>` | Comparison only: the halo's ripples without some of what moves them (comma-separated: `throw`, a kick throwing its ripple; `push`, kicks pushing those on their way; `swells`, a ripple on a swell where there are no kicks, a timer instead). Works in every build |
@@ -268,7 +269,20 @@ the realistic fixtures in three looks, a strip of twelve consecutive frames for 
 keyboard, Reset, at the minimum size) and whether anything runs when it should not; `vs-*.png`
 and a count of failed checks at the end of `bench-viz-styles.txt`. `viz-cost` measures every
 style in every placement (`MP_BENCH_VIZ_SECS`, default 5, a case) and two at 30 frames a
-second.
+second: each case's line has its frames, frame intervals, work per frame, the process's CPU and
+its memory at the case's end, under a first line with the window's physical size and scale
+factor.
+`MP_BENCH=play-cost` (beside it) is for a profiler outside the app to line up with: the same
+album playing on Home, on Albums, on Now playing with the visualizer off, with the bars behind
+the page (the default look), with Halo behind it, and with the window hidden,
+`MP_BENCH_VIZ_SECS` each (`MP_BENCH_VIZ_CASES` picks phases by name). Each phase's start is
+logged with the time ("play-cost phase <name> starts at unix <t>"); its end with the process's
+CPU and memory, and under it every frame the window drew, whatever asked for it (the ticks' ten
+a second as much as the visualizer's sixty) and how long the renderer took over one
+(`bench-play-cost.txt`). On Apple silicon read the CPU figures with the machine's clock in mind:
+light periodic work runs several times slower there than the same work back to back, and the
+share of a core counts time, not work ([Visualizer](features/visualizer.md), "What the share of
+a core means on a Mac").
 
 `MP_BENCH=viz-look` (`bench/viz_look.rs`) runs on the visualizer's fixtures, which now have two more
 albums of one track each under a bright cover ("Paper": yellow, coral and sky on cream) and a

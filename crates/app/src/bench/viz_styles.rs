@@ -4,9 +4,12 @@
 //! `bench-viz-styles.txt` (a count of failed checks at its end).
 //!
 //! `MP_BENCH=viz-cost`: each style in each placement for `MP_BENCH_VIZ_SECS` (default 5)
-//! seconds: frames, frame intervals, the work per frame and the process CPU
-//! (`bench-viz-cost.txt`); then 30 frames a second, and the window redrawing a 1 px
+//! seconds: frames, frame intervals, the work per frame, the process CPU and the process
+//! memory at the case's end (`bench-viz-cost.txt`, under a line with the window's physical
+//! size and scale factor); then 30 frames a second, and the window redrawing a 1 px
 //! rectangle per frame (`MP_VIZ_DRAW=minimal` is the outside switch for that).
+//! `MP_BENCH_VIZ_CASES` picks cases (`case_wanted`): one case's whole name, names or pieces
+//! of names between semicolons, or pieces between commas.
 //!
 //! Both need `MP_MUSIC` with the fixtures of `examples/viz_fixtures` (the albums "Night
 //! Shift", "Daylight" and "Spectrum"). `MP_BENCH_VIZ_PART` (comma-separated: presets,
@@ -111,6 +114,33 @@ fn frame_report(name: &str, stats: &[(Instant, Duration)], cpu: Duration, wall: 
         pct(&work, 0.95),
         100.0 * cpu.as_secs_f64() / wall.as_secs_f64().max(1e-9),
     )
+}
+
+/// The process's memory now, for the end of a `viz-cost` line (`platform::system::resources`:
+/// the physical footprint on macOS, private bytes on Windows, the resident size on Linux).
+fn memory_now() -> String {
+    let (now, _, _) = crate::platform::system::resources();
+    format!(" | memory {now:>6.1} MB")
+}
+
+/// Whether `MP_BENCH_VIZ_CASES` (`only`) asks for the `viz-cost` case `name`, of the cases
+/// `all`. Empty: every case. Every case's name has a comma in it ("halo, behind"), so the
+/// string is first taken whole: the name of a case, that case alone. Then, with a semicolon in
+/// it, the parts between semicolons, each a name or a piece of one ("halo, behind; saturn,
+/// panel"). Else, as before, the parts between commas, each a piece of a name ("halo,saturn":
+/// every halo and every saturn; "behind": every case behind the page).
+fn case_wanted(only: &str, name: &str, all: &[&str]) -> bool {
+    let only = only.trim();
+    if only.is_empty() {
+        return true;
+    }
+    if all.contains(&only) {
+        return name == only;
+    }
+    if only.contains(';') {
+        return only.split(';').map(str::trim).filter(|o| !o.is_empty()).any(|o| name.contains(o));
+    }
+    only.split(',').any(|o| name.contains(o.trim()))
 }
 
 pub fn run() {
@@ -492,10 +522,17 @@ pub fn run_cost() {
     let r: Report = Rc::default();
     let mut steps: Vec<Step> = Vec::new();
     let t0 = Rc::new(Cell::new((Instant::now(), Duration::ZERO)));
-    steps.push((1200, Box::new(|st, _app| {
-        playback::play_tracks(st, album(st, "Night Shift"), 0);
-        views::go(st, Page::NowPlaying);
-    })));
+    {
+        // The window the cases are drawn in, so one report carries CPU, frames and memory
+        // with the size they were measured at.
+        let r = r.clone();
+        steps.push((1200, Box::new(move |st, app| {
+            let (size, scale) = (app.window().size(), app.window().scale_factor());
+            line(&r, format!("window {} x {} physical px, scale factor {scale:.2}", size.width, size.height));
+            playback::play_tracks(st, album(st, "Night Shift"), 0);
+            views::go(st, Page::NowPlaying);
+        })));
+    }
     // Playing on Now playing with the visualizer off: the floor.
     {
         let ta = t0.clone();
@@ -508,7 +545,7 @@ pub fn run_cost() {
         let (t0, r) = (t0.clone(), r.clone());
         steps.push((secs * 1000, Box::new(move |st, _app| {
             let (s, c) = t0.get();
-            line(&r, format!("{:<34} CPU {:>5.1}% of a core", "visualizer off, playing", 100.0 * (cpu_time() - c).as_secs_f64() / s.elapsed().as_secs_f64()));
+            line(&r, format!("{:<34} CPU {:>5.1}% of a core{}", "visualizer off, playing", 100.0 * (cpu_time() - c).as_secs_f64() / s.elapsed().as_secs_f64(), memory_now()));
             crate::toggle_visualizer(st);
         })));
     }
@@ -537,7 +574,8 @@ pub fn run_cost() {
         (Preset::Skyline, None, Placement::Page, "fine mirrored bars, full page"),
     ];
     let only = std::env::var("MP_BENCH_VIZ_CASES").unwrap_or_default();
-    let cases: Vec<_> = cases.into_iter().filter(|c| only.is_empty() || only.split(',').any(|o| c.3.contains(o.trim()))).collect();
+    let names: Vec<&str> = cases.iter().map(|c| c.3).collect();
+    let cases: Vec<_> = cases.into_iter().filter(|c| case_wanted(&only, c.3, &names)).collect();
     for (preset, style, place, name) in cases {
         steps.push((300, Box::new(move |st, app| {
             // From the top of the album each time: the music never runs out mid-case.
@@ -558,7 +596,7 @@ pub fn run_cost() {
             let (s, c) = t0.get();
             let stats = crate::visualizer::take_stats();
             crate::visualizer::record(false);
-            line(&r, frame_report(name, &stats, cpu_time() - c, s.elapsed()));
+            line(&r, frame_report(name, &stats, cpu_time() - c, s.elapsed()) + &memory_now());
         })));
     }
     // 30 frames a second, the heaviest case and the default.
@@ -579,7 +617,7 @@ pub fn run_cost() {
             let (s, c) = t0.get();
             let stats = crate::visualizer::take_stats();
             crate::visualizer::record(false);
-            line(&r, frame_report(name, &stats, cpu_time() - c, s.elapsed()));
+            line(&r, frame_report(name, &stats, cpu_time() - c, s.elapsed()) + &memory_now());
             crate::visualizer::choose(st, "fps", 0);
         })));
     }
@@ -591,4 +629,142 @@ pub fn run_cost() {
         })));
     }
     run_steps(steps);
+}
+
+/// `MP_BENCH=play-cost`: what playing costs where nothing but the player moves, for a profiler
+/// outside to line up with: the same album playing on Home, Albums, Now playing with the
+/// visualizer off, Now playing with the default look (bars behind the page), and with the
+/// window hidden, `MP_BENCH_VIZ_SECS` (default 5) each. Each phase's start is logged with the
+/// time ("play-cost phase <name> starts at unix <t>"), its end with the process's CPU and
+/// memory (`bench-play-cost.txt`). `MP_BENCH_VIZ_CASES` picks phases as it picks `viz-cost`'s.
+pub fn run_play_cost() {
+    let secs: u64 = std::env::var("MP_BENCH_VIZ_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+    let r: Report = Rc::default();
+    let mut steps: Vec<Step> = Vec::new();
+    let t0 = Rc::new(Cell::new((Instant::now(), Duration::ZERO)));
+    // Every frame the window draws, whatever asked for it (the ticks' ten a second as much as
+    // the visualizer's): when it ended and how long the renderer took over it.
+    type Drawn = Rc<RefCell<(Option<Instant>, Vec<(Instant, Duration)>)>>;
+    let drawn: Drawn = Rc::default();
+    {
+        let (r, drawn) = (r.clone(), drawn.clone());
+        steps.push((1200, Box::new(move |st, app| {
+            let (size, scale) = (app.window().size(), app.window().scale_factor());
+            line(&r, format!("window {} x {} physical px, scale factor {scale:.2}", size.width, size.height));
+            let d = drawn.clone();
+            let res = app.window().set_rendering_notifier(move |state, _| {
+                let mut d = d.borrow_mut();
+                match state {
+                    slint::RenderingState::BeforeRendering => d.0 = Some(Instant::now()),
+                    slint::RenderingState::AfterRendering => {
+                        if let Some(b) = d.0.take() {
+                            d.1.push((Instant::now(), b.elapsed()));
+                        }
+                    }
+                    _ => {}
+                }
+            });
+            if let Err(e) = res {
+                line(&r, format!("no count of the window's frames: {e:?}"));
+            }
+            playback::play_tracks(st, album(st, "Night Shift"), 0);
+            playback::cycle_repeat(st);
+        })));
+    }
+    type Enter = fn(&Rc<State>, &AppWindow);
+    let phases: Vec<(&'static str, Enter)> = vec![
+        ("home, playing", |st, _| views::go(st, Page::Home)),
+        ("albums, playing", |st, _| views::go(st, Page::Albums)),
+        ("now playing, visualizer off", |st, _| {
+            if st.settings.borrow().visualizer {
+                crate::toggle_visualizer(st);
+            }
+            views::go(st, Page::NowPlaying);
+        }),
+        ("now playing, bars behind", |st, app| {
+            if !st.settings.borrow().visualizer {
+                crate::toggle_visualizer(st);
+            }
+            views::go(st, Page::NowPlaying);
+            show(st, app, Preset::Classic, Placement::Behind);
+        }),
+        ("now playing, halo behind", |st, app| {
+            views::go(st, Page::NowPlaying);
+            show(st, app, Preset::Halo, Placement::Behind);
+        }),
+        ("window hidden, playing", |_, app| {
+            let _ = app.window().hide();
+        }),
+    ];
+    let only = std::env::var("MP_BENCH_VIZ_CASES").unwrap_or_default();
+    let names: Vec<&str> = phases.iter().map(|p| p.0).collect();
+    let phases: Vec<_> = phases.into_iter().filter(|p| case_wanted(&only, p.0, &names)).collect();
+    for (name, enter) in phases {
+        steps.push((300, Box::new(enter)));
+        let (ta, r1, d1) = (t0.clone(), r.clone(), drawn.clone());
+        steps.push((1500, Box::new(move |_st, _app| {
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+            line(&r1, format!("play-cost phase {name} starts at unix {unix:.2}"));
+            d1.borrow_mut().1.clear();
+            crate::visualizer::record(true);
+            ta.set((Instant::now(), cpu_time()));
+        })));
+        let (t0, r, drawn) = (t0.clone(), r.clone(), drawn.clone());
+        steps.push((secs * 1000, Box::new(move |_st, _app| {
+            let (s, c) = t0.get();
+            let stats = crate::visualizer::take_stats();
+            crate::visualizer::record(false);
+            line(&r, frame_report(name, &stats, cpu_time() - c, s.elapsed()) + &memory_now());
+            let frames = std::mem::take(&mut drawn.borrow_mut().1);
+            let mut took: Vec<f64> = frames.iter().map(|f| f.1.as_secs_f64() * 1000.0).collect();
+            took.sort_by(f64::total_cmp);
+            line(&r, format!(
+                "    the window drew {} frames, {:.1} a second; the renderer took p50 {:.2} p95 {:.2} ms a frame, {:.1}% of a core in all",
+                frames.len(),
+                frames.len() as f64 / s.elapsed().as_secs_f64().max(1e-9),
+                pct(&took, 0.5),
+                pct(&took, 0.95),
+                100.0 * took.iter().sum::<f64>() / 1000.0 / s.elapsed().as_secs_f64().max(1e-9),
+            ));
+        })));
+    }
+    {
+        let r = r.clone();
+        steps.push((300, Box::new(move |_st, _app| {
+            write_report("play-cost", &r.borrow());
+            let _ = slint::quit_event_loop();
+        })));
+    }
+    run_steps(steps);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::case_wanted;
+
+    const ALL: &[&str] = &["halo, behind", "halo, panel", "saturn, behind", "saturn, panel", "bars, full page"];
+
+    fn picked(only: &str) -> Vec<&'static str> {
+        ALL.iter().copied().filter(|n| case_wanted(only, n, ALL)).collect()
+    }
+
+    #[test]
+    fn one_case_named_whole_is_that_case_alone() {
+        assert_eq!(picked("halo, behind"), ["halo, behind"]);
+        assert_eq!(picked("  saturn, panel "), ["saturn, panel"]);
+    }
+
+    #[test]
+    fn semicolons_part_whole_names_and_pieces() {
+        assert_eq!(picked("halo, behind; saturn, panel"), ["halo, behind", "saturn, panel"]);
+        assert_eq!(picked("halo, behind;"), ["halo, behind"]);
+        assert_eq!(picked("panel; full page"), ["halo, panel", "saturn, panel", "bars, full page"]);
+    }
+
+    #[test]
+    fn commas_still_part_pieces_of_names_as_documented() {
+        assert_eq!(picked("halo,saturn"), ["halo, behind", "halo, panel", "saturn, behind", "saturn, panel"]);
+        assert_eq!(picked("behind"), ["halo, behind", "saturn, behind"]);
+        assert_eq!(picked(""), ALL);
+    }
 }

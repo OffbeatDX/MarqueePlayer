@@ -596,6 +596,14 @@ export global Visualizer {
     in-out property <length> ripples-width: 1.5px;
     // Bars sit on whole pixels: drawn without anti-aliasing (cheaper, as sharp).
     in-out property <bool> crisp;
+    // Whether the other paths are anti-aliased, in two groups: `fills-aa`, the filled ones
+    // (stroke-width 0) and with them the ring's ripples and the snare's rings (thin, faint
+    // strokes that never stand still); `strokes-aa`, the line and its glow. Rust decides
+    // (visualizer/mod.rs aa_policy): on macOS at a scale factor of 2 or more the first group
+    // is drawn without (each anti-aliased path is rasterised on the CPU there), everywhere
+    // else both with.
+    in-out property <bool> fills-aa: true;
+    in-out property <bool> strokes-aa: true;
     in-out property <brush> fill-brush;
     in-out property <brush> caps-brush;
     in-out property <brush> line-brush;

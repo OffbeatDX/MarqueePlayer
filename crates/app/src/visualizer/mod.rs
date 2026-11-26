@@ -65,6 +65,75 @@ fn draw_mode() -> DrawMode {
     MODE.with(|m| *m)
 }
 
+/// Which of the stage's paths are drawn anti-aliased, in two groups: `fills`, the filled ones
+/// (the area, the caps, the reflection's strips, the sparks' dots and discs, Saturn's grains
+/// in front of the cover) and with them the ring's ripples and the snare's rings, thin faint
+/// strokes that never stand still (`Visualizer.fills-aa`); `strokes`, the line and its glow,
+/// the one stroke that is a look's whole drawing (`Visualizer.strokes-aa`). Slint's Skia renderer has no MSAA, so each large
+/// or concave anti-aliased path is rasterised on the CPU into a mask the size of its bounds
+/// and uploaded as a texture, every frame; drawn without, the GPU fills it directly. Bars
+/// (`draw::crisp`) are drawn without anti-aliasing whatever this says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Smoothing {
+    pub fills: bool,
+    pub strokes: bool,
+}
+
+impl Smoothing {
+    /// Everything anti-aliased: the drawing as it always was.
+    pub const ALL: Smoothing = Smoothing { fills: true, strokes: true };
+}
+
+/// `MP_VIZ_AA` (measurement and comparison only, every build): which groups ARE drawn
+/// anti-aliased. "all" as on Windows, Linux and 1x displays, "strokes" only the line and its
+/// glow (the macOS policy at 2x), "fills" only the fills, the ripples and the rings, "none"
+/// nothing; unset (or anything else) the
+/// policy (`aa_policy`).
+fn parse_aa(v: &str) -> Option<Smoothing> {
+    match v {
+        "all" => Some(Smoothing::ALL),
+        "fills" => Some(Smoothing { fills: true, strokes: false }),
+        "strokes" => Some(Smoothing { fills: false, strokes: true }),
+        "none" => Some(Smoothing { fills: false, strokes: false }),
+        _ => None,
+    }
+}
+
+fn aa_forced() -> Option<Smoothing> {
+    thread_local! {
+        static FORCED: Option<Smoothing> = std::env::var("MP_VIZ_AA").ok().as_deref().and_then(parse_aa);
+    }
+    FORCED.with(|f| *f)
+}
+
+/// The anti-aliasing policy: `forced` (`MP_VIZ_AA`) when given; otherwise, where the system
+/// draws the fills without it at high density (`platform::system::VIZ_FILLS_ALIASED_AT_2X`,
+/// macOS) and the window's scale factor (the monitor's times the interface size) is 2 or
+/// more, the fills (and the ripples and rings with them) without and the line with (at 2x the
+/// stair steps of a soft fill or of a faint ripple on its way out are hard to see, those of
+/// the line, which is all a look draws, are not); everywhere else everything anti-aliased, as it
+/// always was.
+pub fn aa_policy(fills_aliased_at_2x: bool, scale_factor: f32, forced: Option<Smoothing>) -> Smoothing {
+    if let Some(f) = forced {
+        return f;
+    }
+    if fills_aliased_at_2x && scale_factor >= 2.0 {
+        Smoothing { fills: false, strokes: true }
+    } else {
+        Smoothing::ALL
+    }
+}
+
+/// The window's scale factor is (or changed to) `scale_factor`: the stage's anti-aliasing
+/// follows it (`zoom::apply`, which every change of the interface size or of the monitor's
+/// factor goes through, and `install` for the factor the window starts with).
+pub fn scale_changed(app: &AppWindow, scale_factor: f32) {
+    let s = aa_policy(crate::platform::system::VIZ_FILLS_ALIASED_AT_2X, scale_factor, aa_forced());
+    let g = app.global::<Visualizer>();
+    g.set_fills_aa(s.fills);
+    g.set_strokes_aa(s.strokes);
+}
+
 /// Where it is drawn now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Where {
@@ -131,6 +200,9 @@ pub fn install(st: &Rc<State>) {
             stats: None,
         });
     });
+    if let Some(app) = st.app.upgrade() {
+        scale_changed(&app, app.window().scale_factor());
+    }
     publish(st);
 }
 
@@ -1093,5 +1165,37 @@ mod tests {
         assert!(l.windows(2).any(|w| (w[0] - w[1]).abs() > 0.05));
         // The same every time: it is a still frame.
         assert_eq!(still_levels(64), still_levels(64));
+    }
+
+    #[test]
+    fn only_macos_at_twice_the_density_draws_the_fills_without_anti_aliasing() {
+        let mac = Smoothing { fills: false, strokes: true };
+        assert_eq!(aa_policy(true, 2.0, None), mac);
+        assert_eq!(aa_policy(true, 3.0, None), mac);
+        // A Retina display zoomed to 90% (1.8), a 1x one zoomed to 200% (2.0): the window's
+        // whole factor decides, not the monitor's.
+        assert_eq!(aa_policy(true, 2.0 * 0.9, None), Smoothing::ALL);
+        assert_eq!(aa_policy(true, 1.0 * 2.0, None), mac);
+        assert_eq!(aa_policy(true, 1.0, None), Smoothing::ALL);
+        // Windows and Linux draw as they always did, at any density.
+        for sf in [1.0, 1.25, 1.5, 2.0, 2.5, 4.0] {
+            assert_eq!(aa_policy(false, sf, None), Smoothing::ALL, "{sf}");
+        }
+    }
+
+    #[test]
+    fn the_override_says_which_groups_are_anti_aliased_on_any_system() {
+        assert_eq!(parse_aa("all"), Some(Smoothing::ALL));
+        assert_eq!(parse_aa("fills"), Some(Smoothing { fills: true, strokes: false }));
+        assert_eq!(parse_aa("strokes"), Some(Smoothing { fills: false, strokes: true }));
+        assert_eq!(parse_aa("none"), Some(Smoothing { fills: false, strokes: false }));
+        assert_eq!(parse_aa(""), None);
+        assert_eq!(parse_aa("auto"), None);
+        for v in ["all", "fills", "strokes", "none"] {
+            let f = parse_aa(v);
+            for (mac, sf) in [(true, 2.0), (true, 1.0), (false, 2.0), (false, 1.0)] {
+                assert_eq!(Some(aa_policy(mac, sf, f)), f, "{v} {mac} {sf}");
+            }
+        }
     }
 }

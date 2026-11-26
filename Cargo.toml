@@ -141,3 +141,9 @@ incremental = true
 # nothing in the Windows build depends on it.
 [patch.crates-io]
 blocking = { path = "crates/patches/blocking" }
+
+# Slint's Skia renderer, copied from the pinned commit with one change (crates/patches/README.md):
+# on macOS it gives back the GPU memory Skia cached and no frame has used lately. Apple platforms
+# only in effect: on Windows and Linux the copy compiles to the code upstream has.
+[patch."https://github.com/slint-ui/slint"]
+i-slint-renderer-skia = { path = "crates/patches/i-slint-renderer-skia" }

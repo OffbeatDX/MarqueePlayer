@@ -559,9 +559,10 @@ pub fn toggle_visualizer(st: &Rc<State>) {
 /// silently dropped. Linux: Skia through wgpu (Vulkan), else Skia on OpenGL (EGL or GLX:
 /// GPUs and drivers without Vulkan), else software. macOS: Skia on Metal, else software.
 /// Returns whether glass is available.
-/// `SLINT_BACKEND` still wins when set (`winit-skia-opengl` for the frame-timing bench,
-/// whose rendering notifier the wgpu surface does not call; on Windows that renderer is
-/// only in builds with the `bench-opengl` feature).
+/// `SLINT_BACKEND` still wins when set (`winit-skia-opengl` to time the bench's frames on
+/// OpenGL; the wgpu surface calls their rendering notifier only in `bench` builds, with
+/// Slint's `unstable-wgpu-30`; on Windows that renderer is only in builds with the
+/// `bench-opengl` feature).
 fn select_renderer() -> bool {
     if let Ok(forced) = std::env::var("SLINT_BACKEND") {
         if forced.contains("skia-opengl") && !cfg!(feature = "bench-opengl") && !platform::system::HAS_SKIA_OPENGL {

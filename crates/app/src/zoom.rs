@@ -326,6 +326,8 @@ pub fn apply(app: &AppWindow, pct: u32) {
     // Covers of the grids and shelves at the size they are drawn.
     let card = app.global::<crate::Theme>().get_cover_size();
     crate::covers::set_card_px((card * total).ceil() as u32);
+    // The visualizer's anti-aliasing, which depends on the density (`visualizer::aa_policy`).
+    crate::visualizer::scale_changed(app, total);
     let chrome = app.global::<Chrome>();
     chrome.set_zoom(pct as i32);
     chrome.set_zoom_text(format!("{pct}%").into());

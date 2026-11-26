@@ -42,6 +42,10 @@ pub const HAS_SKIA_OPENGL: bool = true;
 /// The tray icon's bars move while music plays (`tray::anim`, Settings > Window).
 pub const TRAY_ANIMATES: bool = true;
 
+/// The visualizer's paths are all anti-aliased at any scale factor (`visualizer::aa_policy`;
+/// only macOS draws its fills without at 2x).
+pub const VIZ_FILLS_ALIASED_AT_2X: bool = false;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (OpenGL, else Vulkan through wgpu, else software)")];
 
 /// The theme's family as it can be drawn here: as named (fontconfig finds a fallback).

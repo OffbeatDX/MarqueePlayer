@@ -31,6 +31,14 @@ pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (Metal)")];
 /// times a second for as long as music played (`tray::anim`). Settings does not offer it.
 pub const TRAY_ANIMATES: bool = false;
 
+/// At a scale factor of 2 or more the visualizer's filled shapes (the sparks' soft discs of
+/// light among them) and the ring's ripples and snare rings are drawn without
+/// anti-aliasing (`visualizer::aa_policy`): Skia on Metal has no MSAA here, so every large or
+/// concave anti-aliased path was rasterised on the CPU into a mask and uploaded each frame
+/// (Halo behind the page 47% of a core with it, 28% with no path anti-aliased; on a Retina
+/// display their stair steps are hard to see). The line and its glow keep it.
+pub const VIZ_FILLS_ALIASED_AT_2X: bool = true;
+
 /// The theme's family as it can be drawn here: as named (Core Text finds a fallback).
 pub fn font_here(family: &str) -> String {
     family.to_owned()
@@ -130,17 +138,35 @@ pub fn gui_objects() -> (u32, u32) {
     (0, 0)
 }
 
-/// This process's memory (resident and peak resident, in MB) and open file descriptors (the
-/// bench's long runs watch them for growth). The peak from `getrusage` (bytes on macOS); the
-/// resident size now is not read (it needs the Mach task API): the peak stands in for it.
+/// This process's memory (its physical footprint now and the largest it has been, in MB) and
+/// open file descriptors (the bench's long runs watch them for growth), as Windows gives
+/// private bytes and the peak working set and Linux the resident size and its peak.
+///
+/// The footprint is what Activity Monitor's "Memory" column and `footprint` show: the pages
+/// this process owns (dirty and compressed, not the shared libraries' clean pages), and on
+/// Apple silicon the GPU memory of its textures and buffers too, which the resident size
+/// leaves out. From `proc_pid_rusage` (`rusage_info_v4`, macOS 10.13 and later); should that
+/// fail, nothing now and `getrusage`'s peak resident size (bytes on macOS) for the peak.
 #[cfg(feature = "bench")]
 pub fn resources() -> (f64, f64, u32) {
+    const MB: f64 = 1_048_576.0;
+    let fds = std::fs::read_dir("/dev/fd").map(|d| d.count().saturating_sub(1) as u32).unwrap_or(0);
+    // SAFETY: a plain struct of integers for the kernel to fill, of the flavour asked for
+    // (libc declares the buffer as `*mut rusage_info_t`, a pointer to `void *`; the kernel
+    // writes the struct itself there).
+    let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+    // SAFETY: as above; this process's own pid.
+    if unsafe { libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V4, (&raw mut info).cast()) } == 0 {
+        // The kernel moves the lifetime peak up only now and then, so the footprint now can be
+        // a little above it: the peak is never less than now.
+        let now = info.ri_phys_footprint as f64 / MB;
+        return (now, now.max(info.ri_lifetime_max_phys_footprint as f64 / MB), fds);
+    }
     // SAFETY: as in `cpu_time`.
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: as above.
-    let peak = if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) } == 0 { u.ru_maxrss as f64 / 1_048_576.0 } else { 0.0 };
-    let fds = std::fs::read_dir("/dev/fd").map(|d| d.count().saturating_sub(1) as u32).unwrap_or(0);
-    (peak, peak, fds)
+    let peak = if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) } == 0 { u.ru_maxrss as f64 / MB } else { 0.0 };
+    (0.0, peak, fds)
 }
 
 /// About's credits for what only the macOS build links (`about::credits`).
@@ -204,6 +230,17 @@ mod tests {
     #[test]
     fn the_system_line_names_macos() {
         assert!(os_version().starts_with("macOS "), "{}", os_version());
+    }
+
+    /// The memory now is the physical footprint, read (not the stand-in of nothing), and the
+    /// largest it has been is no smaller.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn the_memory_is_the_footprint_now_and_its_peak() {
+        let (now, peak, fds) = resources();
+        assert!(now > 1.0 && now < 1_000_000.0, "{now} MB");
+        assert!(peak >= now, "peak {peak} MB, now {now} MB");
+        assert!(fds >= 3, "{fds}");
     }
 
     #[test]

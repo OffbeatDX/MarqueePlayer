@@ -3,7 +3,7 @@
 import { Theme } from "../theme.slint";
 import { Player, Actions, Lyrics, Visualizer } from "../stores.slint";
 import { AutoFlickable } from "../autoscroll.slint";
-import { Icons, IconButton, Cover, LinkText, ArtistLinks, FocusRing, FocusTarget } from "../widgets.slint";
+import { Icons, IconButton, Cover, CoverShadow, LinkText, ArtistLinks, FocusRing, FocusTarget } from "../widgets.slint";
 import { ListKeys, QueueList } from "../lists.slint";
 import { VisualizerFront, VisualizerStage } from "../vizstage.slint";
 
@@ -344,6 +344,18 @@ export component NowPlayingPage inherits Rectangle {
                         hub-size: root.halo-cover / 2;
                         open: true;
                     }
+                    // A cover that pulses with the beat casts its shadow from here, at its resting
+                    // size (rendered once, not each frame of a beat: widgets.slint).
+                    if root.halo-behind && Visualizer.cover-pulse: CoverShadow {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        size: root.halo-cover;
+                        has-cover: Player.has-cover;
+                        radius: Visualizer.square ? Theme.radius-card : root.halo-cover / 2;
+                        drop-shadow-blur: 40px;
+                        drop-shadow-color: #000000c0;
+                        drop-shadow-offset-y: 12px;
+                    }
                     Cover {
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
@@ -352,7 +364,7 @@ export component NowPlayingPage inherits Rectangle {
                         has-cover: Player.has-cover;
                         radius: root.halo-behind && !Visualizer.square ? self.width / 2 : Theme.radius-card;
                         drop-shadow-blur: 40px;
-                        drop-shadow-color: #000000c0;
+                        drop-shadow-color: root.halo-behind && Visualizer.cover-pulse ? transparent : #000000c0;
                         drop-shadow-offset-y: 12px;
                     }
                     // What the look draws in front of the cover (Saturn's near grains).
