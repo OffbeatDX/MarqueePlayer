@@ -87,6 +87,12 @@ Options:
   --snap N           save the window's own picture after the visualizer's N-th frame in
                      each build (bars, halo) and say how many pixels differ
   --no-watts         skip the watts pass even where powermetrics is allowed
+  --floor P          the smallest difference in the app's CPU that gets a verdict, in percent
+                     (default 7: what a no-change run read on a machine shared with other
+                     work; on a quiet one no-change runs stay under 1, and 3 is defensible)
+  --rates-differ     the change draws at another rate on purpose (30 frames a second where
+                     the base draws 60): compare what a second of each scene costs, not a
+                     frame, and do not take the lower rate for a covered window
   --confirm          then a slow confirmation: the battery controller's watts, each scene
                      about three minutes on each build, no busy processes
   --json FILE        also write the JSON here
@@ -115,13 +121,17 @@ struct Opts {
     snap: Option<u64>,
     watts: bool,
     confirm: bool,
+    /// The smallest difference in the app's CPU that gets a verdict (`--floor`, a share).
+    floor: f64,
+    /// The two sides are meant to draw at different rates (`--rates-differ`).
+    rates_differ: bool,
     json: Option<PathBuf>,
     fixtures: Option<PathBuf>,
 }
 
 fn parse(args: Vec<String>, common: &mut Common) -> Result<Option<Opts>, Fail> {
     let mut p = Parser::new("perf", args);
-    let mut o = Opts { base: None, scenes: Vec::new(), rounds: 2, secs: 8, settle_ms: 2500, real_sound: false, snap: None, watts: true, confirm: false, json: None, fixtures: None };
+    let mut o = Opts { base: None, scenes: Vec::new(), rounds: 2, secs: 8, settle_ms: 2500, real_sound: false, snap: None, watts: true, confirm: false, floor: FLOOR_APP, rates_differ: false, json: None, fixtures: None };
     let mut scenes = DEFAULT_SCENES.to_owned();
     let num = |p: &mut Parser, what: &str| -> Result<f64, Fail> {
         let v = p.value()?;
@@ -142,6 +152,8 @@ fn parse(args: Vec<String>, common: &mut Common) -> Result<Option<Opts>, Fail> {
             "--snap" => o.snap = Some(num(&mut p, "--snap")?.round() as u64),
             "--no-watts" => o.watts = false,
             "--confirm" => o.confirm = true,
+            "--floor" => o.floor = num(&mut p, "--floor")? / 100.0,
+            "--rates-differ" => o.rates_differ = true,
             "--json" => o.json = Some(PathBuf::from(p.value()?)),
             "--fixtures" => o.fixtures = Some(PathBuf::from(p.value()?)),
             _ if common.take(&a, &mut p)? => {}
@@ -326,7 +338,7 @@ pub fn run(args: Vec<String>) -> Result<(), Fail> {
     println!();
     println!("== the change against {base_label}: {} rounds, {} s a scene, the clock held{}", o.rounds, o.secs, if made_up { ", made-up sound" } else { "" });
     for scene in &o.scenes {
-        let (text, v, measured) = scene_report(scene, &rounds, &watts, &battery, refresh, made_up);
+        let (text, v, measured) = scene_report(scene, &rounds, &watts, &battery, refresh, made_up, Judging { floor_app: o.floor, rates_differ: o.rates_differ });
         measured_any |= measured;
         print!("{text}");
         out_scenes.push(v);
@@ -347,7 +359,7 @@ pub fn run(args: Vec<String>) -> Result<(), Fail> {
     let report = json!({
         "base": {"ref": base_label, "sha": sha}, "change": ws.root.display().to_string(),
         "rounds": o.rounds, "secs": o.secs, "settle_ms": o.settle_ms, "made_up_sound": made_up,
-        "refresh_hz": refresh, "floors": {"app": FLOOR_APP, "other": FLOOR_OTHER, "watts": FLOOR_WATTS, "window_server_pts": FLOOR_WINDOW_SERVER_PTS, "gpu_pts": FLOOR_GPU_PTS},
+        "refresh_hz": refresh, "floors": {"app": o.floor, "other": FLOOR_OTHER, "watts": FLOOR_WATTS, "window_server_pts": FLOOR_WINDOW_SERVER_PTS, "gpu_pts": FLOOR_GPU_PTS},
         "scenes": out_scenes, "notes": notes, "times_s": times.0.iter().map(|(w, s)| json!({"what": w, "secs": s})).collect::<Vec<_>>(),
         "passes": rounds.iter().chain(&watts).chain(&battery).map(|(side, r)| pass_json(side, r)).collect::<Vec<_>>(),
     });
@@ -424,7 +436,16 @@ struct Measure {
     judged: bool,
 }
 
-fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, PassResult)], battery: &[(&str, PassResult)], refresh: f64, made_up: bool) -> (String, Value, bool) {
+/// How a scene's figures are judged: the smallest difference in the app's CPU that counts
+/// (`--floor`), and whether the two sides draw at different rates on purpose (`--rates-differ`).
+#[derive(Clone, Copy)]
+struct Judging {
+    floor_app: f64,
+    rates_differ: bool,
+}
+
+fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, PassResult)], battery: &[(&str, PassResult)], refresh: f64, made_up: bool, how: Judging) -> (String, Value, bool) {
+    let Judging { floor_app, rates_differ } = how;
     let (b, c) = (runs_of(rounds, "base", scene), runs_of(rounds, "change", scene));
     let mut text = format!("\n{scene}: {}\n", SCENES.iter().find(|s| s.0 == scene).map_or("", |s| s.1));
     let mut problems: Vec<String> = Vec::new();
@@ -440,7 +461,13 @@ fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, Pass
         for (side, runs) in [("base", &b), ("change", &c)] {
             for (i, r) in runs.iter().enumerate() {
                 let fps = r.num(fkey).unwrap_or(0.0);
-                if fps < 0.5 * refresh {
+                // A rate changed on purpose (`--rates-differ`): each side only has to have drawn.
+                if rates_differ {
+                    if fps < 1.0 {
+                        refused_scene = true;
+                        problems.push(format!("the {side} drew no frames in round {}: the window covered, hidden or asleep? Not measured", i + 1));
+                    }
+                } else if fps < 0.5 * refresh {
                     refused_scene = true;
                     problems.push(format!("the {side} drew {fps:.0} frames a second in round {} where it should have drawn {refresh:.0}: the window covered, hidden or asleep? Not measured", i + 1));
                 } else if fps < 0.9 * refresh {
@@ -469,7 +496,9 @@ fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, Pass
             ));
         }
     }
-    let unit = if viz { Unit::VizFrame } else if scene == "grid" && win_counted { Unit::WindowFrame } else { Unit::Second };
+    // Where the rates differ on purpose a cost per frame says nothing (half the frames, each
+    // a little dearer): the cost of a second of the scene is what is compared.
+    let unit = if rates_differ { Unit::Second } else if viz { Unit::VizFrame } else if scene == "grid" && win_counted { Unit::WindowFrame } else { Unit::Second };
     let app_cost = |r: &&SceneRun| -> Option<f64> {
         let cpu = r.num("cpu_s")?;
         match unit {
@@ -488,13 +517,13 @@ fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, Pass
             Unit::Second => "app CPU",
         },
         sides: collect(&app_cost),
-        floor: FLOOR_APP,
+        floor: floor_app,
         floor_abs: 0.0,
         fmt: if unit == Unit::Second { pct_core } else { ms },
         judged: true,
     }];
     if unit != Unit::Second {
-        measures.push(Measure { label: "app CPU", sides: collect(&|r| Some(100.0 * r.num("cpu_s")? / r.num("secs")?)), floor: FLOOR_APP, floor_abs: 0.0, fmt: pct_core, judged: false });
+        measures.push(Measure { label: "app CPU", sides: collect(&|r| Some(100.0 * r.num("cpu_s")? / r.num("secs")?)), floor: floor_app, floor_abs: 0.0, fmt: pct_core, judged: false });
     }
     if viz || win_counted {
         measures.push(Measure { label: if viz { "viz frames a second" } else { "frames a second" }, sides: collect(&|r| r.num(fkey)), floor: 0.0, floor_abs: 0.0, fmt: |v| format!("{v:.1}"), judged: false });
@@ -561,7 +590,7 @@ fn scene_report(scene: &str, rounds: &[(&str, PassResult)], watts: &[(&str, Pass
     } else {
         stats::scene_verdict(get(app_label), get("window server"), get("GPU"))
     };
-    let noise = get(app_label).map_or(String::new(), |c| format!(" (the app's CPU {:+.1}%, its rounds ±{:.1}% apart, the floor {:.0}%)", 100.0 * c.rel, 100.0 * c.spread_rel, 100.0 * FLOOR_APP));
+    let noise = get(app_label).map_or(String::new(), |c| format!(" (the app's CPU {:+.1}%, its rounds ±{:.1}% apart, the floor {:.0}%)", 100.0 * c.rel, 100.0 * c.spread_rel, 100.0 * floor_app));
     text.push_str(&format!("  verdict: {verdict}{noise}\n"));
     for p in &problems {
         text.push_str(&format!("  ! {p}\n"));
