@@ -18,10 +18,15 @@ path = "src/main.rs"
 # `cargo xtask release`): about 1.3 MB of the exe. `cargo xtask bench` and `cargo xtask check`
 # build with it; by hand:
 #   cargo build --release -p marquee-player --features bench
-bench = ["subsonic/mock", "listenbrainz/mock"]
+# Slint's `unstable-wgpu-30`: Skia's wgpu surface (Metal, Direct3D 12, Vulkan) calls the
+# rendering notifier the benches count the window's frames with only through its graphics
+# API, which it has only with that feature; without it they saw no frame. It changes nothing
+# else unless the app asks Slint for a wgpu device of its own, which it does not, and that
+# surface draws the whole window every frame either way (no partial rendering to lose).
+bench = ["subsonic/mock", "listenbrainz/mock", "slint/unstable-wgpu-30"]
 # Skia on OpenGL (`SLINT_BACKEND=winit-skia-opengl`), for the frame-timing benches
-# (`MP_BENCH=grid|sidebar|playlist`): their rendering notifier is not called on the wgpu
-# surface the app uses. Implies `bench`. Not in release builds:
+# (`MP_BENCH=grid|sidebar|playlist`) on that renderer instead of the wgpu surface the app
+# uses. Implies `bench`. Not in release builds:
 #   cargo build --release -p marquee-player --features bench-opengl
 bench-opengl = ["bench", "slint/renderer-skia-opengl"]
 
