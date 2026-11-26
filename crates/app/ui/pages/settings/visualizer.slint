@@ -377,7 +377,7 @@ export component VisualizerSection inherits VerticalLayout {
         SettingRow {
             label: "Defaults";
             find-key: "Presets";
-            hint: "Classic, behind the page, at the display's frame rate. Your presets stay.";
+            hint: Visualizer.fps-auto ? "Classic, behind the page, with the automatic frame rate. Your presets stay." : "Classic, behind the page, at the display's frame rate. Your presets stay.";
             TextButton { text: "Reset"; glyph: Icons.refresh; label: "Reset the visualizer to its defaults"; clicked => { Actions.viz-reset(); } }
         }
     }

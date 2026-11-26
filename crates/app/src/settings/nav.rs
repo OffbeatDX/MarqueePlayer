@@ -72,7 +72,7 @@ const SETTINGS: &[(&str, usize, &str)] = &[
     ("Pulse the cover", VISUALIZER, "visualizer ring cover jacket artwork zoom pulse beat kick bounce"),
     ("Intensity", VISUALIZER, "visualizer ring halo swing peaks motion movement bigger smaller ripples"),
     ("Opacity", VISUALIZER, "visualizer prominence opacity faint strong strength transparency transparent see-through dim behind the page"),
-    ("Frame rate", VISUALIZER, "visualizer fps frames 30 60 battery laptop cpu power"),
+    ("Frame rate", VISUALIZER, "visualizer fps frames 30 60 auto automatic battery laptop cpu low power mode"),
     ("Home shelves", HOME, "home page shelves edit order hide recently added random explore favourites"),
     ("Interface size", WINDOW, "zoom zoom in zoom out scale scaling bigger smaller larger text size font size magnify ui dpi display pinch ctrl plus minus 100% accessibility"),
     ("Close button", WINDOW, "tray quit exit minimize close window background"),
