@@ -748,9 +748,11 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
     }
     let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, h - l * room)).collect();
     Svg(&mut p.line).m(pts[0].0, pts[0].1);
+    let from = p.line.len();
     curve(&mut p.line, &pts, 0.0, h);
+    // The area under it is closed by the same curve: its text again, not its numbers written twice.
     Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
-    curve(&mut p.fill, &pts, 0.0, h);
+    p.fill.push_str(&p.line[from..]);
     Svg(&mut p.fill).l(w, h).z();
     if look.peaks {
         for (k, i) in order(bands, look.mirror).enumerate() {
@@ -1241,9 +1243,36 @@ impl Sparks {
     }
 }
 
-/// A filled circle.
+/// The largest dot drawn as two cubics (`dot`), and a half circle's control points' height for
+/// it, in radii: the one that is least out, 1.32% of the radius (outside at 45 degrees, inside
+/// at the top and bottom by as much), which at this radius is 0.05 px.
+const DOT_CUBIC: f32 = 3.75;
+const DOT_K: f32 = 1.3158;
+
+/// A filled circle. A small one (a spark, a grain: most of what a frame of the halo or the
+/// bonfire draws) is two cubic curves, a half circle each, not two arcs: Slint's parser turns an
+/// arc into curves with trigonometry and hands on four for each, so a frame of sparks read back
+/// a fifth slower as arcs. A half circle as one cubic is not exact (`DOT_K`): out by at most
+/// 0.05 px at `DOT_CUBIC`, less on anything smaller, which cannot be seen. A larger one (a
+/// glow's disc), where it would be more, keeps its arcs.
 fn dot(out: &mut String, x: f32, y: f32, r: f32) {
-    Svg(out).m(x - r, y).half_turn(r, x + r, y).half_turn(r, x - r, y).z();
+    #[cfg(test)]
+    let arcs = r > DOT_CUBIC || tests::AS_BEFORE.get();
+    #[cfg(not(test))]
+    let arcs = r > DOT_CUBIC;
+    if arcs {
+        return Svg(out).m(x - r, y).half_turn(r, x + r, y).half_turn(r, x - r, y).z();
+    }
+    // From the ends as they are written (to a tenth, where the arcs' were), so that the two
+    // halves are one circle's whatever the rounding: the control points as far above its
+    // middle as below, and as far as its written radius asks.
+    let tenth_of = |v: f32| ((f64::from(v) * 10.0).round_ties_even() / 10.0) as f32;
+    let (x0, x1) = (tenth_of(x - r), tenth_of(x + r));
+    let (d, k) = (x1 - x0, tenth_of((x1 - x0) / 2.0 * DOT_K));
+    // From the left end over the top to the right one, then back under it, each number from
+    // where the pen is (`c`, and `s`: a curve that leaves as the last one arrived): ten small
+    // numbers, where the two halves in the window's own coordinates would be twelve long ones.
+    Svg(out).m(x0, y).cmd('c', &[0.0, -k, d, -k, d, 0.0]).cmd('s', &[-d, k, -d, 0.0]).z();
 }
 
 /// The ring: the cover as a drum skin. The spectrum is a contour around it, glowing, the
@@ -1304,12 +1333,13 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
     (p.pulse, p.punch) = (swell.max(rip.punch), rip.punch);
     // The contour. At rest it lies on its foot: a thin lit line around the cover.
     let edge: Vec<(f32, f32)> = frame.iter().zip(&lv).map(|(&((x, y), (dx, dy)), &l)| (x + dx * l * g.len, y + dy * l * g.len)).collect();
+    let from = p.line.len();
     closed_curve(&mut p.line, &edge);
     // The corona: between the cover and the contour, one path with the cover's place left
     // out of it (the contour clockwise, the foot back the other way), so nothing is painted
-    // under the cover.
+    // under the cover. The contour's text again, not its numbers written twice.
     if lv.iter().any(|&l| l * g.len >= 1.0) {
-        closed_curve(&mut p.fill, &edge);
+        p.fill.push_str(&p.line[from..]);
         match g.corner {
             None => {
                 let f = g.hub + g.gap;
@@ -1541,9 +1571,10 @@ fn bonfire(p: &mut Paths, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>)
     if lv.iter().any(|&l| l * coals >= 0.5) {
         let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, foot - shape(l) * coals)).collect();
         Svg(&mut p.line).m(pts[0].0, pts[0].1);
+        let from = p.line.len();
         curve(&mut p.line, &pts, 0.0, foot);
         Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
-        curve(&mut p.fill, &pts, 0.0, foot);
+        p.fill.push_str(&p.line[from..]);
         Svg(&mut p.fill).l(w, h).z();
     }
     let energy = lv.iter().sum::<f32>() / n.max(1) as f32;
@@ -2908,9 +2939,16 @@ mod tests {
         assert_eq!(left, 6);
     }
 
-    /// The centres of a path of dots (each two arcs: its leftmost point, its rightmost, back).
+    /// The centres of a path of dots (`dot`: each from its leftmost point round by its rightmost
+    /// and back, as two curves or two arcs).
     fn dots(path: &str) -> Vec<(f32, f32)> {
-        points(path).chunks(3).filter(|c| c.len() == 3).map(|c| ((c[0].0 + c[1].0) / 2.0, c[0].1)).collect()
+        path.split('M')
+            .filter(|s| !s.is_empty())
+            .map(|s| (s, s.split(|c: char| c == ' ' || c.is_ascii_alphabetic()).filter_map(|n| n.parse().ok()).collect::<Vec<f32>>()))
+            // Curves: the left end, then (from it) the first half's control points and its end,
+            // the width away. Arcs: the left end, the radius twice.
+            .map(|(s, v)| (v[0] + if s.contains('c') { v[6] / 2.0 } else { v[2] }, v[1]))
+            .collect()
     }
 
     #[test]
@@ -3966,9 +4004,61 @@ mod tests {
                 let now = music(&l, s, 120);
                 for (a, b) in before.iter().zip(&now) {
                     for (a, b) in texts(a).zip(texts(b)) {
-                        assert!(parsed(a).iter().eq(parsed(b).iter()), "{preset:?} on {s:?}:\n{a}\n{b}");
+                        let (pa, pb) = (parsed(a), parsed(b));
+                        if b.contains('c') && a.contains('A') {
+                            // Dots, the small ones now curves (`dot`): the same dots, each
+                            // starting where it did (`a_small_dot_is_two_curves...` for the rest).
+                            let starts = |p: &lyon_path::Path| p.iter().filter_map(|e| if let lyon_path::Event::Begin { at } = e { Some(at) } else { None }).collect::<Vec<_>>();
+                            assert_eq!(starts(&pa), starts(&pb), "{preset:?} on {s:?}:\n{a}\n{b}");
+                            continue;
+                        }
+                        assert!(pa.iter().eq(pb.iter()), "{preset:?} on {s:?}:\n{a}\n{b}");
                         assert!(b.len() <= a.len(), "never longer");
                     }
+                }
+            }
+        }
+    }
+
+    /// A dot up to `DOT_CUBIC` is two cubics, and every point of them within 0.05 px of the
+    /// circle the numbers written stand for (the cubic's own error; the numbers are to a tenth,
+    /// as an arc's were); a larger one is the two arcs it was.
+    #[test]
+    fn a_small_dot_is_two_curves_no_more_than_a_twentieth_of_a_pixel_from_its_circle() {
+        use lyon_path::Event;
+        // The curve itself, before any rounding: least out at `DOT_K`, by 1.32% of the radius.
+        let out = (0..=4000).map(|i| i as f64 / 4000.0).map(|t| {
+            let (m, k) = (1.0 - t, f64::from(DOT_K));
+            let (x, y) = (-m * m * m - 3.0 * m * m * t + 3.0 * m * t * t + t * t * t, -3.0 * k * m * t);
+            x.hypot(y) - 1.0
+        });
+        let (lo, hi) = out.fold((0.0f64, 0.0f64), |(lo, hi), e| (lo.min(e), hi.max(e)));
+        assert!(lo > -0.01325 && hi < 0.01325 && f64::from(DOT_CUBIC) * hi.max(-lo) <= 0.05, "{lo} {hi}");
+        // As written and read back: of the circle its own numbers give (the ends of the two
+        // halves), every point of the curves within 0.05 px and a rounding of the control
+        // points' height (a tenth's half, three quarters of which reaches the curve).
+        let mut text = String::new();
+        for i in 0..2000 {
+            let (x, y, r) = (300.0 + i as f32 * 0.37, 200.0 - i as f32 * 0.213, 0.3 + (i % 70) as f32 * 0.05);
+            text.clear();
+            dot(&mut text, x, y, r);
+            let path = parsed(&text);
+            if r > DOT_CUBIC {
+                assert!(text.contains('A') && !text.contains('c'), "{r}: {text}");
+                continue;
+            }
+            let ev: Vec<_> = path.iter().collect();
+            let [Event::Begin { at }, Event::Cubic { to: half, .. }, Event::Cubic { to: back, .. }, Event::End { close: true, .. }] = ev[..] else { panic!("{text}: {ev:?}") };
+            assert!((at - back).length() < 1e-3, "{text}");
+            let (cx, cy, rr) = ((at.x + half.x) / 2.0, at.y, (half.x - at.x) / 2.0);
+            assert!((cx - x).abs() <= 0.051 && (cy - y).abs() <= 0.051 && (rr - r).abs() <= 0.051, "{text} for {x} {y} {r}");
+            for e in &ev {
+                let Event::Cubic { from, ctrl1, ctrl2, to } = *e else { continue };
+                for u in (0..=32).map(|u| u as f32 / 32.0) {
+                    let m = 1.0 - u;
+                    let at = |a: f32, b: f32, c: f32, d: f32| m * m * m * a + 3.0 * m * m * u * b + 3.0 * m * u * u * c + u * u * u * d;
+                    let d = (at(from.x, ctrl1.x, ctrl2.x, to.x) - cx).hypot(at(from.y, ctrl1.y, ctrl2.y, to.y) - cy) - rr;
+                    assert!(d.abs() <= 0.05 + 0.0375 + 1e-3, "{text}: {d} px out at {u}");
                 }
             }
         }

@@ -413,6 +413,21 @@ visualizer's work a frame (analysis, paths, handing them over) 0.40 then 0.25 ms
 behind the page, 0.51 then 0.33 ms with the halo; the renderer's time a frame did not move
 (0.74 to 0.82 ms, 2.2 to 2.3 ms, both builds).
 
+Three things more, the same day, each less text to write or to read: a path is handed to Slint
+only when its text changed (most of a look's paths are empty, and an empty one was a string
+made and compared every frame; `set_paths`); a curve drawn twice, the line and the area under
+it, the ring's contour and its corona, is written once and its text copied (the same bytes);
+and a small dot, a spark or a grain of 3.75 px or less, is two cubic curves written from where
+the pen is (`c`, `s`: ten short numbers) where it was two arcs, which the parser turns into
+curves by trigonometry, four for each. That last is the one place where what is drawn is not
+the path it was: a half circle as one cubic is out by up to 1.32% of its radius, 0.05 px at
+that size (`a_small_dot_is_two_curves_no_more_than_a_twentieth_of_a_pixel_from_its_circle`);
+a larger dot (a glow's disc) keeps its arcs. Back to back the halo's frame is 34 µs to build
+and 68 µs to parse (39 and 93 with the numbers alone). In the app, with two other cores kept
+busy so that the clock holds (the three builds in turn, twice): the work a frame 0.36, then
+0.21 ms with the bars, 0.41 then 0.24 ms with the halo, whose renderer's time went from 1.89
+to 1.83 ms; the process 9.2 then 8.3% of a core, and 17.9 then 16.6%.
+
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the
 auto level and the +3 dB tilt. It is at its best on the full page. Skyline is the bar

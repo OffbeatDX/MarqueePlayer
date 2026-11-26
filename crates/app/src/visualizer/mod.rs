@@ -16,8 +16,9 @@
 //! once. Nothing else wakes for it.
 //!
 //! Drawing: a few `Path`s (the bars or area, the caps, the line and its glow, the
-//! reflection), each one string of commands rebuilt per frame, with brushes built here
-//! when the look, the stage or the colours change (not per frame).
+//! reflection), each one string of commands rebuilt per frame and handed to Slint only when
+//! it changed (`set_paths`), with brushes built here when the look, the stage or the colours
+//! change (not per frame).
 //!
 //! `look` is its looks, presets and settings, `draw` each style's geometry and brushes,
 //! `presets` the user's presets, `share` a preset as one line of text, `beat` the beat
@@ -738,25 +739,34 @@ fn jumped(was: (u64, f64), now: (u64, f64), elapsed: f64, play: bool) -> bool {
     now.0 != was.0 || on < -SEEK_BACK || on > allowed + SEEK_ON
 }
 
+fn set_path(current: SharedString, set: impl FnOnce(SharedString), next: &str) {
+    if current.as_str() != next {
+        set(if next.is_empty() { SharedString::new() } else { next.into() });
+    }
+}
+
 fn set_paths(g: &Visualizer, p: &draw::Paths) {
-    g.set_fill(p.fill.as_str().into());
-    g.set_caps(p.caps.as_str().into());
-    g.set_line(p.line.as_str().into());
-    g.set_refl0(p.refl[0].as_str().into());
-    g.set_refl1(p.refl[1].as_str().into());
-    g.set_refl2(p.refl[2].as_str().into());
-    g.set_refl3(p.refl[3].as_str().into());
-    g.set_refl4(p.refl[4].as_str().into());
-    g.set_refl5(p.refl[5].as_str().into());
+    // Only allocate a SharedString and notify Slint when a path actually changed: most
+    // layers are empty for any given style (and `SharedString::from("")` still allocates),
+    // caps hold still between falls, and Saturn's rim never moves.
+    set_path(g.get_fill(), |s| g.set_fill(s), &p.fill);
+    set_path(g.get_caps(), |s| g.set_caps(s), &p.caps);
+    set_path(g.get_line(), |s| g.set_line(s), &p.line);
+    set_path(g.get_refl0(), |s| g.set_refl0(s), &p.refl[0]);
+    set_path(g.get_refl1(), |s| g.set_refl1(s), &p.refl[1]);
+    set_path(g.get_refl2(), |s| g.set_refl2(s), &p.refl[2]);
+    set_path(g.get_refl3(), |s| g.set_refl3(s), &p.refl[3]);
+    set_path(g.get_refl4(), |s| g.set_refl4(s), &p.refl[4]);
+    set_path(g.get_refl5(), |s| g.set_refl5(s), &p.refl[5]);
     g.set_top_h(p.top_h);
     g.set_refl_h(p.refl_h);
-    g.set_ripples(p.ripples.as_str().into());
-    g.set_rings(p.rings.as_str().into());
-    g.set_sparks(p.sparks.as_str().into());
-    g.set_sparks_old(p.sparks_old.as_str().into());
-    g.set_sparks_glow(p.sparks_glow.as_str().into());
-    g.set_front(p.front.as_str().into());
-    g.set_front_glow(p.front_glow.as_str().into());
+    set_path(g.get_ripples(), |s| g.set_ripples(s), &p.ripples);
+    set_path(g.get_rings(), |s| g.set_rings(s), &p.rings);
+    set_path(g.get_sparks(), |s| g.set_sparks(s), &p.sparks);
+    set_path(g.get_sparks_old(), |s| g.set_sparks_old(s), &p.sparks_old);
+    set_path(g.get_sparks_glow(), |s| g.set_sparks_glow(s), &p.sparks_glow);
+    set_path(g.get_front(), |s| g.set_front(s), &p.front);
+    set_path(g.get_front_glow(), |s| g.set_front_glow(s), &p.front_glow);
     // The ring's bloom: faint at rest, brighter with the low notes.
     let pulse = 0.4 + 0.6 * p.pulse.clamp(0.0, 1.0);
     if (g.get_pulse() - pulse).abs() > 0.004 {
@@ -985,8 +995,7 @@ fn frame(st: &Rc<State>) {
         z.draw.level(z.analyzer.level_slide_db());
         match draw_mode() {
             DrawMode::Full => {
-                let (lv, pk) = (z.analyzer.levels().to_vec(), z.analyzer.peaks().to_vec());
-                z.draw.draw(&l, &sg, true, &lv, &pk);
+                z.draw.draw(&l, &sg, true, z.analyzer.levels(), z.analyzer.peaks());
                 brush(z, &app, &l, &sg, at, s.placement == Placement::Behind);
                 set_paths(&g, &z.draw.paths);
                 // The ring's cover, a little larger for a moment with each beat.

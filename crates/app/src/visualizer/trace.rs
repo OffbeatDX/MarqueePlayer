@@ -147,12 +147,17 @@ fn halo_trace() {
     std::fs::write(out.join("trace.jsonl"), lines).unwrap();
 }
 
-/// The dots of a path of them (`dot`): each one's centre and radius, in order.
+/// The dots of a path of them (`dot`): each one's centre and radius, in order. A small one is
+/// two curves (its left end, then from there the first half's control points and its end, the
+/// width away), a larger one two arcs (its left end, then the radius twice).
 fn dot_list(path: &str) -> Vec<(f32, f32, f32)> {
     path.split('M')
         .filter(|s| !s.is_empty())
         .filter_map(|s| {
-            let v: Vec<f32> = s.split([' ', 'A', 'Z']).filter_map(|n| n.parse().ok()).collect();
+            let v: Vec<f32> = s.split([' ', 'A', 'c', 's', 'Z']).filter_map(|n| n.parse().ok()).collect();
+            if s.contains('c') {
+                return (v.len() >= 7).then(|| (v[0] + v[6] / 2.0, v[1], v[6] / 2.0));
+            }
             (v.len() >= 4).then(|| (v[0] + v[2], v[1], v[2]))
         })
         .collect()
