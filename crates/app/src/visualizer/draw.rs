@@ -20,6 +20,7 @@
 //! A level is shaped before it is drawn: above 0.8 it bends toward the top instead of
 //! running into it (`shape`), so loud music keeps its contour rather than a flat roof.
 
+#[cfg(test)]
 use std::fmt::Write as _;
 
 use slint::private_unstable_api::re_exports::{ConicGradientBrush, GradientStop, LinearGradientBrush, RadialGradientBrush};
@@ -34,6 +35,92 @@ pub const STRIPS: usize = 6;
 pub fn shape(x: f32) -> f32 {
     let x = x.max(0.0);
     if x <= 0.8 { x } else { 0.8 + 0.2 * ((x - 0.8) / 0.2).tanh() }
+}
+
+/// Path text, the SVG commands a `Path` is given (`commands:` in vizstage.slint): written
+/// here 60 times a second and parsed back by Slint (lyon's SVG parser) before every frame is
+/// drawn, so both ends are kept cheap. Each method writes one command, its letter and its
+/// numbers, as `write!(out, "M{x:.1} {y:.1}")` would: the same bytes, but for a whole number
+/// without its `.0` (`tenth`).
+struct Svg<'a>(&'a mut String);
+
+impl Svg<'_> {
+    fn cmd(self, c: char, nums: &[f32]) -> Self {
+        self.0.push(c);
+        for (i, &v) in nums.iter().enumerate() {
+            if i > 0 {
+                self.0.push(' ');
+            }
+            tenth(self.0, v);
+        }
+        self
+    }
+    fn m(self, x: f32, y: f32) -> Self {
+        self.cmd('M', &[x, y])
+    }
+    fn l(self, x: f32, y: f32) -> Self {
+        self.cmd('L', &[x, y])
+    }
+    fn h(self, x: f32) -> Self {
+        self.cmd('H', &[x])
+    }
+    fn v(self, y: f32) -> Self {
+        self.cmd('V', &[y])
+    }
+    fn q(self, (cx, cy): (f32, f32), (x, y): (f32, f32)) -> Self {
+        self.cmd('Q', &[cx, cy, x, y])
+    }
+    fn c(self, (ax, ay): (f32, f32), (bx, by): (f32, f32), (x, y): (f32, f32)) -> Self {
+        self.cmd('C', &[ax, ay, bx, by, x, y])
+    }
+    /// Half a circle of radius `r` to (x, y), the large way round, anticlockwise.
+    fn half_turn(self, r: f32, x: f32, y: f32) -> Self {
+        let s = self.cmd('A', &[r, r]);
+        s.0.push_str(" 0 1 0 ");
+        tenth(s.0, x);
+        s.0.push(' ');
+        tenth(s.0, y);
+        s
+    }
+    fn z(self) {
+        self.0.push('Z');
+    }
+}
+
+/// A number as `{:.1}` writes it (to a tenth, a tie to the even tenth), but without
+/// `core::fmt`'s exact-decimal machinery (most of what writing the paths cost), and a whole
+/// number without its `.0` (the bars' text a quarter shorter). An `f32` times ten is exact in an `f64` (24 bits and 4), so
+/// the tenth rounded is the very one `{:.1}` writes. Never what the parser rejects or reads
+/// otherwise: no exponent, no `-0` (written `0`), NaN as 0 and anything past a billion pixels
+/// held there (`{:.1}` would write `NaN` or `inf`, and the whole path would not be drawn).
+fn tenth(out: &mut String, v: f32) {
+    #[cfg(test)]
+    if tests::AS_BEFORE.get() {
+        let _ = write!(out, "{v:.1}");
+        return;
+    }
+    let v = if v.is_nan() { 0.0 } else { v.clamp(-1e9, 1e9) };
+    let t = (f64::from(v) * 10.0).round_ties_even() as i64;
+    if t < 0 {
+        out.push('-');
+    }
+    let (mut whole, frac) = (t.unsigned_abs() / 10, (t.unsigned_abs() % 10) as u8);
+    let mut buf = [0u8; 12];
+    let mut i = buf.len();
+    if frac != 0 {
+        i -= 2;
+        buf[i] = b'.';
+        buf[i + 1] = b'0' + frac;
+    }
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (whole % 10) as u8;
+        whole /= 10;
+        if whole == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&buf[i..]).unwrap_or_default());
 }
 
 /// What the stage is.
@@ -563,7 +650,7 @@ fn get(v: &[f32], i: usize) -> f32 {
 fn strip_rect(out: &mut String, x: f32, w: f32, a: f32, b: f32, s0: f32, s1: f32) {
     let (a, b) = (a.max(s0), b.min(s1));
     if b - a >= 0.25 {
-        let _ = write!(out, "M{x:.1} {a:.1}H{:.1}V{b:.1}H{x:.1}Z", x + w);
+        Svg(out).m(x, a).h(x + w).v(b).h(x).z();
     }
 }
 
@@ -595,18 +682,9 @@ fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
         if bh >= 1.0 {
             let top = h - bh;
             if bh > r * 2.0 && r > 0.4 {
-                let _ = write!(
-                    p.fill,
-                    "M{x:.1} {h:.1}V{:.1}Q{x:.1} {top:.1} {:.1} {top:.1}H{:.1}Q{:.1} {top:.1} {:.1} {:.1}V{h:.1}Z",
-                    top + r,
-                    x + r,
-                    x + bw - r,
-                    x + bw,
-                    x + bw,
-                    top + r
-                );
+                Svg(&mut p.fill).m(x, h).v(top + r).q((x, top), (x + r, top)).h(x + bw - r).q((x + bw, top), (x + bw, top + r)).v(h).z();
             } else {
-                let _ = write!(p.fill, "M{x:.1} {h:.1}V{top:.1}H{:.1}V{h:.1}Z", x + bw);
+                Svg(&mut p.fill).m(x, h).v(top).h(x + bw).v(h).z();
             }
             if p.refl_h > 0.0 {
                 // A 1 px gap at the baseline reads as the surface the bars stand on.
@@ -617,14 +695,14 @@ fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
                         strip_rect(&mut p.refl[k], x, bw, 1.0, rh, s0, s1);
                     }
                 } else if rh >= 1.5 {
-                    let _ = write!(p.refl[0], "M{x:.1} 1H{:.1}V{rh:.1}H{x:.1}Z", x + bw);
+                    Svg(&mut p.refl[0]).m(x, 1.0).h(x + bw).v(rh).h(x).z();
                 }
             }
         }
         // A cap only where there is something to cap: 2 px tall, just above the bar.
         if look.peaks && pk * room >= 8.0 {
             let y = (h - pk * room - 3.0).max(0.0).round();
-            let _ = write!(p.caps, "M{x:.1} {y:.1}H{:.1}V{:.1}H{x:.1}Z", x + bw, y + 2.0);
+            Svg(&mut p.caps).m(x, y).h(x + bw).v(y + 2.0).h(x).z();
         }
     }
 }
@@ -646,7 +724,7 @@ fn curve(out: &mut String, pts: &[(f32, f32)], lo: f32, hi: f32) {
         let p3 = pts[(i + 2).min(pts.len() - 1)];
         let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, (p1.1 + (p2.1 - p0.1) / 6.0).clamp(lo, hi));
         let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, (p2.1 - (p3.1 - p1.1) / 6.0).clamp(lo, hi));
-        let _ = write!(out, "C{:.1} {:.1} {:.1} {:.1} {:.1} {:.1}", c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
+        Svg(out).c(c1, c2, p2);
     }
 }
 
@@ -669,17 +747,17 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
         return;
     }
     let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, h - l * room)).collect();
-    let _ = write!(p.line, "M{:.1} {:.1}", pts[0].0, pts[0].1);
+    Svg(&mut p.line).m(pts[0].0, pts[0].1);
     curve(&mut p.line, &pts, 0.0, h);
-    let _ = write!(p.fill, "M0 {h:.1}L{:.1} {:.1}", pts[0].0, pts[0].1);
+    Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
     curve(&mut p.fill, &pts, 0.0, h);
-    let _ = write!(p.fill, "L{w:.1} {h:.1}Z");
+    Svg(&mut p.fill).l(w, h).z();
     if look.peaks {
         for (k, i) in order(bands, look.mirror).enumerate() {
             let pk = kicked(levels, peaks, i, lift(kick, bands, i), 0.0).1;
             if pk * room >= 8.0 && pk > lv[k] + 0.02 {
                 let (x, y) = (k as f32 * dx, h - pk * room - 2.0);
-                let _ = write!(p.caps, "M{:.1} {y:.1}H{:.1}V{:.1}H{:.1}Z", x - 1.5, x + 1.5, y + 2.0, x - 1.5);
+                Svg(&mut p.caps).m(x - 1.5, y).h(x + 1.5).v(y + 2.0).h(x - 1.5).z();
             }
         }
     }
@@ -692,17 +770,17 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
                 if lv.iter().all(|&l| l * rh < s0 + 0.25) {
                     continue;
                 }
-                let _ = write!(p.refl[k], "M0 {s0:.1}");
+                Svg(&mut p.refl[k]).m(0.0, s0);
                 for (j, &l) in lv.iter().enumerate() {
-                    let _ = write!(p.refl[k], "L{:.1} {:.1}", j as f32 * dx, (l * rh).clamp(s0, s1));
+                    Svg(&mut p.refl[k]).l(j as f32 * dx, (l * rh).clamp(s0, s1));
                 }
-                let _ = write!(p.refl[k], "L{w:.1} {s0:.1}Z");
+                Svg(&mut p.refl[k]).l(w, s0).z();
             }
         } else {
             let rp: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, (l * rh).max(1.0))).collect();
-            let _ = write!(p.refl[0], "M0 1L{:.1} {:.1}", rp[0].0, rp[0].1);
+            Svg(&mut p.refl[0]).m(0.0, 1.0).l(rp[0].0, rp[0].1);
             curve(&mut p.refl[0], &rp, 1.0, rh);
-            let _ = write!(p.refl[0], "L{w:.1} 1Z");
+            Svg(&mut p.refl[0]).l(w, 1.0).z();
         }
     }
 }
@@ -730,14 +808,14 @@ fn closed_curve(out: &mut String, pts: &[(f32, f32)]) {
     if n < 3 {
         return;
     }
-    let _ = write!(out, "M{:.1} {:.1}", pts[0].0, pts[0].1);
+    Svg(out).m(pts[0].0, pts[0].1);
     for i in 0..n {
         let p0 = pts[(i + n - 1) % n];
         let (p1, p2) = (pts[i], pts[(i + 1) % n]);
         let p3 = pts[(i + 2) % n];
         let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
         let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
-        let _ = write!(out, "C{:.1} {:.1} {:.1} {:.1} {:.1} {:.1}", c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
+        Svg(out).c(c1, c2, p2);
     }
     out.push('Z');
 }
@@ -1165,7 +1243,7 @@ impl Sparks {
 
 /// A filled circle.
 fn dot(out: &mut String, x: f32, y: f32, r: f32) {
-    let _ = write!(out, "M{:.1} {y:.1}A{r:.1} {r:.1} 0 1 0 {:.1} {y:.1}A{r:.1} {r:.1} 0 1 0 {:.1} {y:.1}Z", x - r, x + r, x - r);
+    Svg(out).m(x - r, y).half_turn(r, x + r, y).half_turn(r, x - r, y).z();
 }
 
 /// The ring: the cover as a drum skin. The spectrum is a contour around it, glowing, the
@@ -1235,7 +1313,7 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
         match g.corner {
             None => {
                 let f = g.hub + g.gap;
-                let _ = write!(p.fill, "M{:.1} {:.1}A{f:.1} {f:.1} 0 1 0 {:.1} {:.1}A{f:.1} {f:.1} 0 1 0 {:.1} {:.1}Z", g.cx, g.cy - f, g.cx, g.cy + f, g.cx, g.cy - f);
+                Svg(&mut p.fill).m(g.cx, g.cy - f).half_turn(f, g.cx, g.cy + f).half_turn(f, g.cx, g.cy - f).z();
             }
             Some(_) => {
                 let foot: Vec<(f32, f32)> = frame.iter().rev().map(|&(q, _)| q).collect();
@@ -1462,11 +1540,11 @@ fn bonfire(p: &mut Paths, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>)
     let foot = h - 2.0;
     if lv.iter().any(|&l| l * coals >= 0.5) {
         let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, foot - shape(l) * coals)).collect();
-        let _ = write!(p.line, "M{:.1} {:.1}", pts[0].0, pts[0].1);
+        Svg(&mut p.line).m(pts[0].0, pts[0].1);
         curve(&mut p.line, &pts, 0.0, foot);
-        let _ = write!(p.fill, "M0 {h:.1}L{:.1} {:.1}", pts[0].0, pts[0].1);
+        Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
         curve(&mut p.fill, &pts, 0.0, foot);
-        let _ = write!(p.fill, "L{w:.1} {h:.1}Z");
+        Svg(&mut p.fill).l(w, h).z();
     }
     let energy = lv.iter().sum::<f32>() / n.max(1) as f32;
     let low = (n / 8).max(1);
@@ -3572,11 +3650,12 @@ mod tests {
 
     /// Classic and Prism at rest (beats heard, none of them a hit) draw what they drew before
     /// bars and the line took the beat, byte for byte: the hashes are of the frames as that
-    /// build drew them.
+    /// build drew them, but for a whole number written without its `.0` (`tenth`; the build
+    /// before that, its text with the `.0`s taken out, hashes to these).
     #[test]
     fn classic_at_rest_is_drawn_as_it_was() {
         let t = ThemeViz::default();
-        for (preset, want) in [(Preset::Classic, 0xe771_be8d_560f_d8c4_u64), (Preset::Prism, 0x52c1_cb3c_90b4_00e8)] {
+        for (preset, want) in [(Preset::Classic, 0x6801_5b47_722b_44d3_u64), (Preset::Prism, 0x7365_a6a4_0f66_beff)] {
             let l = preset.look(&t);
             let s = stage(1840.0, 290.0);
             let (_, bands) = layout(&l, &s);
@@ -3793,5 +3872,162 @@ mod tests {
             quiet = kick_frame(&mut e, &l, &s, &levels, 1.0 / 60.0, 0.0).light;
         }
         assert!(loud.abs() < 1e-3 && quiet < -0.25, "{loud} {quiet}");
+    }
+
+
+    thread_local! {
+        /// The path text written as it was before `tenth`, with `write!` and `{:.1}`: to hold
+        /// the text to what it was and to time the two (one thread's: tests run side by side).
+        pub(super) static AS_BEFORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn tenth_of(v: f32) -> String {
+        let mut s = String::new();
+        tenth(&mut s, v);
+        s
+    }
+
+    #[test]
+    fn a_number_is_written_as_format_writes_it_to_a_tenth_a_whole_one_without_its_point() {
+        let as_fmt = |v: f32| {
+            let t = format!("{v:.1}");
+            let t = t.strip_suffix(".0").unwrap_or(&t);
+            if t == "-0" { "0".to_string() } else { t.to_string() }
+        };
+        // Every hundredth out to ±3000 (the ties among them: x.x5 and the exact quarters), and
+        // a million of any bits within a billion pixels.
+        let mut vals: Vec<f32> = (-300_000..=300_000).map(|i| i as f32 * 0.01).collect();
+        let mut seed = 0x2545_f491_u32;
+        vals.extend((0..1_000_000).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            f32::from_bits(seed)
+        }));
+        vals.extend([0.25, 0.75, -0.25, -0.75, 0.05, -0.05, 0.15, 0.35, 0.45, 9.95, 99.95, 999.95, -0.04, -0.0, 0.0, f32::MIN_POSITIVE, -1e-40, 16_777_217.0, 123_456_789.0, 1e9, -1e9]);
+        for v in vals.into_iter().filter(|v| v.abs() <= 1e9) {
+            assert_eq!(tenth_of(v), as_fmt(v), "{v:?}");
+        }
+        assert_eq!(tenth_of(0.25), "0.2", "a tie to the even tenth, as `{{:.1}}`");
+        assert_eq!(tenth_of(0.75), "0.8");
+        assert_eq!(tenth_of(-0.04), "0", "never -0");
+        // What `{:.1}` would write and the parser reject (and so not draw the path at all):
+        // a number it reads.
+        for (v, want) in [(f32::NAN, "0"), (f32::INFINITY, "1000000000"), (f32::NEG_INFINITY, "-1000000000"), (f32::MAX, "1000000000"), (-3e9, "-1000000000")] {
+            assert_eq!(tenth_of(v), want, "{v:?}");
+        }
+    }
+
+    /// The path as Slint reads it from its text (`PathData::iter` in i-slint-core: lyon's SVG
+    /// parser into lyon's path builder); text it rejects fails the test.
+    fn parsed(text: &str) -> lyon_path::Path {
+        let mut b = lyon_path::Path::builder();
+        let r = lyon_extra::parser::PathParser::new().parse(&lyon_extra::parser::ParserOptions::DEFAULT, &mut lyon_extra::parser::Source::new(text.chars()), &mut b);
+        assert!(r.is_ok(), "{r:?}: {text}");
+        b.build()
+    }
+
+    /// Every path of a frame.
+    fn texts(p: &Paths) -> impl Iterator<Item = &str> {
+        [&p.fill, &p.caps, &p.line, &p.ripples, &p.rings, &p.sparks, &p.sparks_old, &p.sparks_glow, &p.front, &p.front_glow].into_iter().chain(&p.refl).map(String::as_str)
+    }
+
+    /// Frames of music: levels that move, peaks above them, a kick on every beat (two a
+    /// second) and the tempo told.
+    fn music(l: &Look, s: &Stage, frames: usize) -> Vec<Paths> {
+        let (_, bands) = layout(l, s);
+        let mut d = Draw::default();
+        (0..frames)
+            .map(|f| {
+                let levels: Vec<f32> = (0..bands).map(|i| 0.15 + 0.7 * ((i as f32) * 0.23 + f as f32 * 0.11).sin().abs() * (1.0 - i as f32 / (bands as f32 * 1.6))).collect();
+                let peaks: Vec<f32> = levels.iter().map(|v| v + 0.06).collect();
+                let phase = (f as f32 / 30.0).fract();
+                d.tick(1.0 / 60.0);
+                d.level(-3.0);
+                d.pulse(Pulse { hit: if f % 30 == 0 { 1.0 } else { 0.0 }, period: 0.5, phase, low: if f % 30 == 0 { GRID_WEAK.1 } else { 0.0 }, beat: f % 30 == 0, ..Pulse::default() });
+                d.draw(l, s, true, &levels, &peaks).clone()
+            })
+            .collect()
+    }
+
+    /// Every preset on every kind of stage (the band, the tab, the page, the preview, a square
+    /// cover's), through two seconds of music: the text as it is now reads back, path for path
+    /// and point for point, as the text `write!` and `{:.1}` wrote.
+    #[test]
+    fn every_look_reads_back_as_the_path_it_was_written_as_before() {
+        let t = ThemeViz::default();
+        let stages = [stage(1840.0, 290.0), stage(388.0, 640.0), Stage { hub: 160.0, ..stage(1470.0, 922.0) }, stage(300.0, 160.0), Stage { hub: 120.0, corner: 14.0, ..stage(660.0, 520.0) }];
+        for preset in Preset::ALL {
+            let l = preset.look(&t);
+            for s in &stages {
+                AS_BEFORE.set(true);
+                let before = music(&l, s, 120);
+                AS_BEFORE.set(false);
+                let now = music(&l, s, 120);
+                for (a, b) in before.iter().zip(&now) {
+                    for (a, b) in texts(a).zip(texts(b)) {
+                        assert!(parsed(a).iter().eq(parsed(b).iter()), "{preset:?} on {s:?}:\n{a}\n{b}");
+                        assert!(b.len() <= a.len(), "never longer");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The path text's cost, written the way it was (`write!`, `{:.1}`) and the way it is
+    /// (`tenth`), back to back: a frame's paths built (the whole of `Draw::draw`) and parsed
+    /// as Slint parses them, for the default look behind the page and the halo, on the page's
+    /// stage in a 1470 x 922 window. Prints nanoseconds a frame, the best of five rounds.
+    ///
+    ///     cargo test -p marquee-player --profile fast path_text_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn path_text_cost() {
+        use std::time::Instant;
+        let t = ThemeViz::default();
+        let s = Stage { hub: 160.0, refl_room: 90.0, ..stage(1470.0, 922.0) };
+        let frames = 600;
+        for preset in [Preset::Classic, Preset::Halo] {
+            let l = preset.look(&t);
+            let (_, bands) = layout(&l, &s);
+            let input: Vec<(Vec<f32>, Pulse)> = (0..frames)
+                .map(|f| {
+                    let levels = (0..bands).map(|i| 0.15 + 0.7 * ((i as f32) * 0.23 + f as f32 * 0.11).sin().abs() * (1.0 - i as f32 / (bands as f32 * 1.6))).collect();
+                    let kick = f % 30 == 0;
+                    (levels, Pulse { hit: if kick { 1.0 } else { 0.0 }, period: 0.5, phase: (f as f32 / 30.0).fract(), low: if kick { GRID_WEAK.1 } else { 0.0 }, beat: kick, ..Pulse::default() })
+                })
+                .collect();
+            // (build, parse, bytes) a frame, the best of five rounds, the old way and the new.
+            let mut best = [(f64::MAX, f64::MAX, 0usize); 2];
+            for _ in 0..5 {
+                for (way, before) in [(0, true), (1, false)] {
+                    AS_BEFORE.set(before);
+                    let mut d = Draw::default();
+                    let (mut build, mut parse, mut bytes) = (0u128, 0u128, 0usize);
+                    for (levels, pulse) in &input {
+                        d.tick(1.0 / 60.0);
+                        d.level(-3.0);
+                        d.pulse(*pulse);
+                        let t0 = Instant::now();
+                        let p = d.draw(&l, &s, true, levels, levels);
+                        build += t0.elapsed().as_nanos();
+                        let t1 = Instant::now();
+                        for text in texts(p).filter(|t| !t.is_empty()) {
+                            let mut b = lyon_path::Path::builder();
+                            let _ = lyon_extra::parser::PathParser::new().parse(&lyon_extra::parser::ParserOptions::DEFAULT, &mut lyon_extra::parser::Source::new(text.chars()), &mut b);
+                            std::hint::black_box(b.build());
+                        }
+                        parse += t1.elapsed().as_nanos();
+                        bytes += texts(p).map(str::len).sum::<usize>();
+                    }
+                    let n = frames as f64;
+                    let b = &mut best[way];
+                    *b = (b.0.min(build as f64 / n), b.1.min(parse as f64 / n), bytes / frames);
+                }
+            }
+            AS_BEFORE.set(false);
+            let [(b0, p0, n0), (b1, p1, n1)] = best;
+            println!("{preset:?}: build {b0:.0} -> {b1:.0} ns a frame, parse {p0:.0} -> {p1:.0} ns, both {:.0} -> {:.0} ns ({:.0}% less); {n0} -> {n1} bytes", b0 + p0, b1 + p1, 100.0 * (1.0 - (b1 + p1) / (b0 + p0)));
+        }
     }
 }

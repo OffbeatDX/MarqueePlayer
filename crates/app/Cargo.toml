@@ -56,6 +56,10 @@ toml = "1.2.1"
 subsonic = { path = "../subsonic", features = ["mock"] }
 # The ListenBrainz stand-in for the scrobbling tests (connections/scrobble.rs).
 listenbrainz = { path = "../listenbrainz", features = ["mock"] }
+# The SVG path parser Slint reads the visualizer's paths with (i-slint-core's `PathData`), to
+# read them back as it does (visualizer/draw.rs).
+lyon_extra = { version = "1.1", default-features = false }
+lyon_path = { version = "1.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 # Media keys and the Windows media overlay (SMTC).

@@ -319,6 +319,10 @@ the real clipboard and opens no file dialog.
 
     MP_TRACE_OUT=<folder> cargo test -p marquee-player saturn_trace -- --ignored
 
+**The path text, timed** (`path_text_cost` in `visualizer/draw.rs`, an ignored test: a measure, not a check). Ten seconds of made-up music (a kick on every beat) drawn by Classic and by Halo on the page's stage in a 1470 x 922 window, the paths written as they were (`write!` with `{:.1}`, kept for the tests behind `AS_BEFORE`) and as they are (`draw::tenth`), back to back, and each frame's paths parsed as Slint parses them (lyon's SVG parser, a dev-dependency at the version Slint uses). Prints the nanoseconds a frame to build the paths (the whole of `Draw::draw`) and to parse them, the best of five rounds, and the bytes a frame. Beside it, `every_look_reads_back_as_the_path_it_was_written_as_before` holds every preset on five kinds of stage, two seconds each, to the old text: the parser builds the same path from both, point for point.
+
+    cargo test -p marquee-player --profile fast path_text_cost -- --ignored --nocapture
+
 `MP_BENCH=server` (`bench/server.rs`) runs on any library of two albums of two tracks or more (the
 runner gives it the `formats` set). It starts a Navidrome stand-in on 127.0.0.1 itself
 (`subsonic::mock`; no request leaves the machine) serving two of the library's albums as the same

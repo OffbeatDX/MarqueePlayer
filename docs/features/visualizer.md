@@ -391,6 +391,28 @@ frame a second (4.4 at every pixel), the bench's tracks 3.9. What that changes t
 track of some minutes the bar moves once a second, two to four physical pixels at a time, where
 it moved a pixel four times a second. A seek, a drag, a pause and a new track show at once.
 
+**The paths as text** (2026-11-26, the same Mac). Slint's `Path` takes SVG text, so every
+frame the paths are written as text and Slint parses each changed one back (lyon's parser;
+the renderer keeps a path until its text changes). They were written with `write!` and
+`{:.1}`, whose exact decimal conversion was most of the visualizer's cost in writing them; now
+`draw::tenth` writes each number itself, to the same tenth (`{:.1}` rounds the f32's exact
+value, ties to even, and an f32 times ten is exact in an f64, so the digits are the very ones),
+a whole number without its `.0`, and nothing the parser rejects (no `-0`, no exponent, NaN as
+0 and past a billion pixels held there, where `{:.1}` wrote `NaN` or `inf` and the path was not
+drawn at all). The parser reads the same path from the new text as from the old, point for
+point, for every preset on five kinds of stage (`every_look_reads_back_as_the_path_it_was_written_as_before`).
+Back to back (`path_text_cost`, a frame of 10 s of made-up music on the page's stage), building
+a frame's paths took 157 µs then 20 µs with Classic, 132 then 39 µs with Halo; parsing them
+45 then 37 µs (the bars' whole numbers lose their `.0`: 14.8 then 10.8 KB a frame) and 92
+then 93 µs (the halo's numbers are nearly all fractions: 23.6 then 22.8 KB). The parser's
+cost is per number and per command, about 20 to 30 ns each, more than per byte, so shorter
+text of the same numbers would gain little; fewer numbers would (an `S` for each of the ring's
+curves would leave out a third), but the control point it reflects moves by up to 0.15 px, so
+it was left. In the app (`MP_BENCH=play-cost`, the two builds one after the other, twice): the
+visualizer's work a frame (analysis, paths, handing them over) 0.40 then 0.25 ms with the bars
+behind the page, 0.51 then 0.33 ms with the halo; the renderer's time a frame did not move
+(0.74 to 0.82 ms, 2.2 to 2.3 ms, both builds).
+
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the
 auto level and the +3 dB tilt. It is at its best on the full page. Skyline is the bar
