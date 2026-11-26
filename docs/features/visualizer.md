@@ -342,8 +342,49 @@ snare's rings (thin, faint strokes that never stand still); only the line and it
 it: at 2x the stair steps of a soft fill or of a faint ripple on its way out are hard to see,
 those of the line, which is all a look draws, are not (`visualizer::aa_policy`, `Visualizer.fills-aa` and
 `strokes-aa`, `platform::system::VIZ_FILLS_ALIASED_AT_2X`; followed as the interface size or
-the monitor changes, `zoom::apply`). Windows, Linux and 1x displays draw as before.
-`MP_VIZ_AA` picks the groups by hand for comparing. The ring's pulsing cover casts no shadow
+the monitor changes, `zoom::apply`). The line and its glow are smoothed there without Skia's
+anti-aliasing, in passes (next). Windows, Linux and 1x displays draw as before.
+`MP_VIZ_AA` picks the groups by hand for comparing.
+
+**The line in passes on macOS** (2026-11-26, the same Mac). Why Skia drew the line on the CPU,
+from Ganesh's sources (Skia m157, `src/gpu/ganesh`): an anti-aliased stroke is first offered to
+the tessellating renderer, which refuses coverage anti-aliasing (it needs MSAA, and the
+window's target has one sample; Metal offers no dynamic MSAA, `GrMtlCaps`); the hairline
+renderer takes only strokes under a pixel wide, the linearizing one only closed convex ones
+without round joins. The stroke is then made a filled outline, concave and of hundreds of
+curves: the convex renderer wants it convex, the triangulating one at most 10 verbs, the
+atlas (MSAA, on the GPU) at most 65,536 pixels of bounds (256 x 256), which the halo's contour,
+the line across the page and their glows all exceed (`SurfaceDrawContext::drawShapeUsingPathRenderer`,
+`PathRendererChain`, `AtlasPathRenderer::pathFitsInAtlas`); so the software renderer, a mask on
+the CPU uploaded as a new texture every frame. A stroke without anti-aliasing the tessellating
+renderer draws on the GPU. So at 2x on macOS the line is drawn as four strokes without it, one
+inside the other, the widest 3/8 of a physical pixel wider than the line each side, then 1/8
+wider, 1/8 and 3/8 narrower (`Visualizer.line-passes`, `device-px`, vizstage.slint):
+a pixel whose centre is n of the four strokes inside shows the line at n/4 of its strength,
+what anti-aliasing gives a pixel covered by about that much, to the nearest quarter. Strokes
+of one colour laid on each other add as `1 - (1 - a1)(1 - a2)...`, so each pass's alpha is
+worked out at each stop of the brush (`draw::feather_passes`). The glow, fainter, is three
+(`LINE_PASSES`, `GLOW_PASSES`; `platform::system::VIZ_LINES_IN_PASSES_AT_2X`). Three and two
+cost the same within the runs' spread and differed from Skia's edge in twice as many pixels
+by 20 levels of 255 or more. `MP_VIZ_AA=strokes` draws the line with Skia's anti-aliasing
+again, `passes` as now.
+
+Measured (`cargo xtask perf --base HEAD --scenes bars,halo --floor 3`, the clock held): Halo
+behind the page 3.15 ms of the app's CPU a visualizer frame then 2.46 ms (-22%, rounds ±5.3%
+apart; drawing the line with no smoothing at all was 2.32 ms), the GPU's watts 0.35 then
+0.28 W, the CPU's 0.80 then 0.62 W, the footprint at the end 501 then 329 MB; the bars did
+not move. The other looks, the same build with `MP_VIZ_AA=strokes` and `passes` in turn
+(`viz-cost`, two busy cores beside it, two quiet runs each): the line behind the page 11.3
+and 11.0% of a core then 8.9 and 8.7%, in the panel 7.4 and 7.6% then 6.7 and 6.8%, Halo in
+the panel 10.6 and 10.1% then 8.8 and 8.8%; one run of the rest: Halo behind 17.5 then 13.2%,
+Eclipse 20.8 then 17.9%, Bonfire 17.6 then 16.9%, Saturn (a thin rim) 12.6 then 12.7%; the
+footprint 10 to 160 MB less in each. The pictures (frame 300 of the made-up sound, the same
+binary both ways): of the halo's 5.0 million pixels above the player bar 146,599 differ, by
+1.6 levels of 255 on average and 36 at most, every one on the edge of the line or of the glow,
+the brightness unchanged (on average 0.1 level); Prism's line 21,585, by 6.5 on average, at
+most 135 at single pixels at the inner corner of its sharpest bends; Bonfire's 13,256 (at most
+69), Saturn's 17,938 (at most 10), Eclipse's 65,510 (at most 21). Enlarged eight times the
+edges look alike; at the inner corner of a sharp V the line's wedge reaches a pixel further. The ring's pulsing cover casts no shadow
 of its own: the shadow is drawn under it at the cover's resting size (`CoverShadow`,
 widgets.slint), because Skia renders a shadow into a texture kept by its size, and a shadow
 that pulsed with the cover was a new texture every frame, the dead ones piling up in Skia's

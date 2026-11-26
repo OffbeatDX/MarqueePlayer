@@ -73,29 +73,43 @@ fn draw_mode() -> DrawMode {
 /// the one stroke that is a look's whole drawing (`Visualizer.strokes-aa`). Slint's Skia renderer has no MSAA, so each large
 /// or concave anti-aliased path is rasterised on the CPU into a mask the size of its bounds
 /// and uploaded as a texture, every frame; drawn without, the GPU fills it directly. Bars
-/// (`draw::crisp`) are drawn without anti-aliasing whatever this says.
+/// (`draw::crisp`) are drawn without anti-aliasing whatever this says. `passes`: the line and
+/// its glow, when smoothed, are smoothed by drawing each as a few strokes without
+/// anti-aliasing, one inside the other (`draw::feather_passes`), not by Skia.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Smoothing {
     pub fills: bool,
     pub strokes: bool,
+    pub passes: bool,
 }
 
 impl Smoothing {
-    /// Everything anti-aliased: the drawing as it always was.
-    pub const ALL: Smoothing = Smoothing { fills: true, strokes: true };
+    /// Everything anti-aliased by Skia: the drawing as it always was.
+    pub const ALL: Smoothing = Smoothing { fills: true, strokes: true, passes: false };
+    /// macOS at a scale factor of 2 or more: the fills without, the line and its glow in passes.
+    pub const MAC_2X: Smoothing = Smoothing { fills: false, strokes: true, passes: true };
 }
 
+/// How many strokes the line and its glow are each drawn as, when in passes: a pixel shows
+/// the line at 0, 1/4, 2/4, 3/4 or all of its strength by how far its centre is inside, the
+/// glow (fainter, so its steps are smaller) in thirds. Measured with the halo (2026-11-26):
+/// three and two cost the same, within the runs' spread, and differed from Skia's edge in
+/// twice as many pixels by 20 levels of 255 or more.
+const LINE_PASSES: usize = 4;
+const GLOW_PASSES: usize = 3;
+
 /// `MP_VIZ_AA` (measurement and comparison only, every build): which groups ARE drawn
-/// anti-aliased. "all" as on Windows, Linux and 1x displays, "strokes" only the line and its
-/// glow (the macOS policy at 2x), "fills" only the fills, the ripples and the rings, "none"
-/// nothing; unset (or anything else) the
-/// policy (`aa_policy`).
+/// anti-aliased. "all" as on Windows, Linux and 1x displays, "passes" the line and its glow
+/// only, in passes (the macOS policy at 2x), "strokes" the same by Skia (the macOS policy
+/// before the passes), "fills" only the fills, the ripples and the rings, "none" nothing;
+/// unset (or anything else) the policy (`aa_policy`).
 fn parse_aa(v: &str) -> Option<Smoothing> {
     match v {
         "all" => Some(Smoothing::ALL),
-        "fills" => Some(Smoothing { fills: true, strokes: false }),
-        "strokes" => Some(Smoothing { fills: false, strokes: true }),
-        "none" => Some(Smoothing { fills: false, strokes: false }),
+        "fills" => Some(Smoothing { fills: true, strokes: false, passes: false }),
+        "strokes" => Some(Smoothing { fills: false, strokes: true, passes: false }),
+        "passes" => Some(Smoothing::MAC_2X),
+        "none" => Some(Smoothing { fills: false, strokes: false, passes: false }),
         _ => None,
     }
 }
@@ -112,14 +126,16 @@ fn aa_forced() -> Option<Smoothing> {
 /// macOS) and the window's scale factor (the monitor's times the interface size) is 2 or
 /// more, the fills (and the ripples and rings with them) without and the line with (at 2x the
 /// stair steps of a soft fill or of a faint ripple on its way out are hard to see, those of
-/// the line, which is all a look draws, are not); everywhere else everything anti-aliased, as it
-/// always was.
-pub fn aa_policy(fills_aliased_at_2x: bool, scale_factor: f32, forced: Option<Smoothing>) -> Smoothing {
+/// the line, which is all a look draws, are not); and where the system says so too
+/// (`platform::system::VIZ_LINES_IN_PASSES_AT_2X`, macOS) the line and its glow smoothed in
+/// passes, which the GPU draws, where Skia would rasterise them on the CPU like the fills.
+/// Everywhere else everything anti-aliased by Skia, as it always was.
+pub fn aa_policy(fills_aliased_at_2x: bool, lines_in_passes_at_2x: bool, scale_factor: f32, forced: Option<Smoothing>) -> Smoothing {
     if let Some(f) = forced {
         return f;
     }
     if fills_aliased_at_2x && scale_factor >= 2.0 {
-        Smoothing { fills: false, strokes: true }
+        Smoothing { passes: lines_in_passes_at_2x, ..Smoothing::MAC_2X }
     } else {
         Smoothing::ALL
     }
@@ -129,10 +145,24 @@ pub fn aa_policy(fills_aliased_at_2x: bool, scale_factor: f32, forced: Option<Sm
 /// follows it (`zoom::apply`, which every change of the interface size or of the monitor's
 /// factor goes through, and `install` for the factor the window starts with).
 pub fn scale_changed(app: &AppWindow, scale_factor: f32) {
-    let s = aa_policy(crate::platform::system::VIZ_FILLS_ALIASED_AT_2X, scale_factor, aa_forced());
+    use crate::platform::system::{VIZ_FILLS_ALIASED_AT_2X, VIZ_LINES_IN_PASSES_AT_2X};
+    let s = aa_policy(VIZ_FILLS_ALIASED_AT_2X, VIZ_LINES_IN_PASSES_AT_2X, scale_factor, aa_forced());
     let g = app.global::<Visualizer>();
     g.set_fills_aa(s.fills);
     g.set_strokes_aa(s.strokes);
+    g.set_device_px(1.0 / scale_factor.max(0.25));
+    g.set_strokes_in_passes(s.strokes && s.passes);
+    set_passes(&g);
+}
+
+/// The line's and the glow's passes (`Visualizer.line-passes`, `glow-passes`), from their
+/// brushes, when they are drawn so; none (each drawn as one stroke) otherwise.
+fn set_passes(g: &Visualizer) {
+    let passes = |b: Brush, k: usize| -> ModelRc<Brush> {
+        if g.get_strokes_in_passes() && k > 0 { ModelRc::new(VecModel::from(draw::feather_passes(&b, k))) } else { ModelRc::default() }
+    };
+    g.set_line_passes(passes(g.get_line_brush(), LINE_PASSES));
+    g.set_glow_passes(passes(g.get_glow_brush(), if g.get_glow_width() > 0.0 { GLOW_PASSES } else { 0 }));
 }
 
 /// Where it is drawn now.
@@ -842,6 +872,7 @@ fn set_brushes(g: &Visualizer, b: &Brushes) {
     g.set_rings_width(b.ring_width);
     g.set_line_width(b.line_width);
     g.set_glow_width(b.glow_width);
+    set_passes(g);
 }
 
 /// The halo follows the cover's rounded square instead of a circle (`MP_HALO_SHAPE=square`,
@@ -1216,32 +1247,36 @@ mod tests {
 
     #[test]
     fn only_macos_at_twice_the_density_draws_the_fills_without_anti_aliasing() {
-        let mac = Smoothing { fills: false, strokes: true };
-        assert_eq!(aa_policy(true, 2.0, None), mac);
-        assert_eq!(aa_policy(true, 3.0, None), mac);
+        let mac = Smoothing { fills: false, strokes: true, passes: true };
+        assert_eq!(mac, Smoothing::MAC_2X);
+        assert_eq!(aa_policy(true, true, 2.0, None), mac);
+        assert_eq!(aa_policy(true, true, 3.0, None), mac);
         // A Retina display zoomed to 90% (1.8), a 1x one zoomed to 200% (2.0): the window's
         // whole factor decides, not the monitor's.
-        assert_eq!(aa_policy(true, 2.0 * 0.9, None), Smoothing::ALL);
-        assert_eq!(aa_policy(true, 1.0 * 2.0, None), mac);
-        assert_eq!(aa_policy(true, 1.0, None), Smoothing::ALL);
+        assert_eq!(aa_policy(true, true, 2.0 * 0.9, None), Smoothing::ALL);
+        assert_eq!(aa_policy(true, true, 1.0 * 2.0, None), mac);
+        assert_eq!(aa_policy(true, true, 1.0, None), Smoothing::ALL);
+        // The line in passes only where the system says so, and only with the fills.
+        assert_eq!(aa_policy(true, false, 2.0, None), Smoothing { fills: false, strokes: true, passes: false });
         // Windows and Linux draw as they always did, at any density.
         for sf in [1.0, 1.25, 1.5, 2.0, 2.5, 4.0] {
-            assert_eq!(aa_policy(false, sf, None), Smoothing::ALL, "{sf}");
+            assert_eq!(aa_policy(false, false, sf, None), Smoothing::ALL, "{sf}");
         }
     }
 
     #[test]
     fn the_override_says_which_groups_are_anti_aliased_on_any_system() {
         assert_eq!(parse_aa("all"), Some(Smoothing::ALL));
-        assert_eq!(parse_aa("fills"), Some(Smoothing { fills: true, strokes: false }));
-        assert_eq!(parse_aa("strokes"), Some(Smoothing { fills: false, strokes: true }));
-        assert_eq!(parse_aa("none"), Some(Smoothing { fills: false, strokes: false }));
+        assert_eq!(parse_aa("fills"), Some(Smoothing { fills: true, strokes: false, passes: false }));
+        assert_eq!(parse_aa("strokes"), Some(Smoothing { fills: false, strokes: true, passes: false }));
+        assert_eq!(parse_aa("passes"), Some(Smoothing::MAC_2X));
+        assert_eq!(parse_aa("none"), Some(Smoothing { fills: false, strokes: false, passes: false }));
         assert_eq!(parse_aa(""), None);
         assert_eq!(parse_aa("auto"), None);
-        for v in ["all", "fills", "strokes", "none"] {
+        for v in ["all", "fills", "strokes", "passes", "none"] {
             let f = parse_aa(v);
             for (mac, sf) in [(true, 2.0), (true, 1.0), (false, 2.0), (false, 1.0)] {
-                assert_eq!(Some(aa_policy(mac, sf, f)), f, "{v} {mac} {sf}");
+                assert_eq!(Some(aa_policy(mac, mac, sf, f)), f, "{v} {mac} {sf}");
             }
         }
     }

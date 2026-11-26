@@ -97,7 +97,7 @@ export component VisualizerStage inherits Rectangle {
         stroke-width: 0;
     }
     // The line's glow: the same line, wide and faint, under it.
-    if Visualizer.glow-width > 0: Path {
+    if Visualizer.glow-width > 0 && Visualizer.glow-passes.length == 0: Path {
         x: 0;
         y: 0;
         width: root.width;
@@ -116,7 +116,7 @@ export component VisualizerStage inherits Rectangle {
         stroke-line-join: round;
         stroke-line-cap: round;
     }
-    Path {
+    if Visualizer.line-passes.length == 0: Path {
         x: 0;
         y: 0;
         width: root.width;
@@ -132,6 +132,45 @@ export component VisualizerStage inherits Rectangle {
         anti-alias: Visualizer.strokes-aa;
         stroke: Visualizer.line-brush;
         stroke-width: Visualizer.line-width * Visualizer.line-swell;
+        stroke-line-join: round;
+        stroke-line-cap: round;
+    }
+    // The glow and the line in passes (stores.slint `line-passes`): stroke i (of n) is wider
+    // than the line by (1 - (2i + 1) / n) physical pixels, so a pixel's centre is inside as
+    // many of them as anti-aliasing would cover it in n-ths. Without anti-aliasing each is
+    // drawn by the GPU (Skia's tessellated strokes), where an anti-aliased stroke this large
+    // is rasterised on the CPU.
+    for b[i] in Visualizer.glow-passes: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.line;
+        fill: transparent;
+        anti-alias: false;
+        stroke: b;
+        stroke-width: Visualizer.glow-width * Visualizer.glow-swell + Visualizer.device-px * (1 - (2 * i + 1) / Visualizer.glow-passes.length);
+        stroke-line-join: round;
+        stroke-line-cap: round;
+    }
+    for b[i] in Visualizer.line-passes: Path {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: max(1px, Visualizer.top-h);
+        viewbox-width: root.width / 1px;
+        fit: preserve;
+        viewbox-height: max(1px, Visualizer.top-h) / 1px;
+        visible: Visualizer.active;
+        commands: Visualizer.line;
+        fill: transparent;
+        anti-alias: false;
+        stroke: b;
+        stroke-width: Visualizer.line-width * Visualizer.line-swell + Visualizer.device-px * (1 - (2 * i + 1) / Visualizer.line-passes.length);
         stroke-line-join: round;
         stroke-line-cap: round;
     }

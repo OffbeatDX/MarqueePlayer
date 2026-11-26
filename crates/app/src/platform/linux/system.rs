@@ -46,6 +46,10 @@ pub const TRAY_ANIMATES: bool = true;
 /// only macOS draws its fills without at 2x).
 pub const VIZ_FILLS_ALIASED_AT_2X: bool = false;
 
+/// The visualizer's line and glow are anti-aliased by Skia (`visualizer::aa_policy`; only
+/// macOS smooths them in passes at 2x).
+pub const VIZ_LINES_IN_PASSES_AT_2X: bool = false;
+
 /// The seek bar is set at every physical pixel it moves (`playback::bar_due`: no step; only
 /// macOS, where any change redraws the whole window, sets it with the time label).
 pub const SEEK_STEP: f32 = 0.0;

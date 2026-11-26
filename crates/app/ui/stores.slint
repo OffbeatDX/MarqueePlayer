@@ -603,10 +603,18 @@ export global Visualizer {
     // (stroke-width 0) and with them the ring's ripples and the snare's rings (thin, faint
     // strokes that never stand still); `strokes-aa`, the line and its glow. Rust decides
     // (visualizer/mod.rs aa_policy): on macOS at a scale factor of 2 or more the first group
-    // is drawn without (each anti-aliased path is rasterised on the CPU there), everywhere
-    // else both with.
+    // is drawn without (each anti-aliased path is rasterised on the CPU there) and the second
+    // in passes (below), everywhere else both with.
     in-out property <bool> fills-aa: true;
     in-out property <bool> strokes-aa: true;
+    // The line and its glow smoothed in passes (Rust's `strokes-in-passes`): each drawn as
+    // strokes without anti-aliasing, one inside the other, a physical pixel (`device-px`)
+    // between the widest and the narrowest, with these brushes, outermost first
+    // (draw.rs feather_passes). Empty: drawn as one stroke, anti-aliased by `strokes-aa`.
+    in-out property <bool> strokes-in-passes;
+    in-out property <[brush]> line-passes;
+    in-out property <[brush]> glow-passes;
+    in-out property <length> device-px: 1px;
     in-out property <brush> fill-brush;
     in-out property <brush> caps-brush;
     in-out property <brush> line-brush;

@@ -2215,6 +2215,52 @@ pub struct Brushes {
     pub sparks_glow: Brush,
 }
 
+/// A line drawn as `k` strokes without anti-aliasing, one inside the other, in place of one
+/// stroke with it (`Visualizer.line-passes`): the brush of each, outermost first. A pixel
+/// whose centre `n` of them cover shows the brush at `n / k` of its strength, as anti-aliasing
+/// would show a pixel that much covered. Strokes of one colour laid over each other add up as
+/// `1 - (1 - a1)(1 - a2)...`, so the n-th's alpha is what takes `n - 1` of them from
+/// `(n - 1) / k` of the brush's alpha to `n / k` of it, worked out at each stop of the brush.
+pub fn feather_passes(b: &Brush, k: usize) -> Vec<Brush> {
+    (1..=k)
+        .map(|n| {
+            map_alpha(b, |a| {
+                let upto = |m: usize| a * m as f32 / k as f32;
+                let below = 1.0 - upto(n - 1);
+                if below <= 0.0 { 0.0 } else { 1.0 - (1.0 - upto(n)) / below }
+            })
+        })
+        .collect()
+}
+
+/// `b` with each stop's alpha (0..1) put through `f`: the same kind of brush, its geometry kept.
+fn map_alpha(b: &Brush, f: impl Fn(f32) -> f32) -> Brush {
+    let map = |s: &GradientStop| GradientStop { color: s.color.with_alpha(f(f32::from(s.color.alpha()) / 255.0).clamp(0.0, 1.0)), position: s.position };
+    match b {
+        Brush::SolidColor(c) => Brush::SolidColor(c.with_alpha(f(f32::from(c.alpha()) / 255.0).clamp(0.0, 1.0))),
+        Brush::LinearGradient(g) => Brush::LinearGradient(LinearGradientBrush::new(g.angle(), g.stops().map(map))),
+        Brush::RadialGradient(g) => {
+            let mut r = if g.is_circle() { RadialGradientBrush::new_circle(g.stops().map(map)) } else { RadialGradientBrush::new_ellipse(g.stops().map(map)) };
+            if let Some((cx, cy)) = g.explicit_center() {
+                r = r.with_center(cx, cy);
+            }
+            if let Some((rx, ry)) = g.explicit_radii() {
+                // `with_radii` makes an ellipse of it, even of equal radii.
+                r = if g.is_circle() { r.with_radius(rx) } else { r.with_radii(rx, ry) };
+            }
+            Brush::RadialGradient(r)
+        }
+        Brush::ConicGradient(g) => {
+            // Its stops come already turned by its angle (`ConicGradientBrush::new`), so they are
+            // laid out again at 0; its centre is the one given, or none (NaN: the box's).
+            let c = ConicGradientBrush::new(0.0, g.stops().map(map));
+            let (cx, cy) = g.center_or_default(f32::NAN, f32::NAN);
+            Brush::ConicGradient(if cx.is_nan() { c } else { c.with_center(cx, cy) })
+        }
+        _ => b.clone(),
+    }
+}
+
 /// The brushes for a look on a stage: `a` is its strength where it shows (`Look::strength`:
 /// behind the page, or in the panel and on the full page).
 pub fn brushes(look: &Look, stage: &Stage, top_h: f32, refl_h: f32, stops: &[(f32, [u8; 3], f32)], a: f32) -> Brushes {
@@ -4118,6 +4164,57 @@ mod tests {
             AS_BEFORE.set(false);
             let [(b0, p0, n0), (b1, p1, n1)] = best;
             println!("{preset:?}: build {b0:.0} -> {b1:.0} ns a frame, parse {p0:.0} -> {p1:.0} ns, both {:.0} -> {:.0} ns ({:.0}% less); {n0} -> {n1} bytes", b0 + p0, b1 + p1, 100.0 * (1.0 - (b1 + p1) / (b0 + p0)));
+        }
+    }
+
+    #[test]
+    fn a_line_in_passes_shows_as_strong_as_its_pixel_is_covered() {
+        // n of k passes over a pixel lay down n/k of the brush's alpha, whatever that alpha
+        // (to the 8 bits a colour holds), and all k of them the brush itself.
+        let alpha = |b: &Brush| f32::from(b.color().alpha()) / 255.0;
+        for k in [2, 3, 4] {
+            for a in [1.0, 0.75, 0.36, 0.1] {
+                let line = Brush::SolidColor(colour([200, 80, 220], a));
+                let passes = feather_passes(&line, k);
+                assert_eq!(passes.len(), k);
+                let mut through = 1.0;
+                for (n, p) in passes.iter().enumerate() {
+                    through *= 1.0 - alpha(p);
+                    let shown = 1.0 - through;
+                    let want = alpha(&line) * (n + 1) as f32 / k as f32;
+                    assert!((shown - want).abs() < 2.5 / 255.0, "k {k} a {a} pass {n}: {shown} where {want}");
+                    assert_eq!(p.color().with_alpha(1.0), line.color().with_alpha(1.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_passes_keep_their_brush_s_kind_and_geometry_each_stop_its_own_alpha() {
+        let stops = || [stop(0.0, [255, 0, 0], 1.0), stop(0.5, [0, 255, 0], 0.5), stop(1.0, [0, 0, 255], 0.75)];
+        let brushes = [
+            Brush::LinearGradient(LinearGradientBrush::new(90.0, stops())),
+            Brush::RadialGradient(RadialGradientBrush::new_circle(stops()).with_center(120.0, 80.0).with_radius(300.0)),
+            Brush::RadialGradient(RadialGradientBrush::new_circle(stops())),
+            Brush::ConicGradient(ConicGradientBrush::new(0.0, stops()).with_center(120.0, 80.0)),
+            Brush::ConicGradient(ConicGradientBrush::new(0.0, stops())),
+        ];
+        for b in &brushes {
+            // Alpha as it was: the very brush back.
+            assert_eq!(&map_alpha(b, |a| a), b);
+            // The last of two passes: each stop's own (a stop at alpha 1 stays at 1, one at
+            // 0.5 takes the 1/4 laid down to 1/2: 1/3).
+            let last = &feather_passes(b, 2)[1];
+            let a = |b: &Brush| -> Vec<u8> {
+                match b {
+                    Brush::LinearGradient(g) => g.stops().map(|s| s.color.alpha()).collect(),
+                    Brush::RadialGradient(g) => g.stops().map(|s| s.color.alpha()).collect(),
+                    Brush::ConicGradient(g) => g.stops().map(|s| s.color.alpha()).collect(),
+                    _ => unreachable!(),
+                }
+            };
+            assert_eq!(a(last), vec![255, 85, 153], "{b:?}");
+            assert_eq!(&map_alpha(last, |_| 1.0), &map_alpha(b, |_| 1.0));
         }
     }
 }

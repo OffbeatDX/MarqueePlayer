@@ -175,7 +175,11 @@ The owner's decisions for the port, and how the code carries them out:
 - **Rendering**: Skia on Metal. Any change draws the whole window again there, so while a
   track plays the seek bar moves with the time label, once a second, rather than at every
   pixel (a short track, whose bar would jump more than 3 logical pixels in a second, steps by
-  that; `platform::system::SEEK_STEP`). **Fonts**: the system's UI font (San Francisco) unless
+  that; `platform::system::SEEK_STEP`). Skia has no MSAA there, and draws a large
+  anti-aliased path on the CPU, so at a scale factor of 2 or more the visualizer's fills are
+  drawn without anti-aliasing and its line and glow smoothed in passes of strokes without it,
+  which the GPU draws (`VIZ_FILLS_ALIASED_AT_2X`, `VIZ_LINES_IN_PASSES_AT_2X`; the halo's
+  CPU a frame 22% less, the pictures alike but at the edges, [Visualizer](features/visualizer.md)). **Fonts**: the system's UI font (San Francisco) unless
   `theme.toml`'s `font_family` names another.
 - **The visualizer at 30 frames a second on the battery** (`platform/macos/system.rs`,
   `visualizer::look::fps_in_effect`). Since every frame redraws the whole window, only fewer

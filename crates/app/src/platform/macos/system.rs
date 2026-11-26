@@ -40,6 +40,14 @@ pub const TRAY_ANIMATES: bool = false;
 /// display their stair steps are hard to see). The line and its glow keep it.
 pub const VIZ_FILLS_ALIASED_AT_2X: bool = true;
 
+/// At a scale factor of 2 or more (with the fills above) the visualizer's line and its glow
+/// are smoothed by being drawn as a few strokes without anti-aliasing, one inside the other
+/// (`visualizer::aa_policy`, `draw::feather_passes`): Skia's GPU stroker draws those, where an
+/// anti-aliased line, too large for Skia's path atlas, was rasterised on the CPU like the
+/// fills (Halo behind the page 3.2 ms of CPU a frame, 2.5 ms so; the pictures differ only at
+/// the edges, by a few levels of 255).
+pub const VIZ_LINES_IN_PASSES_AT_2X: bool = true;
+
 /// The most the seek bar may lag the position while playing, in logical pixels, before the
 /// tick sets it between two turns of the time label (`playback::bar_due`). Any change redraws
 /// the whole window here (Slint's Skia renderer on Metal has no partial rendering), so a bar set
