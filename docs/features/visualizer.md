@@ -215,7 +215,7 @@ setting" knows each. Every control is keyboard reachable with the focus ring; th
 decorative (`accessible-role: none`), the preview says in words what it shows.
 
 **Saved** in settings.json as `"visualizer_look"` (`visualizer::look::VizSettings`: `preset`, `look`
-in full when Custom, `placement`, `fps`, `based_on` while the look is one of the user's), every field defaulted, unknown values brought into
+in full when Custom, `placement`, `fps`, `fps_chosen` when a rate was chosen where Auto is offered, `based_on` while the look is one of the user's), every field defaulted, unknown values brought into
 range, an unknown preset (a newer build's) read as Classic. It is absent until the user chooses
 anything; then the default follows Windows' "Show animations in Windows"
 (`SPI_GETCLIENTAREAANIMATION`): on, Classic; off, Calm (read once at start;
@@ -253,7 +253,8 @@ smoothing is by elapsed time, so it moves the same at any frame rate.
 **When it runs.** Only while its stage is on screen: the visualizer on and Now playing shown
 with that placement (the panel's tab chosen, for the panel), or Settings > Visualizer shown;
 the window shown and not minimized; music playing. Then a timer at the display's refresh rate,
-at most 60 a second (or 30, Settings > Frame rate) reads the tap, analyses and draws; for a
+at most 60 a second (or 30, Settings > Frame rate; on macOS, Auto, the default, is 30 on the
+battery and in Low Power Mode and follows the power as it changes: [macOS](../macos.md#what-is-different-on-macos)) reads the tap, analyses and draws; for a
 look that hears the beat (all but bars and the line with Smooth motion) the beat tracker and
 its meter listen to the same samples. They start afresh when another track starts (the
 engine's token for the track heard changes: a gapless one of the same album too) and when the

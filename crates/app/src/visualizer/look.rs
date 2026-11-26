@@ -562,6 +562,50 @@ pub enum Fps {
     Half,
 }
 
+/// The rate the visualizer draws at: the user's, if they chose one (`VizSettings::chosen_fps`);
+/// else, where the power is followed (macOS: `platform::system::power`), 30 on the battery or
+/// in Low Power Mode and 60 on external power; else 60, as ever (Windows, Linux).
+///
+/// Low Power Mode on external power is 30 too: it is the user asking the Mac to spend less
+/// whatever it runs on (it can be set for the adapter alone), and drawing half the frames is
+/// the visualizer's share of that; the picture at 30 is the one they get on the battery.
+pub fn fps_in_effect(chosen: Option<Fps>, power: Option<crate::platform::Power>) -> Fps {
+    match (chosen, power) {
+        (Some(f), _) => f,
+        (None, Some(p)) if p.battery || p.low_power => Fps::Half,
+        _ => Fps::Full,
+    }
+}
+
+/// A choice of Settings' "Frame rate" by its index: the rate stored and whether it is chosen.
+/// With the automatic one offered (`auto`, macOS): Auto, Up to 60, 30; without: Up to 60, 30,
+/// stored as they always were.
+pub fn fps_choice(i: usize, auto: bool) -> (Fps, bool) {
+    match (auto, i) {
+        (false, 1) | (true, 2) => (Fps::Half, auto),
+        (true, 1) => (Fps::Full, true),
+        _ => (Fps::Full, false),
+    }
+}
+
+/// The index of the choice Settings shows (`fps_choice`).
+pub fn fps_index(s: &VizSettings, auto: bool) -> i32 {
+    match (auto, s.chosen_fps()) {
+        (_, Some(Fps::Half)) => 1 + i32::from(auto),
+        (true, Some(Fps::Full)) => 1,
+        _ => 0,
+    }
+}
+
+/// Settings' line for the automatic rate: the rate now, and why.
+pub fn fps_auto_words(p: crate::platform::Power) -> &'static str {
+    match (p.battery, p.low_power) {
+        (true, _) => "now 30, on the battery. Up to 60 (the display's rate, if lower) on the power adapter, unless Low Power Mode is on.",
+        (false, true) => "now 30: Low Power Mode is on. Up to 60 (the display's rate, if lower) on the power adapter with it off.",
+        (false, false) => "now up to 60 (the display's rate, if lower), on the power adapter. 30 on the battery or in Low Power Mode, to save power.",
+    }
+}
+
 /// What settings.json keeps (`"visualizer_look"`). The on/off switch is `visualizer`, apart;
 /// the user's own presets are `visualizer_presets` (`UserPresets`), apart too, so Reset
 /// (which forgets this) keeps them.
@@ -575,7 +619,16 @@ pub struct VizSettings {
     pub preset: String,
     pub look: Look,
     pub placement: Placement,
+    /// The frame rate as stored: `half` (30) is always the user's choice; `full` (up to 60) is
+    /// theirs only with `fps_chosen`, else the default (`chosen_fps`).
     pub fps: Fps,
+    /// The user chose the rate in `fps` on a system that offers an automatic one (macOS):
+    /// written only then, so a file of a build before it, which wrote `"fps": "full"` for
+    /// everyone who changed anything here, reads as not chosen (60 was the default, and the
+    /// only way to it was back from 30), and Windows and Linux write what they always did.
+    /// A build before it reads past it; a save there drops it (60 is automatic again).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fps_chosen: bool,
     /// The user's preset last chosen, by name, while the look is (or came from) it: what
     /// "Update" saves to after a change. `None` for a built-in one or none.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -595,7 +648,7 @@ fn preset_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error>
 
 impl Default for VizSettings {
     fn default() -> Self {
-        Self { preset: Preset::Classic.id().into(), look: Look::default(), placement: Placement::Behind, fps: Fps::Full, based_on: None }
+        Self { preset: Preset::Classic.id().into(), look: Look::default(), placement: Placement::Behind, fps: Fps::Full, fps_chosen: false, based_on: None }
     }
 }
 
@@ -612,6 +665,11 @@ impl VizSettings {
             Some(p) => p.look(t),
             None => self.look.clone().clamped(),
         }
+    }
+
+    /// The rate the user chose, if any: 30 whenever stored, 60 when chosen as such (`fps_chosen`).
+    pub fn chosen_fps(&self) -> Option<Fps> {
+        (self.fps == Fps::Half || self.fps_chosen).then_some(self.fps)
     }
 
     /// The preset in use, if any.
@@ -858,6 +916,64 @@ mod tests {
         assert!(Style::RING.iter().all(|k| Preset::ALL.iter().any(|p| p.look(&t).style == *k)));
     }
 
+    /// Who chose what, on which power: the rate. A choice stands on any power; no choice is 60
+    /// on external power, 30 on the battery or in Low Power Mode, and 60 where the power is not
+    /// followed (Windows, Linux: `None`).
+    #[test]
+    fn the_rate_is_the_users_else_the_powers() {
+        use crate::platform::Power;
+        let (mains, battery, low, both) = (Power::default(), Power { battery: true, low_power: false }, Power { battery: false, low_power: true }, Power { battery: true, low_power: true });
+        for p in [None, Some(mains), Some(battery), Some(low), Some(both)] {
+            assert_eq!(fps_in_effect(Some(Fps::Full), p), Fps::Full, "60 chosen, {p:?}");
+            assert_eq!(fps_in_effect(Some(Fps::Half), p), Fps::Half, "30 chosen, {p:?}");
+        }
+        assert_eq!(fps_in_effect(None, None), Fps::Full, "not followed: as ever");
+        assert_eq!(fps_in_effect(None, Some(mains)), Fps::Full);
+        assert_eq!(fps_in_effect(None, Some(battery)), Fps::Half);
+        assert_eq!(fps_in_effect(None, Some(low)), Fps::Half, "Low Power Mode on the adapter");
+        assert_eq!(fps_in_effect(None, Some(both)), Fps::Half);
+        for p in [mains, battery, low, both] {
+            let words = fps_auto_words(p);
+            assert_eq!(words.starts_with("now 30"), fps_in_effect(None, Some(p)) == Fps::Half, "{words}");
+        }
+    }
+
+    /// Settings' choices and what they store: without the automatic one, as they always did
+    /// (no `fps_chosen`); with it, Auto forgets the choice, and either rate is one. What is
+    /// stored shows as the choice it came from.
+    #[test]
+    fn the_rate_choices_store_and_show() {
+        assert_eq!((fps_choice(0, false), fps_choice(1, false)), ((Fps::Full, false), (Fps::Half, false)));
+        assert_eq!((fps_choice(0, true), fps_choice(1, true), fps_choice(2, true)), ((Fps::Full, false), (Fps::Full, true), (Fps::Half, true)));
+        for auto in [false, true] {
+            for i in 0..2 + usize::from(auto) {
+                let (fps, fps_chosen) = fps_choice(i, auto);
+                assert_eq!(fps_index(&VizSettings { fps, fps_chosen, ..VizSettings::default() }, auto), i as i32, "{i}, auto offered {auto}");
+            }
+        }
+        // A file from a build before it, shown on macOS: Auto unless 30.
+        let half = VizSettings { fps: Fps::Half, ..VizSettings::default() };
+        assert_eq!((fps_index(&VizSettings::default(), true), fps_index(&half, true)), (0, 2));
+        assert_eq!((fps_index(&VizSettings::default(), false), fps_index(&half, false)), (0, 1));
+    }
+
+    /// What "chose" means in a stored file: none at all, or one from a build before the
+    /// automatic rate (which wrote "full" for everyone who changed any of the look), is not a
+    /// choice; "half" always is; "full" is with `fps_chosen`, and only then is it written.
+    #[test]
+    fn a_rate_is_chosen_when_the_file_says_so() {
+        let read = |t: &str| serde_json::from_str::<VizSettings>(t).unwrap().chosen_fps();
+        assert_eq!(read("{}"), None);
+        assert_eq!(read(r#"{ "preset": "prism", "placement": "page", "fps": "full" }"#), None, "an earlier build's default");
+        assert_eq!(read(r#"{ "fps": "half" }"#), Some(Fps::Half));
+        assert_eq!(read(r#"{ "fps": "full", "fps_chosen": true }"#), Some(Fps::Full));
+        assert_eq!(read(r#"{ "fps": "half", "fps_chosen": true }"#), Some(Fps::Half));
+        let text = serde_json::to_string(&VizSettings::default()).unwrap();
+        assert!(!text.contains("fps_chosen"), "written only when chosen: {text}");
+        let text = serde_json::to_string(&VizSettings { fps_chosen: true, ..VizSettings::default() }).unwrap();
+        assert!(text.contains(r#""fps":"full","fps_chosen":true"#), "{text}");
+    }
+
     #[test]
     fn options_round_trip() {
         let mut s = VizSettings::default();
@@ -870,6 +986,7 @@ mod tests {
         });
         s.placement = Placement::Page;
         s.fps = Fps::Half;
+        s.fps_chosen = true;
         let text = serde_json::to_string(&s).unwrap();
         let back: VizSettings = serde_json::from_str(&text).unwrap();
         assert_eq!(back, s);

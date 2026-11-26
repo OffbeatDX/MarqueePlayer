@@ -177,6 +177,21 @@ The owner's decisions for the port, and how the code carries them out:
   pixel (a short track, whose bar would jump more than 3 logical pixels in a second, steps by
   that; `platform::system::SEEK_STEP`). **Fonts**: the system's UI font (San Francisco) unless
   `theme.toml`'s `font_family` names another.
+- **The visualizer at 30 frames a second on the battery** (`platform/macos/system.rs`,
+  `visualizer::look::fps_in_effect`). Since every frame redraws the whole window, only fewer
+  frames make it cheaper (measured on an M5 MacBook Air, 60 against 30: the app's CPU 9.8% to
+  5.9% of a core with bars, 19.4% to 10.6% with the halo; the chip's power 0.79 W to 0.55 W and
+  1.36 W to 0.80 W). Settings > Visualizer > Frame rate offers **Auto** before Up to 60 and 30,
+  and Auto is what a user has who never chose: up to 60 on the power adapter, 30 on the battery
+  and in Low Power Mode (on the adapter too: it is the user asking the Mac to spend less). The
+  line under it says the rate now and why. It follows the power as it changes, from IOKit's
+  limited-power notification and Foundation's power state notification (no polling): the
+  running timer takes the new interval from its next frame, without a gap. A rate chosen stays
+  on any power. A settings file of an earlier build cannot say whether its `"fps": "full"` was
+  chosen (it was written for everyone who changed anything in the look); it reads as Auto, and
+  `"half"` as 30 chosen. Choosing Up to 60 now writes `"fps_chosen": true` beside it. Windows
+  and Linux offer no Auto and store and draw as before (`platform::system::power` is `None`
+  there). `MP_POWER=battery` (or `mains`, `low-power`) states the power in bench and test builds.
 - **Words**: "Show in Finder", "Exclusive mode" (not available), "Open at login"
   (`platform::Words`).
 - **Test windows** (`MP_WINDOW=secondary`, `platform/macos/devwindow.rs`) open on the second

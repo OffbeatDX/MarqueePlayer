@@ -605,7 +605,8 @@ pub fn run_cost() {
             playback::play_tracks(st, album(st, "Night Shift"), 0);
             playback::seek(st, 4.0);
             show(st, app, preset, place);
-            crate::visualizer::choose(st, "fps", 1);
+            // 30: the last choice (after Auto and Up to 60 where Auto is offered).
+            crate::visualizer::choose(st, "fps", 1 + usize::from(crate::platform::system::power().is_some()));
         })));
         let ta = t0.clone();
         steps.push((700, Box::new(move |_st, _app| {

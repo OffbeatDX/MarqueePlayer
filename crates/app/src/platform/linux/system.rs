@@ -171,6 +171,15 @@ pub fn reduced_motion() -> bool {
     kdeglobals("KDE", "AnimationDurationFactor").and_then(|v| v.parse::<f32>().ok()).is_some_and(|f| f == 0.0)
 }
 
+/// The power source is not followed on Linux: the visualizer draws at the rate stored, as
+/// chosen (60 unless 30 was), and Settings offers no automatic choice (`platform::Power`).
+pub fn power() -> Option<crate::platform::Power> {
+    None
+}
+
+/// Nothing to watch here (`power`).
+pub fn watch_power(_changed: fn()) {}
+
 /// The desktop prefers a light colour scheme (the settings portal: 2), for the tray glyph's
 /// deeper colours. Most panels are dark; without the portal, dark.
 pub fn light_panel() -> bool {

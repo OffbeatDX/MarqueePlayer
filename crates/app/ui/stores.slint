@@ -712,7 +712,11 @@ export global Visualizer {
     in-out property <int> colour-by;
     in-out property <int> detail: 1;
     in-out property <int> motion: 1;
+    // Settings' "Frame rate", by the index of the choice offered: Auto, Up to 60, 30 where the
+    // power is followed (fps-auto: macOS), else Up to 60, 30. Under Auto, the rate now and why.
     in-out property <int> fps;
+    in-out property <bool> fps-auto;
+    in-out property <string> fps-auto-now;
     in-out property <bool> reflection: true;
     in-out property <bool> peaks: true;
     in-out property <bool> mirror;

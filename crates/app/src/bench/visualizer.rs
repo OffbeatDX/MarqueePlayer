@@ -12,8 +12,10 @@
 //!   offline, local lyrics winning, skipping through tracks, a cached answer, rejecting
 //!   and trying again, and the lookup turned off. What the mock received is in its log.
 //!
-//! `MP_BENCH=viz-idle`: the visualizer runs for `MP_BENCH_VIZ_SECS` (default 20), then the
-//! track is paused, the window hidden and the app left idle for `MP_BENCH_IDLE_SECS`
+//! `MP_BENCH=viz-idle`: the visualizer runs for `MP_BENCH_VIZ_SECS` (default 20), its frames
+//! checked to come at the rate in effect (the user's, or the power's: `MP_POWER`); then for 2 s
+//! at the other rate, changed while it draws as an unplugged Mac changes it (checked for a
+//! lost frame), then the track is paused, the window hidden and the app left idle for `MP_BENCH_IDLE_SECS`
 //! (default 60); the report gives the process CPU time of each phase and when each began,
 //! for an outside count of context switches.
 
@@ -403,6 +405,24 @@ pub fn run() {
     run_steps(steps);
 }
 
+/// The frames came at the rate in effect: the user's, or under Auto the power's (`MP_POWER`
+/// states it: `battery` draws 30 a second on macOS). The median interval near 33 ms at 30;
+/// under 25 ms at up to 60 (the display's rate, at most 60).
+fn rate_check(r: &Report, st: &Rc<State>, stats: &[(Instant, Duration)]) {
+    use crate::visualizer::look::{Fps, fps_in_effect};
+    let s = crate::visualizer::settings(st);
+    let power = crate::platform::system::power();
+    let fps = fps_in_effect(s.chosen_fps(), power);
+    let mut iv: Vec<f64> = stats.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64() * 1000.0).collect();
+    iv.sort_by(f64::total_cmp);
+    let p50 = pct(&iv, 0.5);
+    let ok = !iv.is_empty() && if fps == Fps::Half { (28.0..40.0).contains(&p50) } else { p50 < 25.0 };
+    if !ok {
+        crate::bench::count_fail();
+    }
+    line(r, format!("  [{}] the frames come at the rate in effect: {fps:?} (chosen {:?}, power {power:?}); interval p50 {p50:.2} ms", if ok { "ok" } else { "FAIL" }, s.chosen_fps()));
+}
+
 pub fn run_idle() {
     let viz: u64 = std::env::var("MP_BENCH_VIZ_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(20);
     let idle: u64 = std::env::var("MP_BENCH_IDLE_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
@@ -410,6 +430,7 @@ pub fn run_idle() {
     let begin = Instant::now();
     let unix = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     let c0 = Rc::new(RefCell::new(Duration::ZERO));
+    let was = Rc::new(RefCell::new(None));
     let mut steps: Vec<Step> = Vec::new();
     {
         let (r, c0) = (r.clone(), c0.clone());
@@ -422,13 +443,41 @@ pub fn run_idle() {
         })));
     }
     {
-        let (r, c0) = (r.clone(), c0.clone());
+        let (r, c0, was) = (r.clone(), c0.clone(), was.clone());
         steps.push((viz * 1000, Box::new(move |st, app| {
             let stats = crate::visualizer::take_stats();
             let wall = stats.last().zip(stats.first()).map_or(Duration::from_secs(1), |(l, f)| l.0 - f.0);
             line(&r, frame_report("visualizer running, playing, now playing shown", &stats, cpu_time() - *c0.borrow(), wall));
-            playback::set_paused(st, true);
+            rate_check(&r, st, &stats);
+            // The rate in effect changes while it draws, as when the Mac is unplugged or
+            // plugged in: the other rate, through the handler the power's notification calls.
+            let s = crate::visualizer::settings(st);
+            let now = crate::visualizer::look::fps_in_effect(s.chosen_fps(), crate::platform::system::power());
+            let other = if now == crate::visualizer::look::Fps::Half { crate::visualizer::look::Fps::Full } else { crate::visualizer::look::Fps::Half };
+            *was.borrow_mut() = Some(st.settings.borrow().visualizer_look.clone());
+            st.settings.borrow_mut().visualizer_look = Some(crate::visualizer::look::VizSettings { fps: other, fps_chosen: true, ..s });
+            crate::visualizer::record(true);
+            crate::visualizer::power_changed(st);
             let _ = app;
+        })));
+    }
+    {
+        let (r, was) = (r.clone(), was.clone());
+        steps.push((2000, Box::new(move |st, _| {
+            let stats = crate::visualizer::take_stats();
+            rate_check(&r, st, &stats);
+            // No frame lost at the change: every interval under two of the slower rate's.
+            let max = stats.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64() * 1000.0).fold(0.0, f64::max);
+            let ok = stats.len() > 10 && max < 2.0 * 33.4;
+            if !ok {
+                crate::bench::count_fail();
+            }
+            line(&r, format!("  [{}] the rate changed while drawing without a gap: {} frames, the longest interval {max:.2} ms", if ok { "ok" } else { "FAIL" }, stats.len()));
+            if let Some(v) = was.borrow_mut().take() {
+                st.settings.borrow_mut().visualizer_look = v;
+            }
+            crate::visualizer::power_changed(st);
+            playback::set_paused(st, true);
         })));
     }
     {

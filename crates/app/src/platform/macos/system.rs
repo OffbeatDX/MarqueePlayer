@@ -1,7 +1,8 @@
 //! macOS: facts about the system, read where the app needs them. The version from
 //! `NSProcessInfo`, the appearance and the double-click action from the user's global
 //! defaults, reduced motion from `NSWorkspace`'s accessibility settings, times from the C
-//! library's time zone rules (`localtime_r`, which follows System Settings' time zone).
+//! library's time zone rules (`localtime_r`, which follows System Settings' time zone), the
+//! power source from IOKit's power sources and Low Power Mode from `NSProcessInfo`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -79,6 +80,130 @@ pub fn os_version() -> &'static str {
 /// System Settings > Accessibility > Display > Reduce motion.
 pub fn reduced_motion() -> bool {
     objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// What the Mac runs on now: the battery or not (IOKit says the time left is unlimited on
+/// external power), and Low Power Mode (macOS 12 and later; never on 11). Read when asked: a
+/// call into IOKit and one property, cheap, made when the visualizer starts and when Settings
+/// shows the rate, never per frame. `MP_POWER` stands in for it in bench and test builds
+/// (`forced_power`).
+pub fn power() -> Option<crate::platform::Power> {
+    if let Some(p) = forced_power() {
+        return Some(p);
+    }
+    // SAFETY: a plain call without arguments.
+    let battery = unsafe { IOPSGetTimeRemainingEstimate() } != TIME_REMAINING_UNLIMITED;
+    Some(crate::platform::Power { battery, low_power: low_power_mode() })
+}
+
+/// `MP_POWER=battery`, `mains`, either with `,low-power` (Low Power Mode on), or `low-power`
+/// alone (on mains): the power source as a test or a bench run states it, since the Mac it
+/// runs on may not be unplugged. Honoured in bench and test builds only (`test_override`).
+fn forced_power() -> Option<crate::platform::Power> {
+    static FORCED: OnceLock<Option<crate::platform::Power>> = OnceLock::new();
+    *FORCED.get_or_init(|| {
+        let v = crate::test_override("MP_POWER")?;
+        let p = parse_power(&v);
+        if p.is_none() {
+            log::warn!("MP_POWER={v:?} is not battery, mains or low-power; the system's power source is followed");
+        }
+        p
+    })
+}
+
+fn parse_power(v: &str) -> Option<crate::platform::Power> {
+    let mut p = crate::platform::Power::default();
+    for word in v.split(',').map(str::trim) {
+        match word {
+            "battery" => p.battery = true,
+            "mains" => p.battery = false,
+            "low-power" => p.low_power = true,
+            _ => return None,
+        }
+    }
+    Some(p)
+}
+
+/// Low Power Mode is on. Asked only where `NSProcessInfo` has it (macOS 12 and later): on 11
+/// the selector does not exist and the message would raise.
+fn low_power_mode() -> bool {
+    use objc2::runtime::NSObjectProtocol;
+    let info = objc2_foundation::NSProcessInfo::processInfo();
+    info.respondsToSelector(objc2::sel!(isLowPowerModeEnabled)) && info.isLowPowerModeEnabled()
+}
+
+/// Call `changed` on the main thread when the power source changes between external power and
+/// the battery, and when Low Power Mode is turned on or off. Notifications, not polling: IOKit's
+/// limited-power notification (sent only when the source changes, not as the battery drains)
+/// on the main run loop in its common modes (so it comes during a window drag or an open menu
+/// too), and Foundation's power state notification on the main queue. Once, at start; nothing
+/// with `MP_POWER` set, which stands for the run.
+pub fn watch_power(changed: fn()) {
+    static CHANGED: OnceLock<fn()> = OnceLock::new();
+    if forced_power().is_some() || CHANGED.set(changed).is_err() {
+        return;
+    }
+    extern "C" fn on_source(_: *mut std::ffi::c_void) {
+        if let Some(f) = CHANGED.get() {
+            f();
+        }
+    }
+    // SAFETY: the callback is a plain function that lives for the whole run and takes no
+    // context. The source returned is ours (a create call): the main run loop retains it once
+    // added, so ours is released after; it stays scheduled for the whole run.
+    unsafe {
+        let source = IOPSCreateLimitedPowerNotification(on_source, std::ptr::null_mut());
+        if source.is_null() {
+            log::warn!("the power source's notification could not be created: the visualizer's automatic rate keeps what it read at start");
+        } else {
+            CFRunLoopAddSource(CFRunLoopGetMain(), source, kCFRunLoopCommonModes);
+            CFRelease(source);
+        }
+    }
+    use objc2::runtime::NSObjectProtocol;
+    let info = objc2_foundation::NSProcessInfo::processInfo();
+    if !info.respondsToSelector(objc2::sel!(isLowPowerModeEnabled)) {
+        return;
+    }
+    use objc2_foundation::{NSNotification, NSNotificationCenter, NSOperationQueue, NSString};
+    let block = block2::RcBlock::new(|_: std::ptr::NonNull<NSNotification>| {
+        if let Some(f) = CHANGED.get() {
+            f();
+        }
+    });
+    // By its value rather than Foundation's constant, which macOS 11 does not export (the
+    // app would not load there): the two are the same string (a test checks it).
+    let name = NSString::from_str(POWER_STATE_CHANGED);
+    // SAFETY: Foundation posts it on a global queue: the main queue given here runs the block on
+    // the main thread. The observer it returns is kept for the whole run.
+    let observer = unsafe { NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(Some(&name), None, Some(&NSOperationQueue::mainQueue()), &block) };
+    std::mem::forget(observer);
+}
+
+/// `NSProcessInfoPowerStateDidChangeNotification`'s value.
+const POWER_STATE_CHANGED: &str = "NSProcessInfoPowerStateDidChangeNotification";
+
+/// `kIOPSTimeRemainingUnlimited`: on external power.
+const TIME_REMAINING_UNLIMITED: f64 = -2.0;
+
+type CFRunLoopRef = *mut std::ffi::c_void;
+type CFRunLoopSourceRef = *mut std::ffi::c_void;
+type CFStringRef = *const std::ffi::c_void;
+
+// IOKit's power sources (IOKit/ps/IOPowerSources.h, macOS 10.9 and later): declared here, as
+// the bindings in the tree do not cover them and two functions do not warrant a crate.
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOPSGetTimeRemainingEstimate() -> f64;
+    fn IOPSCreateLimitedPowerNotification(callback: extern "C" fn(*mut std::ffi::c_void), context: *mut std::ffi::c_void) -> CFRunLoopSourceRef;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFRunLoopGetMain() -> CFRunLoopRef;
+    fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+    fn CFRelease(cf: *const std::ffi::c_void);
+    static kCFRunLoopCommonModes: CFStringRef;
 }
 
 /// The menu bar is light: the system's appearance is not Dark (`AppleInterfaceStyle` is set
@@ -251,6 +376,27 @@ mod tests {
         assert!(now > 1.0 && now < 1_000_000.0, "{now} MB");
         assert!(peak >= now, "peak {peak} MB, now {now} MB");
         assert!(fds >= 3, "{fds}");
+    }
+
+    #[test]
+    fn mp_power_states_the_source_and_low_power_mode() {
+        use crate::platform::Power;
+        assert_eq!(parse_power("battery"), Some(Power { battery: true, low_power: false }));
+        assert_eq!(parse_power("mains"), Some(Power { battery: false, low_power: false }));
+        assert_eq!(parse_power("low-power"), Some(Power { battery: false, low_power: true }));
+        assert_eq!(parse_power("battery, low-power"), Some(Power { battery: true, low_power: true }));
+        assert_eq!(parse_power("mains,low-power"), Some(Power { battery: false, low_power: true }));
+        assert_eq!(parse_power("unplugged"), None, "a word it does not know: the system's own is followed");
+    }
+
+    /// The power source is read (whatever it is on the Mac that runs the tests), and the name
+    /// the app observes Low Power Mode by is Foundation's.
+    #[test]
+    fn the_power_is_read_and_the_notification_is_foundations() {
+        assert!(power().is_some());
+        // SAFETY: Foundation's constant, there on every macOS the tests run on (12 and later).
+        let theirs = unsafe { objc2_foundation::NSProcessInfoPowerStateDidChangeNotification };
+        assert_eq!(theirs.to_string(), POWER_STATE_CHANGED);
     }
 
     #[test]

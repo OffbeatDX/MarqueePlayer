@@ -33,8 +33,9 @@
 //!   the current user on Windows, a file of mode 0600 on Linux and macOS.
 //! - `system`: facts about the system (`os_version`, `reduced_motion`, `light_panel`,
 //!   `tray_icon_size`, `local_offset_secs`, `offset_at`, `local_date`, `cpu_time`, `tray_host`,
-//!   `ui_font`, `THEME_FONT`, the credits of what only this system links) and the wording
-//!   that names it (`words`).
+//!   `ui_font`, `THEME_FONT`, the credits of what only this system links), the power it runs
+//!   on where the app follows it (`power`, `watch_power`: macOS only, `None` elsewhere) and
+//!   the wording that names it (`words`).
 //! - `tray`: the tray icon (the menu bar's status item on macOS; `Tray`: its picture, tooltip
 //!   and menu, handing back `TrayEvent`s for its menu, clicks and wheel), the system's double-click time
 //!   (`double_click_time`), and `release` for the crash path (Windows' wheel hook).
@@ -90,6 +91,18 @@ pub enum FrameEvent {
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn in_caption_zone(x: f32, y: f32, width: f32, scale: f32) -> bool {
     y >= 0.0 && y < (BUTTON_H + 16.0) * scale && x >= width - (3.0 * BUTTON_W + 48.0) * scale && x < width
+}
+
+/// The power the computer runs on, where the app follows it (`system::power`: macOS, whose
+/// visualizer draws 30 frames a second instead of 60 on battery and in Low Power Mode unless
+/// the user chose a rate; `visualizer::look::fps_in_effect`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct Power {
+    /// On the battery (or a UPS): no external power.
+    pub battery: bool,
+    /// Low Power Mode is on (System Settings > Battery), on whichever source.
+    pub low_power: bool,
 }
 
 /// What a mouse side button or browser key means for navigation.

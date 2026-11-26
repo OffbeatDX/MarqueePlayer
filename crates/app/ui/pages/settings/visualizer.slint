@@ -503,10 +503,10 @@ export component VisualizerSection inherits VerticalLayout {
         }
         SettingRow {
             label: "Frame rate";
-            hint: "Up to 60 frames a second (the display's rate, if lower), or 30 to save power on a laptop.";
+            hint: Visualizer.fps-auto && Visualizer.fps == 0 ? "Auto: " + Visualizer.fps-auto-now : "Up to 60 frames a second (the display's rate, if lower), or 30 to save power on a laptop.";
             Segmented {
                 label: "Frame rate";
-                options: ["Up to 60", "30"];
+                options: Visualizer.fps-auto ? ["Auto", "Up to 60", "30"] : ["Up to 60", "30"];
                 selected: Visualizer.fps;
                 chosen(i) => { Actions.viz-choose("fps", i); }
             }

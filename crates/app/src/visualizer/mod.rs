@@ -43,7 +43,7 @@ use slint::{Brush, ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMo
 
 use crate::state::{self, State};
 use crate::visualizer::draw::{Brushes, Draw, Stage};
-use crate::visualizer::look::{ColourBy, Colours, Detail, Fps, Look, Motion, Pick, Placement, Preset, Style, ThemeViz, VizSettings};
+use crate::visualizer::look::{ColourBy, Colours, Detail, Look, Motion, Pick, Placement, Preset, Style, ThemeViz, VizSettings};
 use crate::{AppWindow, Nav, Page, SettingsView, Theme, Visualizer};
 
 /// `MP_VIZ_DRAW` (measurement only): "none" analyses without drawing, "minimal" redraws
@@ -204,6 +204,9 @@ pub fn install(st: &Rc<State>) {
     if let Some(app) = st.app.upgrade() {
         scale_changed(&app, app.window().scale_factor());
     }
+    crate::platform::system::watch_power(|| {
+        crate::state::with(power_changed);
+    });
     publish(st);
 }
 
@@ -356,7 +359,7 @@ pub fn cycle_placement(st: &Rc<State>) {
 pub fn choose(st: &Rc<State>, what: &str, i: usize) {
     update(st, |s, t| match what {
         "placement" => s.placement = Placement::ALL.get(i).copied().unwrap_or_default(),
-        "fps" => s.fps = if i == 1 { Fps::Half } else { Fps::Full },
+        "fps" => (s.fps, s.fps_chosen) = look::fps_choice(i, crate::platform::system::power().is_some()),
         _ => s.change(t, |l| match what {
             "style" => l.style = Style::ALL.get(i).copied().unwrap_or_default(),
             // The kind of ring (Settings' second choice once the style is Ring).
@@ -512,7 +515,10 @@ pub fn publish(st: &Rc<State>) {
     g.set_colour_by(if l.colour_by == ColourBy::Frequency { 1 } else { 0 });
     g.set_detail(Detail::ALL.iter().position(|x| *x == l.detail).unwrap_or(1) as i32);
     g.set_motion(Motion::ALL.iter().position(|x| *x == l.motion).unwrap_or(1) as i32);
-    g.set_fps(if s.fps == Fps::Half { 1 } else { 0 });
+    let power = crate::platform::system::power();
+    g.set_fps(look::fps_index(&s, power.is_some()));
+    g.set_fps_auto(power.is_some());
+    g.set_fps_auto_now(power.map_or("", look::fps_auto_words).into());
     g.set_reflection(l.reflection);
     g.set_peaks(l.peaks);
     g.set_mirror(l.mirror);
@@ -692,8 +698,7 @@ pub fn wake(st: &Rc<State>) {
             Some(_) if play && !z.timer.running() => {
                 z.tap.set_active(true);
                 z.last = None;
-                let refresh = app.window().with_winit_window(|w| w.current_monitor().and_then(|m| m.refresh_rate_millihertz())).flatten().map(|mhz| (mhz + 500) / 1000);
-                let every = look::frame_interval(settings(st).fps, refresh);
+                let every = interval(st, &app);
                 z.timer.start(TimerMode::Repeated, every, || state::with(frame).unwrap_or(()));
             }
             Some(Where::Preview) if !play && !z.timer.running() => still = true,
@@ -707,6 +712,32 @@ pub fn wake(st: &Rc<State>) {
     if still {
         still_frame(st, &app);
     }
+}
+
+/// The time between two frames: the display's refresh period, at the rate in effect (the
+/// user's, or under Auto the power's: `look::fps_in_effect`).
+fn interval(st: &State, app: &AppWindow) -> std::time::Duration {
+    let refresh = app.window().with_winit_window(|w| w.current_monitor().and_then(|m| m.refresh_rate_millihertz())).flatten().map(|mhz| (mhz + 500) / 1000);
+    look::frame_interval(look::fps_in_effect(settings(st).chosen_fps(), crate::platform::system::power()), refresh)
+}
+
+/// The power source or Low Power Mode changed (macOS: `platform::system::watch_power`). Under
+/// Auto, a visualizer drawing goes on at the rate now in effect from its next frame: the timer
+/// keeps running at the new interval, each frame's time step measured as ever, so the picture
+/// does not stop or jump. Settings says the rate and why.
+pub fn power_changed(st: &Rc<State>) {
+    let Some(app) = st.app.upgrade() else { return };
+    let every = interval(st, &app);
+    log::info!("power: {:?}; the visualizer's frames {} ms apart", crate::platform::system::power(), every.as_millis());
+    VIZ.with(|v| {
+        if let Some(z) = v.borrow().as_ref()
+            && z.timer.running()
+            && z.timer.interval() != every
+        {
+            z.timer.set_interval(every);
+        }
+    });
+    publish(st);
 }
 
 fn stop(z: &mut Viz, app: &AppWindow) {

@@ -137,6 +137,15 @@ pub fn reduced_motion() -> bool {
     ok != 0 && on == 0
 }
 
+/// The power source is not followed on Windows: the visualizer draws at the rate stored, as
+/// chosen (60 unless 30 was), and Settings offers no automatic choice (`platform::Power`).
+pub fn power() -> Option<crate::platform::Power> {
+    None
+}
+
+/// Nothing to watch here (`power`).
+pub fn watch_power(_changed: fn()) {}
+
 /// Does the taskbar use the light theme (Windows' "default app mode" for the system,
 /// `SystemUsesLightTheme`)?
 pub fn light_panel() -> bool {
