@@ -23,6 +23,17 @@ pub fn init() {
     }
 }
 
+/// The backend for a test window: winit told not to activate the application when it has
+/// finished launching. An inactive window (`attributes`) is not enough on macOS: winit's
+/// default is to activate the app at launch over whatever is in front, which took the
+/// keyboard from the owner's own work at every bench start.
+pub fn backend(s: slint::BackendSelector) -> slint::BackendSelector {
+    use winit::platform::macos::EventLoopBuilderExtMacOS;
+    let mut b = winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+    b.with_activate_ignoring_other_apps(false);
+    s.with_winit_event_loop_builder(b)
+}
+
 /// The second display's visible area (without the menu bar and the Dock), in winit's
 /// logical coordinates (origin at the top left of the main display, y down); `None` with
 /// one display.

@@ -68,6 +68,12 @@ pub fn secondary_work_area() -> Option<(i32, i32, i32, i32)> {
     monitors.into_iter().find(|(primary, _)| !primary).map(|(_, r)| (r.left, r.top, r.right, r.bottom))
 }
 
+/// The backend for a test window: as it is (only macOS has to stop the application being
+/// activated at launch; here an inactive window is enough).
+pub fn backend(s: slint::BackendSelector) -> slint::BackendSelector {
+    s
+}
+
 /// The window attributes for `MP_WINDOW=secondary` (the winit attributes hook; runs
 /// when the window is created, after the event loop made the process DPI aware, so the
 /// monitor rectangles are physical pixels).
