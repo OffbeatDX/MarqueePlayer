@@ -488,6 +488,8 @@ export component PlayerBar inherits Rectangle {
                     changed(v) => { Actions.scrub(v * Player.duration); }
                     released(v) => { Actions.seek(v * Player.duration); }
                     keyed(v) => { Actions.seek(v * Player.duration); }
+                    init => { Player.seek-width = self.width; }
+                    changed width => { Player.seek-width = self.width; }
                 }
                 Text {
                     width: 44px;

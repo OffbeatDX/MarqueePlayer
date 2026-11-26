@@ -546,7 +546,10 @@ export component AlbumTile inherits Rectangle {
 // A thin progress/volume slider. `value` 0..1, reports drags through `changed`.
 // A horizontal slider. While dragging it shows the pointer's position; after release it
 // keeps showing that target until `value` arrives within `settle` of it (or 1.5 s pass),
-// so a seek bar never jumps back to the old position while the seek lands.
+// so a seek bar never jumps back to the old position while the seek lands. The fill and the
+// thumb end on whole physical pixels: a value that moves less than one draws the same, so the
+// player bar's position need not be set (nor the window drawn) until it crosses one
+// (playback.rs, `bar_moves`).
 export component Slider inherits Rectangle {
     in property <float> value;
     in property <bool> enabled: true;
@@ -606,6 +609,7 @@ export component Slider inherits Rectangle {
     // What the slider shows, and whether that is the user's target rather than `value`.
     out property <float> shown-value: shown;
     out property <bool> active: ta.pressed || hold >= 0;
+    private property <length> end: round(root.width * clamp(root.shown, 0, 1) / 1phx) * 1phx;
     changed value => {
         if hold >= 0 && abs(value - hold) <= settle { hold = -1; }
     }
@@ -622,14 +626,14 @@ export component Slider inherits Rectangle {
         background: #ffffff26;
         Rectangle {
             x: 0;
-            width: parent.width * clamp(root.shown, 0, 1);
+            width: root.end;
             height: parent.height;
             border-radius: parent.border-radius;
             background: ta.has-hover || ta.pressed ? Theme.accent : Theme.text;
         }
     }
     Rectangle {
-        x: root.width * clamp(root.shown, 0, 1) - self.width / 2;
+        x: root.end - self.width / 2;
         y: (parent.height - self.height) / 2;
         width: 12px;
         height: 12px;

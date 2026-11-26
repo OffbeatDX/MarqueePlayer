@@ -277,12 +277,16 @@ album playing on Home, on Albums, on Now playing with the visualizer off, with t
 the page (the default look), with Halo behind it, and with the window hidden,
 `MP_BENCH_VIZ_SECS` each (`MP_BENCH_VIZ_CASES` picks phases by name). Each phase's start is
 logged with the time ("play-cost phase <name> starts at unix <t>"); its end with the process's
-CPU and memory, and under it every frame the window drew, whatever asked for it (the ticks' ten
-a second as much as the visualizer's sixty) and how long the renderer took over one
+CPU and memory, and under it every frame the window drew, whatever asked for it (the ticks'
+as much as the visualizer's sixty) and how long the renderer took over one
 (`bench-play-cost.txt`). On Apple silicon read the CPU figures with the machine's clock in mind:
 light periodic work runs several times slower there than the same work back to back, and the
 share of a core counts time, not work ([Visualizer](features/visualizer.md), "What the share of
-a core means on a Mac").
+a core means on a Mac"). The tick redraws the player bar only when its seek bar moves a
+physical pixel or the time turns over (`playback::bar_moves`); the album's tracks are 30 to
+36 s, which move it every tick, so the phases without the visualizer draw about ten frames a
+second whatever that saves on a long track (a folder of one's own with a longer "Night Shift"
+in `settings.json`'s `folders` shows it).
 
 `MP_BENCH=viz-look` (`bench/viz_look.rs`) runs on the visualizer's fixtures, which now have two more
 albums of one track each under a bright cover ("Paper": yellow, coral and sky on cream) and a

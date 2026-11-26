@@ -377,8 +377,13 @@ by Slint 11%, triangulating the bars 7%, the rest of a frame 5%); the main threa
 quarters of the process, Metal's submission thread a seventh, decoding and output a twentieth.
 Redrawing one pixel 60 times a second (`MP_VIZ_DRAW=minimal`) costs 29 to 30% of a core as
 shown, the same 40% of the GPU and the same 13 points more of WindowServer as the bars do;
-analysing without drawing (`none`) 10%. Playing on any page with nothing else moving is ten
+analysing without drawing (`none`) 10%. Playing on any page with nothing else moving was ten
 whole-window frames a second for the position (7 to 9% as shown, 2% at speed); hidden, 0.9%.
+Now the tick sets the seek bar's position only when its fill would end on another physical
+pixel (the fill is drawn to whole pixels, so a frame left out would have looked the same), and
+the time label as it turns over: with the window above, a bar about 1000 px wide, a 4 minute
+track draws 4.3 frames a second, a 3 hour one 1.0 (each was 9.9). The bench's tracks (30 to
+36 s) still move the bar a few pixels a tick, so its phases still draw 9.9.
 
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the

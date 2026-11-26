@@ -355,6 +355,9 @@ export global Player {
     in-out property <float> duration;
     in-out property <string> position-text: "0:00";
     in-out property <string> duration-text: "0:00";
+    // The seek bar's width (chrome.slint): the tick sets `position` only when the bar's fill
+    // would end on another physical pixel (playback.rs, `bar_moves`). 0: not known yet.
+    in-out property <length> seek-width;
     in-out property <float> volume: 0.8;
     in-out property <bool> muted;
     // "Off" / "Track" / "Album"

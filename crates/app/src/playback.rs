@@ -720,7 +720,12 @@ pub fn tick(st: &Rc<State>) {
         position = 0.0;
     } else if let Some(token) = s.token {
         let dur = s.duration.unwrap_or_else(|| st.queue.borrow().current().map_or(0.0, |i| i.track.duration));
-        p.set_position(s.position as f32);
+        // The seek bar draws only when it would move (`bar_moves`); just after a seek, a pause
+        // or a new track, every tick, as the slider's hold on a released target waits for it.
+        let bar_px = p.get_seek_width() * app.window().scale_factor();
+        if crate::ticker::settling() || bar_moves((p.get_position(), p.get_duration()), (s.position as f32, dur as f32), bar_px) {
+            p.set_position(s.position as f32);
+        }
         p.set_duration(dur as f32);
         p.set_position_text(format_time(s.position).into());
         p.set_duration_text(format_time(dur).into());
@@ -734,6 +739,20 @@ pub fn tick(st: &Rc<State>) {
     crate::sync_tray();
     st.save_settings_when_due();
     crate::session::autosave(st, false);
+}
+
+/// Whether the seek bar, `px` physical pixels wide, draws the position `to` (and its track's
+/// length) other than `from`: its fill ends on a whole pixel (widgets.slint's `Slider`), so a
+/// step within one changes nothing on screen and setting it would only redraw the window (on
+/// macOS the whole window, every time: ten a second while playing). Across a pixel it moves, as
+/// before; a long track crosses few a second (a 4 minute one on a 960 px bar, four; 3 hours,
+/// one in 11 s), a 30 s one about one a tick. An unknown width (0) or length: any change.
+fn bar_moves(from: (f32, f32), to: (f32, f32), px: f32) -> bool {
+    if from.1 != to.1 || px <= 0.0 || to.1 <= 0.0 {
+        return from != to;
+    }
+    let end = |position: f32| (px * (position / to.1).clamp(0.0, 1.0)).round();
+    end(from.0) != end(to.0)
 }
 
 /// Slack above elapsed wall-clock time when accepting a position step: allows small jitter
@@ -1078,6 +1097,52 @@ mod tests {
             }
         }
         assert_eq!(scrobbled, [1, 2, 3]);
+    }
+
+    #[test]
+    fn the_seek_bar_is_set_when_its_fill_would_end_on_another_pixel() {
+        use super::bar_moves;
+        // 240 s on 960 px: a pixel a quarter of a second.
+        assert!(!bar_moves((10.0, 240.0), (10.1, 240.0), 960.0));
+        assert!(bar_moves((10.0, 240.0), (10.25, 240.0), 960.0));
+        assert!(bar_moves((10.0, 240.0), (9.75, 240.0), 960.0), "back");
+        assert!(bar_moves((10.0, 240.0), (10.0, 180.0), 960.0), "another track's length");
+        assert!(bar_moves((10.0, 240.0), (10.1, 240.0), 0.0), "the width not known yet");
+        assert!(!bar_moves((10.0, 240.0), (10.0, 240.0), 0.0));
+        assert!(!bar_moves((240.0, 240.0), (241.0, 240.0), 960.0), "past the end");
+    }
+
+    /// Ticked every 100 ms, the bar as set ends where the exact position would have it at every
+    /// tick, for short and long tracks, narrow and wide bars and fractional scale factors (the
+    /// zoom); and the frames asked for drop with the track's length.
+    #[test]
+    fn the_seek_bar_as_set_always_draws_the_exact_position() {
+        use super::bar_moves;
+        let mut sets = Vec::new();
+        for duration in [20.0f32, 240.0, 3.0 * 3600.0] {
+            for px in [300.0f32, 960.0, 1234.5, 2600.0] {
+                let mut shown = (0.0f32, duration);
+                let mut n = 0;
+                for tick in 0..6000 {
+                    // Round again at the end (repeat).
+                    let now = ((tick as f32 * 0.1) % duration, duration);
+                    if bar_moves(shown, now, px) {
+                        shown = now;
+                        n += 1;
+                    }
+                    let end = |p: f32| (px * (p / duration).clamp(0.0, 1.0)).round();
+                    assert_eq!(end(shown.0), end(now.0), "{duration} s on {px} px, tick {tick}");
+                }
+                sets.push((duration, px, n));
+            }
+        }
+        // 10 minutes of ticks (6000): 20 s tracks move every tick; 4 minutes on 960 px, four
+        // times a second, on 300 px under one and a half; 3 hours on 960 px, 53 times in all.
+        let at = |d: f32, px: f32| sets.iter().find(|s| s.0 == d && s.1 == px).unwrap().2;
+        assert!(at(20.0, 300.0) >= 5900, "{sets:?}");
+        assert!((2350..=2450).contains(&at(240.0, 960.0)), "{sets:?}");
+        assert!((700..=800).contains(&at(240.0, 300.0)), "{sets:?}");
+        assert!((50..=60).contains(&at(3.0 * 3600.0, 960.0)), "{sets:?}");
     }
 
     #[test]

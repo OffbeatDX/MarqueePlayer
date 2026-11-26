@@ -5,7 +5,9 @@
 //! runs a tick on the UI thread for each one (`forward`). The timer is only for what
 //! moves by itself, and runs no more often than that needs:
 //!
-//! - playing, window shown: every 100 ms (the position, play counting);
+//! - playing, window shown: every 100 ms (the position, play counting); the seek bar is set
+//!   only when it would move a physical pixel (`playback::bar_moves`), so on a long track most
+//!   ticks draw nothing;
 //! - playing, window hidden, minimized or covered: every 500 ms (play counting, session saves);
 //! - not playing, window shown: once a second (window placement, saves);
 //! - not playing, hidden: not at all.
@@ -122,9 +124,15 @@ fn set_interval(interval: Option<Duration>) {
     });
 }
 
+/// Within `SETTLE` of a kick: playback has just changed (a seek, a pause, a new track), so the
+/// tick shows the exact position, whether or not the seek bar moves a pixel (`playback::tick`).
+pub fn settling() -> bool {
+    FAST_UNTIL.with(|f| f.get().is_some_and(|t| Instant::now() < t))
+}
+
 /// Pick the rate for what is going on now (see the module doc).
 fn reschedule() {
-    let settling = FAST_UNTIL.with(|f| f.get().is_some_and(|t| Instant::now() < t));
+    let settling = settling();
     let (playing, shown) = state::with(|st| {
         let playing = st.player.status().state == PlayState::Playing;
         // Minimized to the taskbar is still "visible" to the toolkit, but nothing shows.
