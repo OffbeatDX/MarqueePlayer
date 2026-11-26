@@ -859,6 +859,7 @@ pub fn refresh_queue_tracks(st: &Rc<State>) {
     };
     let (any, current) = st.queue.borrow_mut().update_tracks(|id| fresh.get(&id).cloned());
     if any {
+        st.models.queue.invalidate();
         refresh_queue(st);
     }
     if current {
@@ -868,12 +869,17 @@ pub fn refresh_queue_tracks(st: &Rc<State>) {
 
 pub fn refresh_queue(st: &Rc<State>) {
     let Some(app) = st.app.upgrade() else { return };
-    let q = st.queue.borrow();
-    st.models.queue.set(q.items(), q.current_index());
     let store = app.global::<QueueStore>();
-    store.set_rows(ModelRc::from(st.models.queue.clone()));
-    store.set_current(q.current_index().map_or(-1, |i| i as i32));
-    store.set_summary(queue_summary(q.items().len(), q.items().iter().map(|i| i.track.duration).sum()).into());
+    if st.models.queue.refresh() {
+        let summary = {
+            let q = st.queue.borrow();
+            queue_summary(q.items().len(), q.items().iter().map(|i| i.track.duration).sum())
+        };
+        store.set_rows(ModelRc::from(st.models.queue.clone()));
+        store.set_summary(summary.into());
+    }
+    let current = st.queue.borrow().current_index();
+    store.set_current(current.map_or(-1, |i| i as i32));
 }
 
 /// "1 track · 4 min", "180 tracks · 32 h 24 min"; "" for an empty queue.

@@ -168,8 +168,11 @@ export component Sidebar inherits Rectangle {
         AutoscrollBlock { }
         Rectangle {
             // Frosted glass: blurs the page scrolling behind it (Skia), tinted.
+            // When pinned, the content shrinks clear of the sidebar so only the pre-blurred
+            // backdrop sits behind it; skipping live backdrop-blur saves a full-height pass
+            // every frame with no visual change.
             background: Theme.glass-fill;
-            backdrop-blur: Theme.glass-radius-blur;
+            backdrop-blur: Nav.sidebar-pinned ? 0px : Theme.glass-radius-blur;
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: Nav.sidebar-pinned ? 0px : 28px;
@@ -636,7 +639,8 @@ export component QueueSidebar inherits Rectangle {
         AutoscrollBlock { }
         Rectangle {
             background: Theme.glass-fill;
-            backdrop-blur: Theme.glass-radius-blur;
+            // When pinned, content clears the queue panel so only the pre-blurred backdrop is behind it.
+            backdrop-blur: Nav.queue-pinned ? 0px : Theme.glass-radius-blur;
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: Nav.queue-pinned ? 0px : 28px;

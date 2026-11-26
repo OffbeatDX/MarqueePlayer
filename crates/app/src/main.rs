@@ -206,6 +206,7 @@ fn run() {
     // The shared equalizer setting until the device is known (eq::install picks its own).
     engine.set_eq(&eq::params(&settings.equalizer.all));
 
+    let queue = Rc::new(RefCell::default());
     let st = Rc::new(State {
         app: app.as_weak(),
         paths: paths.clone(),
@@ -217,7 +218,7 @@ fn run() {
         art,
         player: engine,
         events,
-        queue: RefCell::default(),
+        queue: queue.clone(),
         tokens: RefCell::default(),
         next_token: Cell::new(0),
         requested_next: Cell::new(None),
@@ -242,7 +243,7 @@ fn run() {
             search_albums: AlbumModel::new(Vec::new()),
             artists: AlbumModel::new(Vec::new()),
             groups: AlbumModel::new(Vec::new()),
-            queue: QueueModel::new(),
+            queue: QueueModel::new(queue),
         },
         open_album: Cell::new(None),
         open_playlist: Cell::new(None),

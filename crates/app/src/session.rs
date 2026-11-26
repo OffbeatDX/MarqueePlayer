@@ -126,6 +126,7 @@ pub fn restore(st: &Rc<State>) {
     let revision = q.revision();
     let index = q.current_index();
     *st.queue.borrow_mut() = q;
+    st.models.queue.invalidate();
     let seconds = current.as_ref().map_or(0.0, |c| saved.seconds.clamp(0.0, c.track.duration.max(0.0)));
     if let Some(item) = &current {
         st.resume.set(Some((item.uid, seconds)));

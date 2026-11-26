@@ -149,7 +149,7 @@ pub fn init(art: ArtCache) {
                         None => image::open(&job.path),
                     };
                     let decoded = opened.ok().map(|img| {
-                        let rgb = img.to_rgb8();
+                        let rgb = img.into_rgb8();
                         SharedPixelBuffer::<Rgb8Pixel>::clone_from_slice(rgb.as_raw(), rgb.width(), rgb.height())
                     });
                     #[cfg(feature = "bench")]
