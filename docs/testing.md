@@ -561,6 +561,20 @@ one run (its own measured work +0.15 ms of the +0.19 ms found) and +6.7%, within
 rounds ±13.6% apart), in another. So with another app at work beside it, two rounds resolve a
 change of about 10% only some of the time; a change of 15% or more, reliably; under 7%, never.
 
+On a quiet machine it does far better. The same no-change run of all five scenes with nothing
+else at work (2026-11-26): the app's CPU differed by -0.1% to -0.8%, its rounds ±0.3% (halo) to
+±1.7% (bars, grid) apart, every scene within the noise. The floor stays at 7% by default, the
+figure a shared machine needs; `--floor 3` is defensible when the run's own "other work" line
+is low on both sides and the rounds are within a percent or two of each other (the first real
+comparison, the branch `macos-perf` against `master`, read bars -6.9% with its rounds ±0.9%
+apart: a real difference the default floor called noise).
+
+**A rate changed on purpose** (`--rates-differ`): where the change draws at another rate than
+the base (30 frames a second on the battery against 60), the cost of a frame says nothing and
+the lower rate would be taken for a covered window. With this the scene's cost a second is
+compared (the app's CPU as a share of a core, the window server, the GPU, watts), and a side
+is refused only if it drew no frames at all.
+
 **Other work on the machine.** The busy processes hold the clock, but they do not make the
 measure immune to other work: with a `cargo build` looping in another folder, the same build read
 19% dearer on bars, the window server 18%. So over each span the command reads the whole machine's
