@@ -25,6 +25,10 @@ pub const TRAY_ANIMATES: bool = true;
 /// only macOS draws its fills without at 2x).
 pub const VIZ_FILLS_ALIASED_AT_2X: bool = false;
 
+/// The seek bar is set at every physical pixel it moves (`playback::bar_due`: no step; only
+/// macOS, where any change redraws the whole window, sets it with the time label).
+pub const SEEK_STEP: f32 = 0.0;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia-wgpu", "Skia (wgpu)")];
 
 /// The theme's default font (theme.toml, `[type] font_family`).

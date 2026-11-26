@@ -283,10 +283,11 @@ as much as the visualizer's sixty) and how long the renderer took over one
 light periodic work runs several times slower there than the same work back to back, and the
 share of a core counts time, not work ([Visualizer](features/visualizer.md), "What the share of
 a core means on a Mac"). The tick redraws the player bar only when its seek bar moves a
-physical pixel or the time turns over (`playback::bar_moves`); the album's tracks are 30 to
-36 s, which move it every tick, so the phases without the visualizer draw about ten frames a
-second whatever that saves on a long track (a folder of one's own with a longer "Night Shift"
-in `settings.json`'s `folders` shows it).
+physical pixel or the time turns over (`playback::bar_moves`), and on macOS with the time or 3
+logical pixels on (`playback::bar_due`); the album's tracks are 30 to 36 s, which move it every
+tick, so the phases without the visualizer draw about ten frames a second (about four on
+macOS) whatever that saves on a long track (a folder of one's own with a longer "Night Shift"
+in `settings.json`'s `folders` shows it: a 4 minute one draws one frame a second on macOS).
 
 `MP_BENCH=viz-look` (`bench/viz_look.rs`) runs on the visualizer's fixtures, which now have two more
 albums of one track each under a bright cover ("Paper": yellow, coral and sky on cream) and a

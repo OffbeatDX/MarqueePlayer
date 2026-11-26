@@ -6,8 +6,9 @@
 //! moves by itself, and runs no more often than that needs:
 //!
 //! - playing, window shown: every 100 ms (the position, play counting); the seek bar is set
-//!   only when it would move a physical pixel (`playback::bar_moves`), so on a long track most
-//!   ticks draw nothing;
+//!   only when it would move a physical pixel (`playback::bar_moves`), and on macOS with the
+//!   time label or a few pixels on (`playback::bar_due`), so on a long track most ticks draw
+//!   nothing;
 //! - playing, window hidden, minimized or covered: every 500 ms (play counting, session saves);
 //! - not playing, window shown: once a second (window placement, saves);
 //! - not playing, hidden: not at all.

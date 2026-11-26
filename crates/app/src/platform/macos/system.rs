@@ -39,6 +39,16 @@ pub const TRAY_ANIMATES: bool = false;
 /// display their stair steps are hard to see). The line and its glow keep it.
 pub const VIZ_FILLS_ALIASED_AT_2X: bool = true;
 
+/// The most the seek bar may lag the position while playing, in logical pixels, before the
+/// tick sets it between two turns of the time label (`playback::bar_due`). Any change redraws
+/// the whole window here (Slint's Skia renderer on Metal has no partial rendering), so a bar set
+/// at every physical pixel drew four or five whole frames a second on a track of some minutes;
+/// set with the label, which draws a frame a second anyway, it is that one (measured, a 4 minute
+/// track in a zoomed window: 9.9 frames a second, 4.4 at every pixel, 1.0 so). A short track,
+/// whose bar moves faster than this in a second, steps by it. A seek, a pause, a drag and a new
+/// track show at once, as before.
+pub const SEEK_STEP: f32 = 3.0;
+
 /// The theme's family as it can be drawn here: as named (Core Text finds a fallback).
 pub fn font_here(family: &str) -> String {
     family.to_owned()

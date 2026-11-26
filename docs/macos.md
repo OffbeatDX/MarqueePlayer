@@ -172,7 +172,10 @@ The owner's decisions for the port, and how the code carries them out:
   file's extended attributes, as on Linux.
 - **The Finder, links, the clipboard** (`platform/macos/shell.rs`): "Show in Finder"
   (`open -R`), folders and web pages with `open`, the general pasteboard for Copy and Paste.
-- **Rendering**: Skia on Metal. **Fonts**: the system's UI font (San Francisco) unless
+- **Rendering**: Skia on Metal. Any change draws the whole window again there, so while a
+  track plays the seek bar moves with the time label, once a second, rather than at every
+  pixel (a short track, whose bar would jump more than 3 logical pixels in a second, steps by
+  that; `platform::system::SEEK_STEP`). **Fonts**: the system's UI font (San Francisco) unless
   `theme.toml`'s `font_family` names another.
 - **Words**: "Show in Finder", "Exclusive mode" (not available), "Open at login"
   (`platform::Words`).

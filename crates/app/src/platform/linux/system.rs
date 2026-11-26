@@ -46,6 +46,10 @@ pub const TRAY_ANIMATES: bool = true;
 /// only macOS draws its fills without at 2x).
 pub const VIZ_FILLS_ALIASED_AT_2X: bool = false;
 
+/// The seek bar is set at every physical pixel it moves (`playback::bar_due`: no step; only
+/// macOS, where any change redraws the whole window, sets it with the time label).
+pub const SEEK_STEP: f32 = 0.0;
+
 pub const RENDERERS: &[(&str, &str)] = &[("skia", "Skia (OpenGL, else Vulkan through wgpu, else software)")];
 
 /// The theme's family as it can be drawn here: as named (fontconfig finds a fallback).

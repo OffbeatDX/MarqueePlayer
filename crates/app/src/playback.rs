@@ -720,10 +720,12 @@ pub fn tick(st: &Rc<State>) {
         position = 0.0;
     } else if let Some(token) = s.token {
         let dur = s.duration.unwrap_or_else(|| st.queue.borrow().current().map_or(0.0, |i| i.track.duration));
-        // The seek bar draws only when it would move (`bar_moves`); just after a seek, a pause
-        // or a new track, every tick, as the slider's hold on a released target waits for it.
-        let bar_px = p.get_seek_width() * app.window().scale_factor();
-        if crate::ticker::settling() || bar_moves((p.get_position(), p.get_duration()), (s.position as f32, dur as f32), bar_px) {
+        // The seek bar draws only when it would move (`bar_moves`), and on macOS with the time
+        // label or a few pixels on (`bar_due`); just after a seek, a pause or a new track, every
+        // tick, as the slider's hold on a released target waits for it.
+        let scale = app.window().scale_factor();
+        let (bar_px, step_px) = (p.get_seek_width() * scale, crate::platform::system::SEEK_STEP * scale);
+        if crate::ticker::settling() || bar_due((p.get_position(), p.get_duration()), (s.position as f32, dur as f32), bar_px, step_px) {
             p.set_position(s.position as f32);
         }
         p.set_duration(dur as f32);
@@ -753,6 +755,23 @@ fn bar_moves(from: (f32, f32), to: (f32, f32), px: f32) -> bool {
     }
     let end = |position: f32| (px * (position / to.1).clamp(0.0, 1.0)).round();
     end(from.0) != end(to.0)
+}
+
+/// Whether the tick sets the seek bar now: when it would move (`bar_moves`) and, where every
+/// frame is the whole window drawn again (`platform::system::SEEK_STEP`, macOS; `step` is it in
+/// physical pixels, 0 elsewhere: every pixel, as `bar_moves`), not for each pixel but with the
+/// time label as its second turns over (that frame is drawn anyway), or once the bar is `step`
+/// behind (a short track, a wide bar). So a track of some minutes draws once a second where a
+/// pixel at a time drew four or five. Back (a repeat, a seek) or another length: at once.
+fn bar_due(from: (f32, f32), to: (f32, f32), px: f32, step: f32) -> bool {
+    if !bar_moves(from, to, px) {
+        return false;
+    }
+    if step <= 0.0 || from.1 != to.1 || px <= 0.0 || to.1 <= 0.0 {
+        return true;
+    }
+    let behind = px * (to.0 - from.0) / to.1;
+    !(0.0..step).contains(&behind) || to.0.floor() != from.0.floor()
 }
 
 /// Slack above elapsed wall-clock time when accepting a position step: allows small jitter
@@ -1143,6 +1162,55 @@ mod tests {
         assert!((2350..=2450).contains(&at(240.0, 960.0)), "{sets:?}");
         assert!((700..=800).contains(&at(240.0, 300.0)), "{sets:?}");
         assert!((50..=60).contains(&at(3.0 * 3600.0, 960.0)), "{sets:?}");
+    }
+
+    /// With a step (macOS: 6 physical px at a scale factor of 2), ticked every 100 ms: a track
+    /// of some minutes sets the bar once a second, on the tick its second turns over; a short
+    /// one every step; the bar is never a step or a second behind; back is at once. Without one
+    /// (Windows, Linux) it is `bar_moves` and nothing else.
+    #[test]
+    fn the_seek_bar_steps_with_the_time_label_where_a_frame_is_the_whole_window() {
+        use super::{bar_due, bar_moves};
+        let run = |duration: f32, px: f32, step: f32| {
+            let mut shown = (0.0f32, duration);
+            let mut sets = 0;
+            for tick in 1..3000 {
+                let now = (tick as f32 * 0.1, duration);
+                if now.0 >= duration {
+                    break;
+                }
+                let due = bar_due(shown, now, px, step);
+                if step == 0.0 {
+                    assert_eq!(due, bar_moves(shown, now, px), "{duration} s on {px} px, tick {tick}");
+                }
+                if due {
+                    shown = now;
+                    sets += 1;
+                }
+                let behind = px * (now.0 - shown.0) / duration;
+                assert!(behind < step.max(1.0), "{duration} s on {px} px, tick {tick}: {behind} px behind");
+                // A second behind only where that is under a pixel (nothing to draw).
+                assert!(now.0.floor() == shown.0.floor() || !bar_moves(shown, now, px), "{duration} s on {px} px, tick {tick}: a second behind");
+            }
+            sets
+        };
+        // 4 minutes on 900 px: 3.75 px a second, under the step: once a second (239 in 240 s),
+        // where every pixel is 898.
+        assert!((235..=240).contains(&run(240.0, 900.0, 6.0)), "{}", run(240.0, 900.0, 6.0));
+        assert!((880..=900).contains(&run(240.0, 900.0, 0.0)), "{}", run(240.0, 900.0, 0.0));
+        // 30 s on 900 px: 3 px a tick, so every second or third tick (two make the step or fall
+        // a hair short of it), every tick without.
+        assert!((100..=155).contains(&run(30.0, 900.0, 6.0)), "{}", run(30.0, 900.0, 6.0));
+        assert!((295..=300).contains(&run(30.0, 900.0, 0.0)), "{}", run(30.0, 900.0, 0.0));
+        // 3 hours: a pixel in 12 s, set as it is crossed, step or none.
+        assert_eq!(run(10_800.0, 900.0, 6.0), run(10_800.0, 900.0, 0.0));
+        // Back, another length, a width not known: at once.
+        assert!(bar_due((100.0, 240.0), (99.7, 240.0), 900.0, 6.0), "back within the second");
+        assert!(bar_due((100.0, 240.0), (0.0, 240.0), 900.0, 6.0), "round again");
+        assert!(bar_due((100.2, 240.0), (100.3, 200.0), 900.0, 6.0), "another track's length");
+        assert!(bar_due((100.2, 240.0), (100.3, 240.0), 0.0, 6.0), "the width not known yet");
+        assert!(!bar_due((100.2, 240.0), (100.6, 240.0), 900.0, 6.0), "a pixel and a half on, the same second");
+        assert!(bar_due((100.2, 240.0), (101.0, 240.0), 900.0, 6.0), "the second turns over");
     }
 
     #[test]

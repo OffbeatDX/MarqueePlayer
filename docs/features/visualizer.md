@@ -383,7 +383,13 @@ Now the tick sets the seek bar's position only when its fill would end on anothe
 pixel (the fill is drawn to whole pixels, so a frame left out would have looked the same), and
 the time label as it turns over: with the window above, a bar about 1000 px wide, a 4 minute
 track draws 4.3 frames a second, a 3 hour one 1.0 (each was 9.9). The bench's tracks (30 to
-36 s) still move the bar a few pixels a tick, so its phases still draw 9.9.
+36 s) still move the bar a few pixels a tick, so its phases still draw 9.9. That much is the
+same on every system. On macOS alone (`platform::system::SEEK_STEP`, `playback::bar_due`) the
+bar is not set at every pixel either but with the time label as its second turns over, a frame
+that is drawn anyway, or once it is 3 logical pixels behind: the 4 minute track draws 1.0
+frame a second (4.4 at every pixel), the bench's tracks 3.9. What that changes to the eye: on a
+track of some minutes the bar moves once a second, two to four physical pixels at a time, where
+it moved a pixel four times a second. A seek, a drag, a pause and a new track show at once.
 
 **Prism.** A soundwave look with a reflection: a continuous line over the spectrum in the
 prism gradient, coloured by height, a soft fill under it and a mirrored area below, with the
