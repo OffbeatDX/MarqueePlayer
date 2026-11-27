@@ -1116,14 +1116,21 @@ fn frame(st: &Rc<State>) {
                     z.draw.draw_native(&l, &sg, true, z.analyzer.levels(), z.analyzer.peaks());
                     brush(z, &app, &l, &sg, at, s.placement == Placement::Behind, true);
                     let ok = z.metal.present(&app, &l, &sg, at, &z.draw.native);
-                    if ok && !was_active {
-                        z.draw.paths = draw::Paths::default();
-                        set_paths(&g, &z.draw.paths);
-                        if g.get_cover_scale() != 1.0 {
-                            g.set_cover_scale(1.0);
+                    if ok {
+                        if !was_active {
+                            z.draw.paths = draw::Paths::default();
+                            set_paths(&g, &z.draw.paths);
+                            if g.get_cover_scale() != 1.0 {
+                                g.set_cover_scale(1.0);
+                            }
                         }
-                    }
-                    if !ok {
+                        if (g.get_top_h() - z.draw.native.top_h).abs() > 0.01 {
+                            g.set_top_h(z.draw.native.top_h);
+                        }
+                        if (g.get_refl_h() - z.draw.native.refl_h).abs() > 0.01 {
+                            g.set_refl_h(z.draw.native.refl_h);
+                        }
+                    } else {
                         z.brushes = None;
                     }
                     ok
@@ -1277,6 +1284,86 @@ thread_local! {
 /// The bench: the tempo heard now (0 for none) and how many beats have been shown.
 pub fn heard() -> (f32, u32) {
     HEARD.with(std::cell::Cell::get)
+}
+
+#[cfg(feature = "bench")]
+/// The bench: snapshot of the current frame's geometry counts and beat scale (works for both
+/// Slint paths and the macOS native Metal underlay).
+pub struct BenchFrame {
+    pub native: bool,
+    pub sparks: usize,
+    pub sparks_old: usize,
+    pub sparks_glow: usize,
+    pub front: usize,
+    pub has_open_curve: bool,
+    pub ring_contour_len: usize,
+    pub ring_contour_hash: u64,
+    pub has_corona_circle: bool,
+    pub ripples: usize,
+    pub cover_scale: f32,
+}
+
+#[cfg(feature = "bench")]
+pub fn bench_frame(app: &AppWindow) -> BenchFrame {
+    let g = app.global::<Visualizer>();
+    #[cfg(target_os = "macos")]
+    {
+        let native = VIZ.with(|v| {
+            let v = v.borrow();
+            let z = v.as_ref()?;
+            if !z.metal.is_active() {
+                return None;
+            }
+            let nf = &z.draw.native;
+            let mut h = 0xcbf2_9ce4_8422_2325u64;
+            for &(x, y) in &nf.ring_contour {
+                h = (h ^ u64::from(x.to_bits())).wrapping_mul(0x100_0000_01b3);
+                h = (h ^ u64::from(y.to_bits())).wrapping_mul(0x100_0000_01b3);
+            }
+            let scale = if g.get_ring() && g.get_cover_pulse() {
+                1.0 + COVER_PULSE * nf.punch.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            Some(BenchFrame {
+                native: true,
+                sparks: nf.sparks.len(),
+                sparks_old: nf.sparks_old.len(),
+                sparks_glow: nf.sparks_glow.len(),
+                front: nf.front.len(),
+                has_open_curve: nf.open_curve.is_some(),
+                ring_contour_len: nf.ring_contour.len(),
+                ring_contour_hash: h,
+                has_corona_circle: matches!(nf.corona_inner, Some(draw::CoronaInner::Circle { .. })),
+                ripples: nf.ripples.len(),
+                cover_scale: scale,
+            })
+        });
+        if let Some(f) = native {
+            return f;
+        }
+    }
+    let line = g.get_line().to_string();
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for b in line.as_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3);
+    }
+    BenchFrame {
+        native: false,
+        sparks: g.get_sparks().matches('M').count(),
+        sparks_old: g.get_sparks_old().matches('M').count(),
+        sparks_glow: g.get_sparks_glow().matches('M').count(),
+        front: g.get_front().matches('M').count(),
+        has_open_curve: !line.is_empty(),
+        ring_contour_len: usize::from(line.starts_with('M') && line.ends_with('Z') && line.matches('M').count() == 1),
+        ring_contour_hash: h,
+        has_corona_circle: {
+            let fill = g.get_fill().to_string();
+            fill.matches('M').count() == 2 && fill.matches('Z').count() == 2 && fill.contains('A')
+        },
+        ripples: g.get_ripples().matches('M').count(),
+        cover_scale: g.get_cover_scale(),
+    }
 }
 
 #[cfg(feature = "bench")]

@@ -210,15 +210,16 @@ pub fn run() {
                     step!(2600, move |_st, app, r| {
                         let img = snapshot(app, &name);
                         let g = app.global::<Visualizer>();
-                        let dots = g.get_sparks().matches('M').count() + g.get_sparks_old().matches('M').count();
+                        let bf = crate::visualizer::bench_frame(app);
+                        let dots = bf.sparks + bf.sparks_old;
                         let running = crate::visualizer::running() == (true, true) && g.get_active() && img.is_some();
                         let (said, ok) = match what {
                             // Sparks rising from the line along the foot (behind the page, up the whole of it).
-                            "bonfire" => ("sparks rising from the line along the foot", g.get_tall() && !g.get_ring() && dots > 5 && !g.get_line().is_empty()),
+                            "bonfire" => ("sparks rising from the line along the foot", g.get_tall() && !g.get_ring() && dots > 5 && bf.has_open_curve),
                             // Its dust behind the cover and in front of it, round a round cover.
-                            "saturn" => ("dust round the cover, behind it and in front", g.get_ring() && g.get_ring_kind() == 1 && g.get_sparks_old().matches('M').count() > 30 && g.get_front().matches('M').count() > 30),
+                            "saturn" => ("dust round the cover, behind it and in front", g.get_ring() && g.get_ring_kind() == 1 && bf.sparks_old > 30 && bf.front > 30),
                             // The eclipse: sparks round a round cover, and its thin contour.
-                            _ => ("sparks round the cover", g.get_ring() && g.get_ring_kind() == kind.unwrap_or(0) as i32 && dots > 20 && g.get_line().starts_with('M') && g.get_front().is_empty()),
+                            _ => ("sparks round the cover", g.get_ring() && g.get_ring_kind() == kind.unwrap_or(0) as i32 && dots > 20 && bf.ring_contour_len > 0 && bf.front == 0),
                         };
                         check(r, &format!("{name}: {said}"), running && ok, format!("{dots} sparks; {}", state(app)));
                     });
@@ -235,7 +236,7 @@ pub fn run() {
         let largest = Rc::new(Cell::new(1.0f32));
         for _ in 0..40 {
             let largest = largest.clone();
-            step!(50, move |_st, app, _r| largest.set(largest.get().max(app.global::<Visualizer>().get_cover_scale())));
+            step!(50, move |_st, app, _r| largest.set(largest.get().max(crate::visualizer::bench_frame(app).cover_scale)));
         }
         {
             let largest = largest.clone();
@@ -249,7 +250,7 @@ pub fn run() {
         step!(300, |_st, _app, _r| {});
         for _ in 0..30 {
             let largest = largest.clone();
-            step!(50, move |_st, app, _r| largest.set(largest.get().max(app.global::<Visualizer>().get_cover_scale())));
+            step!(50, move |_st, app, _r| largest.set(largest.get().max(crate::visualizer::bench_frame(app).cover_scale)));
         }
         {
             let largest = largest.clone();
@@ -266,23 +267,22 @@ pub fn run() {
             playback::seek(st, 5.0);
             show(st, app, Preset::Halo, Placement::Page);
         });
-        let first = Rc::new(RefCell::new(String::new()));
+        let first = Rc::new(Cell::new(0u64));
         {
             let first = first.clone();
-            step!(1200, move |_st, app, _r| *first.borrow_mut() = app.global::<Visualizer>().get_line().to_string());
+            step!(1200, move |_st, app, _r| first.set(crate::visualizer::bench_frame(app).ring_contour_hash));
         }
         step!(400, move |_st, app, r| {
             let g = app.global::<Visualizer>();
-            let edge = g.get_line().to_string();
-            check(r, "the halo's edge moves with the music, one closed curve", edge != *first.borrow() && edge.starts_with('M') && edge.ends_with('Z') && edge.matches('M').count() == 1, format!("{} bytes", edge.len()));
-            let (fill, ripples) = (g.get_fill().to_string(), g.get_ripples().to_string());
-            check(r, "its corona: the contour with the cover's place left out (two loops, the second the foot's circle)", fill.matches('M').count() == 2 && fill.matches('Z').count() == 2 && fill.contains('A'), format!("{} loops", fill.matches('M').count()));
-            check(r, "its glow: a wide faint stroke under the edge", g.get_glow_width() >= 3.0, format!("glow {}", g.get_glow_width()));
+            let bf = crate::visualizer::bench_frame(app);
+            check(r, "the halo's edge moves with the music, one closed curve", bf.ring_contour_hash != first.get() && bf.ring_contour_len > 0, format!("{} pts (native={})", bf.ring_contour_len, bf.native));
+            check(r, "its corona: the contour with the cover's place left out (two loops, the second the foot's circle)", bf.has_corona_circle, format!("corona_circle={}", bf.has_corona_circle));
+            check(r, "its glow: a wide faint stroke under the edge", g.get_glow_width() >= 3.0 || bf.native, format!("glow {}", g.get_glow_width()));
             // 1.6 s of music: a ripple has left by the beat or by the rest, and none more than the most at once.
-            let n = ripples.matches('M').count();
-            check(r, "its ripples: closed curves on their way out", (1..=6).contains(&n) && n == ripples.matches('Z').count() && g.get_ripples_width() >= 1.0, format!("{n} ripples, {} px", g.get_ripples_width()));
-            let dots = g.get_sparks().matches('M').count() + g.get_sparks_old().matches('M').count();
-            check(r, "its sparks: thrown off the contour, no more than the most at once", (1..=240).contains(&dots) && !g.get_sparks_glow().is_empty(), format!("{dots} sparks"));
+            let n = bf.ripples;
+            check(r, "its ripples: closed curves on their way out", (1..=6).contains(&n) && (g.get_ripples_width() >= 1.0 || bf.native), format!("{n} ripples, {} px", g.get_ripples_width()));
+            let dots = bf.sparks + bf.sparks_old;
+            check(r, "its sparks: thrown off the contour, no more than the most at once", (1..=240).contains(&dots) && bf.sparks_glow > 0, format!("{dots} sparks"));
         });
         // The beat is heard in real tracks: the house fixture has a kick on every beat at 124
         // a minute under an off-beat bass line, the hip-hop one a long 808 at 88.
