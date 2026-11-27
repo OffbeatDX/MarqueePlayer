@@ -191,6 +191,7 @@ pub struct Paths {
     pub front_glow: String,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub struct BarQuad {
     pub x: f32,
@@ -200,6 +201,7 @@ pub struct BarQuad {
     pub top_radius: f32,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub struct Dot {
     pub x: f32,
@@ -216,6 +218,7 @@ pub enum DotLayer {
     FrontGlow,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct OpenCurve {
     pub pts: Vec<(f32, f32)>,
@@ -224,6 +227,7 @@ pub struct OpenCurve {
     pub baseline: f32,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub struct ReflCurve {
     pub pts: Vec<(f32, f32)>,
@@ -233,6 +237,7 @@ pub struct ReflCurve {
     pub smooth: bool,
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub enum CoronaInner {
     Circle { cx: f32, cy: f32, r: f32 },
@@ -241,6 +246,7 @@ pub enum CoronaInner {
 
 /// Structured GPU-ready geometry for one visualizer frame (used by the native Metal underlay
 /// to skip SVG formatting and Lyon parsing while sharing 100% of `draw.rs` physics and layout).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Clone, Debug, Default)]
 pub struct NativeFrame {
     pub top_h: f32,
