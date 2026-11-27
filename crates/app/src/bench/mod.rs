@@ -194,7 +194,9 @@ pub(crate) fn out_dir() -> PathBuf {
 
 pub(crate) fn snapshot(app: &AppWindow, name: &str) -> Option<image::RgbaImage> {
     let buf = app.window().take_snapshot().ok()?;
-    let img = image::RgbaImage::from_raw(buf.width(), buf.height(), buf.as_bytes().to_vec())?;
+    let mut img = image::RgbaImage::from_raw(buf.width(), buf.height(), buf.as_bytes().to_vec())?;
+    #[cfg(target_os = "macos")]
+    crate::visualizer::composite_snapshot(app, &mut img);
     let path = out_dir().join(format!("{name}.png"));
     if let Err(e) = img.save(&path) {
         log::warn!("snapshot {name}: {e}");

@@ -28,6 +28,8 @@ pub(crate) mod beat;
 mod meter;
 pub(crate) mod draw;
 pub(crate) mod look;
+#[cfg(target_os = "macos")]
+mod metal;
 pub(crate) mod presets;
 pub(crate) mod share;
 
@@ -206,6 +208,8 @@ struct Viz {
     palette_gen: u64,
     /// For the bench: (frame start, time spent on it), while recording.
     stats: Option<Vec<(Instant, Duration)>>,
+    #[cfg(target_os = "macos")]
+    metal: metal::Presenter,
 }
 
 thread_local! {
@@ -229,6 +233,8 @@ pub fn install(st: &Rc<State>) {
             palette_of: None,
             palette_gen: 0,
             stats: None,
+            #[cfg(target_os = "macos")]
+            metal: metal::Presenter::default(),
         });
     });
     if let Some(app) = st.app.upgrade() {
@@ -724,6 +730,11 @@ pub fn wake(st: &Rc<State>) {
     VIZ.with(|v| {
         let mut v = v.borrow_mut();
         let Some(z) = v.as_mut() else { return };
+        #[cfg(target_os = "macos")]
+        if z.metal.is_active() && !native_allowed(&app, at) {
+            z.metal.remove(&app);
+            z.brushes = None;
+        }
         match at {
             Some(_) if play && !z.timer.running() => {
                 z.tap.set_active(true);
@@ -771,6 +782,11 @@ pub fn power_changed(st: &Rc<State>) {
 }
 
 fn stop(z: &mut Viz, app: &AppWindow) {
+    #[cfg(target_os = "macos")]
+    if z.metal.is_active() {
+        z.metal.remove(app);
+        z.brushes = None;
+    }
     z.timer.stop();
     z.tap.set_active(false);
     z.analyzer.reset();
@@ -895,8 +911,27 @@ fn stage_of(app: &AppWindow) -> Stage {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn native_allowed(app: &AppWindow, at: Option<Where>) -> bool {
+    metal::enabled()
+        && matches!(at, Some(Where::Behind | Where::Panel | Where::Page))
+        && app.get_viz_underlay_ok()
+        && app.get_page_fade() >= 1.0
+}
+
+#[cfg(all(target_os = "macos", feature = "bench"))]
+pub(crate) fn composite_snapshot(app: &AppWindow, img: &mut image::RgbaImage) {
+    VIZ.with(|v| {
+        if let Some(z) = v.borrow_mut().as_mut()
+            && z.metal.is_active()
+        {
+            z.metal.composite_snapshot(app, img);
+        }
+    });
+}
+
 /// The brushes for this frame, rebuilt when what they depend on changed.
-fn brush(z: &mut Viz, app: &AppWindow, l: &Look, s: &Stage, at: Where, behind: bool) {
+fn brush(z: &mut Viz, app: &AppWindow, l: &Look, s: &Stage, at: Where, behind: bool, native: bool) {
     let accent = rgb(app.global::<Theme>().get_accent());
     let alpha = l.strength(at == Where::Behind || (at == Where::Preview && behind));
     // Behind the page the reflection lies under the player bar, whose glass lets through
@@ -912,12 +947,20 @@ fn brush(z: &mut Viz, app: &AppWindow, l: &Look, s: &Stage, at: Where, behind: b
     } else {
         l
     };
-    let key = BrushKey { look: l.clone(), stage: *s, top: z.draw.paths.top_h, refl: z.draw.paths.refl_h, accent, palette: z.palette.clone(), alpha };
+    let (top, refl) = if native { (z.draw.native.top_h, z.draw.native.refl_h) } else { (z.draw.paths.top_h, z.draw.paths.refl_h) };
+    let key = BrushKey { look: l.clone(), stage: *s, top, refl, accent, palette: z.palette.clone(), alpha };
     if z.brushes.as_ref() == Some(&key) {
         return;
     }
     let stops = draw::base_stops(l, accent, &z.palette);
     let b = draw::brushes(l, s, key.top, key.refl, &stops, alpha);
+    #[cfg(target_os = "macos")]
+    if native {
+        z.metal.set_brushes(&b, s, key.top, key.refl);
+        z.brushes = Some(key);
+        return;
+    }
+    let _ = native;
     set_brushes(&app.global::<Visualizer>(), &b);
     app.global::<Visualizer>().set_crisp(draw::crisp(l));
     z.brushes = Some(key);
@@ -990,7 +1033,7 @@ fn still_frame(st: &Rc<State>, app: &AppWindow) {
         let (_, bands) = draw::layout(&l, &sg);
         let (levels, peaks) = still_levels(bands);
         z.draw.draw(&l, &sg, true, &levels, &peaks);
-        brush(z, app, &l, &sg, Where::Preview, s.placement == Placement::Behind);
+        brush(z, app, &l, &sg, Where::Preview, s.placement == Placement::Behind, false);
         set_paths(&g, &z.draw.paths);
     });
     g.set_still(true);
@@ -1064,22 +1107,71 @@ fn frame(st: &Rc<State>) {
         z.draw.level(z.analyzer.level_slide_db());
         match draw_mode() {
             DrawMode::Full => {
-                z.draw.draw(&l, &sg, true, z.analyzer.levels(), z.analyzer.peaks());
-                brush(z, &app, &l, &sg, at, s.placement == Placement::Behind);
-                set_paths(&g, &z.draw.paths);
-                // The ring's cover, a little larger for a moment with each beat.
-                let scale = if l.style.around() && l.cover_pulse { 1.0 + COVER_PULSE * z.draw.paths.punch.clamp(0.0, 1.0) } else { 1.0 };
-                if let Some(s) = cover_scale_step(g.get_cover_scale(), scale) {
-                    g.set_cover_scale(s);
+                #[cfg(target_os = "macos")]
+                let presented_native = if native_allowed(&app, Some(at)) {
+                    let was_active = z.metal.is_active();
+                    if !was_active {
+                        z.brushes = None;
+                    }
+                    z.draw.draw_native(&l, &sg, true, z.analyzer.levels(), z.analyzer.peaks());
+                    brush(z, &app, &l, &sg, at, s.placement == Placement::Behind, true);
+                    let ok = z.metal.present(&app, &l, &sg, at, &z.draw.native);
+                    if ok && !was_active {
+                        z.draw.paths = draw::Paths::default();
+                        set_paths(&g, &z.draw.paths);
+                        if g.get_cover_scale() != 1.0 {
+                            g.set_cover_scale(1.0);
+                        }
+                    }
+                    if !ok {
+                        z.brushes = None;
+                    }
+                    ok
+                } else {
+                    if z.metal.is_active() {
+                        z.metal.remove(&app);
+                        z.brushes = None;
+                    }
+                    false
+                };
+                #[cfg(not(target_os = "macos"))]
+                let presented_native = false;
+
+                if !presented_native {
+                    z.draw.draw(&l, &sg, true, z.analyzer.levels(), z.analyzer.peaks());
+                    brush(z, &app, &l, &sg, at, s.placement == Placement::Behind, false);
+                    set_paths(&g, &z.draw.paths);
+                    // The ring's cover, a little larger for a moment with each beat.
+                    let scale = if l.style.around() && l.cover_pulse { 1.0 + COVER_PULSE * z.draw.paths.punch.clamp(0.0, 1.0) } else { 1.0 };
+                    if let Some(s) = cover_scale_step(g.get_cover_scale(), scale) {
+                        g.set_cover_scale(s);
+                    }
                 }
             }
             // Measurement only: the window redrawn each frame for a 1 px rectangle.
-            DrawMode::Minimal => g.set_fill(if g.get_frame() % 2 == 0 { "M0 0H1V1H0Z" } else { "M0 0H2V1H0Z" }.into()),
+            DrawMode::Minimal => {
+                #[cfg(target_os = "macos")]
+                if z.metal.is_active() {
+                    z.metal.remove(&app);
+                    z.brushes = None;
+                }
+                g.set_fill(if g.get_frame() % 2 == 0 { "M0 0H1V1H0Z" } else { "M0 0H2V1H0Z" }.into());
+            }
             // Measurement only: the analysis without drawing.
-            DrawMode::None => {}
+            DrawMode::None => {
+                #[cfg(target_os = "macos")]
+                if z.metal.is_active() {
+                    z.metal.remove(&app);
+                    z.brushes = None;
+                }
+            }
         }
-        g.set_active(true);
-        g.set_still(false);
+        if !g.get_active() {
+            g.set_active(true);
+        }
+        if g.get_still() {
+            g.set_still(false);
+        }
         g.set_frame(g.get_frame().wrapping_add(1));
         if let Some(s) = z.stats.as_mut() {
             s.push((started, started.elapsed()));

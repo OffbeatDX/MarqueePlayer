@@ -191,6 +191,279 @@ pub struct Paths {
     pub front_glow: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BarQuad {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub top_radius: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Dot {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum DotLayer {
+    Sparks,
+    SparksOld,
+    SparksGlow,
+    Front,
+    FrontGlow,
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenCurve {
+    pub pts: Vec<(f32, f32)>,
+    pub lo: f32,
+    pub hi: f32,
+    pub baseline: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReflCurve {
+    pub pts: Vec<(f32, f32)>,
+    pub top_y: f32,
+    pub lo: f32,
+    pub hi: f32,
+    pub smooth: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum CoronaInner {
+    Circle { cx: f32, cy: f32, r: f32 },
+    Poly(Vec<(f32, f32)>),
+}
+
+/// Structured GPU-ready geometry for one visualizer frame (used by the native Metal underlay
+/// to skip SVG formatting and Lyon parsing while sharing 100% of `draw.rs` physics and layout).
+#[derive(Clone, Debug, Default)]
+pub struct NativeFrame {
+    pub top_h: f32,
+    pub refl_h: f32,
+    pub pulse: f32,
+    pub punch: f32,
+    pub glow: f32,
+    pub swell: f32,
+    pub light: f32,
+    pub bars: Vec<BarQuad>,
+    pub caps: Vec<BarQuad>,
+    pub refl_bars: [Vec<BarQuad>; STRIPS],
+    pub open_curve: Option<OpenCurve>,
+    pub refl_curves: [Option<ReflCurve>; STRIPS],
+    pub ring_contour: Vec<(f32, f32)>,
+    pub corona_inner: Option<CoronaInner>,
+    pub ripples: Vec<Vec<(f32, f32)>>,
+    pub rings: Vec<Vec<(f32, f32)>>,
+    pub sparks: Vec<Dot>,
+    pub sparks_old: Vec<Dot>,
+    pub sparks_glow: Vec<Dot>,
+    pub front: Vec<Dot>,
+    pub front_glow: Vec<Dot>,
+}
+
+impl NativeFrame {
+    pub fn clear(&mut self) {
+        (self.pulse, self.punch, self.glow, self.swell, self.light) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        self.bars.clear();
+        self.caps.clear();
+        for v in &mut self.refl_bars {
+            v.clear();
+        }
+        self.open_curve = None;
+        self.refl_curves.fill(None);
+        self.ring_contour.clear();
+        self.corona_inner = None;
+        self.ripples.clear();
+        self.rings.clear();
+        self.sparks.clear();
+        self.sparks_old.clear();
+        self.sparks_glow.clear();
+        self.front.clear();
+        self.front_glow.clear();
+    }
+}
+
+trait Sink {
+    fn top_h(&self) -> f32;
+    fn refl_h(&self) -> f32;
+    fn set_split(&mut self, top: f32, refl: f32);
+    fn set_pulse_punch(&mut self, pulse: f32, punch: f32);
+    fn set_glow(&mut self, glow: f32);
+    fn set_swell(&mut self, swell: f32);
+    fn set_light(&mut self, light: f32);
+    fn bar(&mut self, x: f32, top: f32, bw: f32, bottom: f32, r: f32);
+    fn cap(&mut self, x: f32, y: f32, w: f32, h: f32);
+    fn refl_rect(&mut self, strip: usize, x: f32, a: f32, w: f32, b: f32);
+    fn open_curve(&mut self, pts: &[(f32, f32)], lo: f32, hi: f32, baseline: f32, stage_w: f32);
+    #[allow(clippy::too_many_arguments)]
+    fn refl_curve(&mut self, strip: usize, pts: &[(f32, f32)], top_y: f32, lo: f32, hi: f32, stage_w: f32, smooth: bool);
+    fn ring_contour(&mut self, edge: &[(f32, f32)], corona: Option<CoronaInner>);
+    fn ripple(&mut self, pts: &[(f32, f32)]);
+    fn ring(&mut self, pts: &[(f32, f32)]);
+    fn dot(&mut self, layer: DotLayer, x: f32, y: f32, r: f32);
+}
+
+impl Sink for Paths {
+    fn top_h(&self) -> f32 {
+        self.top_h
+    }
+    fn refl_h(&self) -> f32 {
+        self.refl_h
+    }
+    fn set_split(&mut self, top: f32, refl: f32) {
+        self.top_h = top;
+        self.refl_h = refl;
+    }
+    fn set_pulse_punch(&mut self, pulse: f32, punch: f32) {
+        self.pulse = pulse;
+        self.punch = punch;
+    }
+    fn set_glow(&mut self, glow: f32) {
+        self.glow = glow;
+    }
+    fn set_swell(&mut self, swell: f32) {
+        self.swell = swell;
+    }
+    fn set_light(&mut self, light: f32) {
+        self.light = light;
+    }
+    fn bar(&mut self, x: f32, top: f32, bw: f32, bottom: f32, r: f32) {
+        let bh = bottom - top;
+        if bh > r * 2.0 && r > 0.4 {
+            Svg(&mut self.fill).m(x, bottom).v(top + r).q((x, top), (x + r, top)).h(x + bw - r).q((x + bw, top), (x + bw, top + r)).v(bottom).z();
+        } else {
+            Svg(&mut self.fill).m(x, bottom).v(top).h(x + bw).v(bottom).z();
+        }
+    }
+    fn cap(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        Svg(&mut self.caps).m(x, y).h(x + w).v(y + h).h(x).z();
+    }
+    fn refl_rect(&mut self, strip: usize, x: f32, a: f32, w: f32, b: f32) {
+        Svg(&mut self.refl[strip]).m(x, a).h(x + w).v(b).h(x).z();
+    }
+    fn open_curve(&mut self, pts: &[(f32, f32)], lo: f32, hi: f32, baseline: f32, stage_w: f32) {
+        Svg(&mut self.line).m(pts[0].0, pts[0].1);
+        let from = self.line.len();
+        curve(&mut self.line, pts, lo, hi);
+        Svg(&mut self.fill).m(0.0, baseline).l(pts[0].0, pts[0].1);
+        self.fill.push_str(&self.line[from..]);
+        Svg(&mut self.fill).l(stage_w, baseline).z();
+    }
+    fn refl_curve(&mut self, strip: usize, pts: &[(f32, f32)], top_y: f32, lo: f32, hi: f32, stage_w: f32, smooth: bool) {
+        if smooth {
+            Svg(&mut self.refl[strip]).m(0.0, top_y).l(pts[0].0, pts[0].1);
+            curve(&mut self.refl[strip], pts, lo, hi);
+            Svg(&mut self.refl[strip]).l(stage_w, top_y).z();
+        } else {
+            Svg(&mut self.refl[strip]).m(0.0, top_y);
+            for &(x, y) in pts {
+                Svg(&mut self.refl[strip]).l(x, y);
+            }
+            Svg(&mut self.refl[strip]).l(stage_w, top_y).z();
+        }
+    }
+    fn ring_contour(&mut self, edge: &[(f32, f32)], corona: Option<CoronaInner>) {
+        let from = self.line.len();
+        closed_curve(&mut self.line, edge);
+        if let Some(inner) = corona {
+            self.fill.push_str(&self.line[from..]);
+            match inner {
+                CoronaInner::Circle { cx, cy, r } => {
+                    Svg(&mut self.fill).m(cx, cy - r).half_turn(r, cx, cy + r).half_turn(r, cx, cy - r).z();
+                }
+                CoronaInner::Poly(foot) => {
+                    closed_curve(&mut self.fill, &foot);
+                }
+            }
+        }
+    }
+    fn ripple(&mut self, pts: &[(f32, f32)]) {
+        closed_curve(&mut self.ripples, pts);
+    }
+    fn ring(&mut self, pts: &[(f32, f32)]) {
+        closed_curve(&mut self.rings, pts);
+    }
+    fn dot(&mut self, layer: DotLayer, x: f32, y: f32, r: f32) {
+        let out = match layer {
+            DotLayer::Sparks => &mut self.sparks,
+            DotLayer::SparksOld => &mut self.sparks_old,
+            DotLayer::SparksGlow => &mut self.sparks_glow,
+            DotLayer::Front => &mut self.front,
+            DotLayer::FrontGlow => &mut self.front_glow,
+        };
+        dot(out, x, y, r);
+    }
+}
+
+impl Sink for NativeFrame {
+    fn top_h(&self) -> f32 {
+        self.top_h
+    }
+    fn refl_h(&self) -> f32 {
+        self.refl_h
+    }
+    fn set_split(&mut self, top: f32, refl: f32) {
+        self.top_h = top;
+        self.refl_h = refl;
+    }
+    fn set_pulse_punch(&mut self, pulse: f32, punch: f32) {
+        self.pulse = pulse;
+        self.punch = punch;
+    }
+    fn set_glow(&mut self, glow: f32) {
+        self.glow = glow;
+    }
+    fn set_swell(&mut self, swell: f32) {
+        self.swell = swell;
+    }
+    fn set_light(&mut self, light: f32) {
+        self.light = light;
+    }
+    fn bar(&mut self, x: f32, top: f32, bw: f32, bottom: f32, r: f32) {
+        let bh = bottom - top;
+        let top_radius = if bh > r * 2.0 && r > 0.4 { r } else { 0.0 };
+        self.bars.push(BarQuad { x, y: top, w: bw, h: bh, top_radius });
+    }
+    fn cap(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        self.caps.push(BarQuad { x, y, w, h, top_radius: 0.0 });
+    }
+    fn refl_rect(&mut self, strip: usize, x: f32, a: f32, w: f32, b: f32) {
+        self.refl_bars[strip].push(BarQuad { x, y: a, w, h: b - a, top_radius: 0.0 });
+    }
+    fn open_curve(&mut self, pts: &[(f32, f32)], lo: f32, hi: f32, baseline: f32, _stage_w: f32) {
+        self.open_curve = Some(OpenCurve { pts: pts.to_vec(), lo, hi, baseline });
+    }
+    fn refl_curve(&mut self, strip: usize, pts: &[(f32, f32)], top_y: f32, lo: f32, hi: f32, _stage_w: f32, smooth: bool) {
+        self.refl_curves[strip] = Some(ReflCurve { pts: pts.to_vec(), top_y, lo, hi, smooth });
+    }
+    fn ring_contour(&mut self, edge: &[(f32, f32)], corona: Option<CoronaInner>) {
+        self.ring_contour.clear();
+        self.ring_contour.extend_from_slice(edge);
+        self.corona_inner = corona;
+    }
+    fn ripple(&mut self, pts: &[(f32, f32)]) {
+        self.ripples.push(pts.to_vec());
+    }
+    fn ring(&mut self, pts: &[(f32, f32)]) {
+        self.rings.push(pts.to_vec());
+    }
+    fn dot(&mut self, layer: DotLayer, x: f32, y: f32, r: f32) {
+        let out = match layer {
+            DotLayer::Sparks => &mut self.sparks,
+            DotLayer::SparksOld => &mut self.sparks_old,
+            DotLayer::SparksGlow => &mut self.sparks_glow,
+            DotLayer::Front => &mut self.front,
+            DotLayer::FrontGlow => &mut self.front_glow,
+        };
+        out.push(Dot { x, y, r });
+    }
+}
+
 /// How many bars (or points) a look has across a stage, and how many the analysis gives
 /// (half of them when mirrored).
 pub fn layout(look: &Look, stage: &Stage) -> (usize, usize) {
@@ -392,6 +665,7 @@ pub struct Pulse {
 #[derive(Default)]
 pub struct Draw {
     pub paths: Paths,
+    pub native: NativeFrame,
     /// The time since the last frame drawn (`tick`), for what moves by itself.
     dt: f32,
     ripples: Ripples,
@@ -516,6 +790,7 @@ impl Draw {
     /// Nothing drawn and nothing carried over (the visualizer stopped).
     pub fn reset(&mut self) {
         self.paths = Paths::default();
+        self.native.clear();
         self.dt = 0.0;
         self.ripples = Ripples::default();
         self.sparks = Sparks::default();
@@ -558,13 +833,7 @@ impl Draw {
 
     /// The paths for these levels and peaks (0..1, `bands` of them).
     pub fn draw(&mut self, look: &Look, stage: &Stage, reflect_here: bool, levels: &[f32], peaks: &[f32]) -> &Paths {
-        let dt = std::mem::take(&mut self.dt);
-        // Every look moves with the music's beat, not with every low note told as a kick, and
-        // once a beat.
-        let heard = self.heard.take().map(|h| Pulse { hit: beat_hit(&h), ..h });
-        let heard = heard.map(|h| Pulse { hit: self.one_hit(h.hit, h.period, dt), ..h });
-        let loud = self.loud.step(dt);
-        let p = &mut self.paths;
+        let mut p = std::mem::take(&mut self.paths);
         p.fill.clear();
         p.caps.clear();
         p.line.clear();
@@ -577,9 +846,30 @@ impl Draw {
         p.sparks_glow.clear();
         p.front.clear();
         p.front_glow.clear();
+        self.draw_into(&mut p, look, stage, reflect_here, levels, peaks);
+        self.paths = p;
+        &self.paths
+    }
+
+    /// Structured GPU-ready geometry for the native Metal renderer (skips SVG text formatting).
+    #[cfg(target_os = "macos")]
+    pub fn draw_native(&mut self, look: &Look, stage: &Stage, reflect_here: bool, levels: &[f32], peaks: &[f32]) -> &NativeFrame {
+        let mut n = std::mem::take(&mut self.native);
+        n.clear();
+        self.draw_into(&mut n, look, stage, reflect_here, levels, peaks);
+        self.native = n;
+        &self.native
+    }
+
+    fn draw_into<S: Sink>(&mut self, p: &mut S, look: &Look, stage: &Stage, reflect_here: bool, levels: &[f32], peaks: &[f32]) {
+        let dt = std::mem::take(&mut self.dt);
+        // Every look moves with the music's beat, not with every low note told as a kick, and
+        // once a beat.
+        let heard = self.heard.take().map(|h| Pulse { hit: beat_hit(&h), ..h });
+        let heard = heard.map(|h| Pulse { hit: self.one_hit(h.hit, h.period, dt), ..h });
+        let loud = self.loud.step(dt);
         let (top, refl) = split(look, stage.h, stage.refl_room, reflect_here);
-        p.top_h = top;
-        p.refl_h = refl;
+        p.set_split(top, refl);
         let strips = look.colour_by == ColourBy::Frequency && !matches!(look.colours, Colours::Accent);
         if look.style != Style::Radial {
             self.ripples = Ripples::default();
@@ -615,23 +905,21 @@ impl Draw {
             Style::Bars => {
                 bars(p, look, stage, levels, peaks, strips, kick);
                 if self.flash.unwrap_or_else(bars_flash) {
-                    p.light = LIT_BARS * self.lit;
+                    p.set_light(LIT_BARS * self.lit);
                 }
             }
             Style::Line => {
                 line(p, look, stage, levels, peaks, strips, kick);
-                p.swell = LIT_LINE * self.lit;
+                p.set_swell(LIT_LINE * self.lit);
                 if flat && dt > 0.0 {
-                    p.light = -LINE_QUIET * (1.0 - loud);
+                    p.set_light(-LINE_QUIET * (1.0 - loud));
                 }
             }
             Style::Radial => radial(p, &mut self.ripples, &mut self.sparks, (dt, heard), look, stage, levels),
             Style::Bonfire => bonfire(p, &mut self.sparks, (dt, heard), look, stage, levels),
             Style::Saturn => saturn(p, &mut self.saturn, (dt, heard, loud), look, stage, levels),
-
             Style::Eclipse => eclipse(p, &mut self.eclipse, (dt, heard), look, stage, levels),
         }
-        &self.paths
     }
 }
 
@@ -647,10 +935,11 @@ fn get(v: &[f32], i: usize) -> f32 {
 }
 
 /// A rectangle from y `a` down to `b` (a < b), clipped to the strip `[s0, s1)`.
-fn strip_rect(out: &mut String, x: f32, w: f32, a: f32, b: f32, s0: f32, s1: f32) {
+#[allow(clippy::too_many_arguments)]
+fn strip_rect<S: Sink>(p: &mut S, strip: usize, x: f32, w: f32, a: f32, b: f32, s0: f32, s1: f32) {
     let (a, b) = (a.max(s0), b.min(s1));
     if b - a >= 0.25 {
-        Svg(out).m(x, a).h(x + w).v(b).h(x).z();
+        p.refl_rect(strip, x, a, w, b);
     }
 }
 
@@ -661,14 +950,15 @@ fn strip_bounds(refl_h: f32, k: usize) -> (f32, f32) {
 
 /// Bars, the low ones lifted by `kick` (the last beat's strength, dying away: `lift`), every
 /// cap kicked up a little with it.
-fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
+fn bars<S: Sink>(p: &mut S, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
     let (n, bands) = layout(look, stage);
     let mirror = look.mirror;
     let (bw0, gap) = bar_size(look, stage);
     let bw = fit_bars(stage.w, n, bw0, gap);
     let used = n as f32 * (bw + gap) - gap;
     let x0 = ((stage.w - used) / 2.0).max(0.0);
-    let h = p.top_h;
+    let h = p.top_h();
+    let refl_h = p.refl_h();
     let room = (h - 4.0).max(1.0);
     // Softly rounded tops on bars wide enough to show them.
     let r = if bw >= 8.0 { (bw * 0.35).min(2.5) } else { 0.0 };
@@ -681,28 +971,24 @@ fn bars(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
         let bh = (l * room).round();
         if bh >= 1.0 {
             let top = h - bh;
-            if bh > r * 2.0 && r > 0.4 {
-                Svg(&mut p.fill).m(x, h).v(top + r).q((x, top), (x + r, top)).h(x + bw - r).q((x + bw, top), (x + bw, top + r)).v(h).z();
-            } else {
-                Svg(&mut p.fill).m(x, h).v(top).h(x + bw).v(h).z();
-            }
-            if p.refl_h > 0.0 {
+            p.bar(x, top, bw, h, r);
+            if refl_h > 0.0 {
                 // A 1 px gap at the baseline reads as the surface the bars stand on.
-                let rh = (l * p.refl_h).round();
+                let rh = (l * refl_h).round();
                 if strips {
                     for k in 0..STRIPS {
-                        let (s0, s1) = strip_bounds(p.refl_h, k);
-                        strip_rect(&mut p.refl[k], x, bw, 1.0, rh, s0, s1);
+                        let (s0, s1) = strip_bounds(refl_h, k);
+                        strip_rect(p, k, x, bw, 1.0, rh, s0, s1);
                     }
                 } else if rh >= 1.5 {
-                    Svg(&mut p.refl[0]).m(x, 1.0).h(x + bw).v(rh).h(x).z();
+                    p.refl_rect(0, x, 1.0, bw, rh);
                 }
             }
         }
         // A cap only where there is something to cap: 2 px tall, just above the bar.
         if look.peaks && pk * room >= 8.0 {
             let y = (h - pk * room - 3.0).max(0.0).round();
-            Svg(&mut p.caps).m(x, y).h(x + bw).v(y + 2.0).h(x).z();
+            p.cap(x, y, bw, 2.0);
         }
     }
 }
@@ -729,9 +1015,10 @@ fn curve(out: &mut String, pts: &[(f32, f32)], lo: f32, hi: f32) {
 }
 
 /// The line, its low end lifted by `kick` as the bars are (`lift`).
-fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
+fn line<S: Sink>(p: &mut S, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32], strips: bool, kick: f32) {
     let (n, bands) = layout(look, stage);
-    let h = p.top_h;
+    let h = p.top_h();
+    let refl_h = p.refl_h();
     let room = (h - 3.0).max(1.0);
     let w = stage.w;
     let dx = w / (n.max(2) - 1) as f32;
@@ -747,24 +1034,18 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
         return;
     }
     let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, h - l * room)).collect();
-    Svg(&mut p.line).m(pts[0].0, pts[0].1);
-    let from = p.line.len();
-    curve(&mut p.line, &pts, 0.0, h);
-    // The area under it is closed by the same curve: its text again, not its numbers written twice.
-    Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
-    p.fill.push_str(&p.line[from..]);
-    Svg(&mut p.fill).l(w, h).z();
+    p.open_curve(&pts, 0.0, h, h, w);
     if look.peaks {
         for (k, i) in order(bands, look.mirror).enumerate() {
             let pk = kicked(levels, peaks, i, lift(kick, bands, i), 0.0).1;
             if pk * room >= 8.0 && pk > lv[k] + 0.02 {
                 let (x, y) = (k as f32 * dx, h - pk * room - 2.0);
-                Svg(&mut p.caps).m(x - 1.5, y).h(x + 1.5).v(y + 2.0).h(x - 1.5).z();
+                p.cap(x - 1.5, y, 3.0, 2.0);
             }
         }
     }
-    if p.refl_h > 0.0 {
-        let rh = p.refl_h;
+    if refl_h > 0.0 {
+        let rh = refl_h;
         if strips {
             // Each strip: the area under the mirrored line, clamped to the strip.
             for k in 0..STRIPS {
@@ -772,17 +1053,12 @@ fn line(p: &mut Paths, look: &Look, stage: &Stage, levels: &[f32], peaks: &[f32]
                 if lv.iter().all(|&l| l * rh < s0 + 0.25) {
                     continue;
                 }
-                Svg(&mut p.refl[k]).m(0.0, s0);
-                for (j, &l) in lv.iter().enumerate() {
-                    Svg(&mut p.refl[k]).l(j as f32 * dx, (l * rh).clamp(s0, s1));
-                }
-                Svg(&mut p.refl[k]).l(w, s0).z();
+                let sp: Vec<(f32, f32)> = lv.iter().enumerate().map(|(j, &l)| (j as f32 * dx, (l * rh).clamp(s0, s1))).collect();
+                p.refl_curve(k, &sp, s0, s0, s1, w, false);
             }
         } else {
             let rp: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, (l * rh).max(1.0))).collect();
-            Svg(&mut p.refl[0]).m(0.0, 1.0).l(rp[0].0, rp[0].1);
-            curve(&mut p.refl[0], &rp, 1.0, rh);
-            Svg(&mut p.refl[0]).l(w, 1.0).z();
+            p.refl_curve(0, &rp, 1.0, 1.0, rh, w, true);
         }
     }
 }
@@ -1225,7 +1501,7 @@ impl Sparks {
     /// Each as a dot, smaller as it ages (an ember going out), with a soft disc of light
     /// round it: the young ones' dots, the old ones' (fainter: their own path and brush),
     /// and the discs. `place` says where a spark is, or that it has left the stage.
-    fn draw(&self, p: &mut Paths, place: &dyn Fn(&Spark) -> Option<(f32, f32)>) {
+    fn draw<S: Sink>(&self, p: &mut S, place: &dyn Fn(&Spark) -> Option<(f32, f32)>) {
         for s in &self.list {
             let u = s.age / s.life;
             let r = s.size * (1.0 - u).powf(0.7);
@@ -1233,11 +1509,11 @@ impl Sparks {
                 continue;
             }
             let Some((x, y)) = place(s) else { continue };
-            dot(if u < 0.45 { &mut p.sparks } else { &mut p.sparks_old }, x, y, r);
+            p.dot(if u < 0.45 { DotLayer::Sparks } else { DotLayer::SparksOld }, x, y, r);
             // The young ones only: a disc is the larger shape to fill, and an old spark's
             // would hardly show.
             if u < 0.6 {
-                dot(&mut p.sparks_glow, x, y, r * 2.6);
+                p.dot(DotLayer::SparksGlow, x, y, r * 2.6);
             }
         }
     }
@@ -1292,7 +1568,7 @@ fn dot(out: &mut String, x: f32, y: f32, r: f32) {
 /// snare sends a thin quick ring. Without kicks a ripple leaves when the music swells (a
 /// rise in the levels topping out), not by the clock. Its foot follows the cover, round or
 /// square.
-fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
+fn radial<S: Sink>(p: &mut S, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
     let (n, bands) = layout(look, stage);
     let g = halo(stage);
     let frame = g.frame(n);
@@ -1330,27 +1606,17 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
     // it (`shape`).
     lv.iter_mut().for_each(|l| *l = shape((*l + 0.2 * rip.punch) * intensity));
     smooth_ring(&mut lv, 1);
-    (p.pulse, p.punch) = (swell.max(rip.punch), rip.punch);
+    p.set_pulse_punch(swell.max(rip.punch), rip.punch);
     // The contour. At rest it lies on its foot: a thin lit line around the cover.
     let edge: Vec<(f32, f32)> = frame.iter().zip(&lv).map(|(&((x, y), (dx, dy)), &l)| (x + dx * l * g.len, y + dy * l * g.len)).collect();
-    let from = p.line.len();
-    closed_curve(&mut p.line, &edge);
     // The corona: between the cover and the contour, one path with the cover's place left
     // out of it (the contour clockwise, the foot back the other way), so nothing is painted
-    // under the cover. The contour's text again, not its numbers written twice.
-    if lv.iter().any(|&l| l * g.len >= 1.0) {
-        p.fill.push_str(&p.line[from..]);
-        match g.corner {
-            None => {
-                let f = g.hub + g.gap;
-                Svg(&mut p.fill).m(g.cx, g.cy - f).half_turn(f, g.cx, g.cy + f).half_turn(f, g.cx, g.cy - f).z();
-            }
-            Some(_) => {
-                let foot: Vec<(f32, f32)> = frame.iter().rev().map(|&(q, _)| q).collect();
-                closed_curve(&mut p.fill, &foot);
-            }
-        }
-    }
+    // under the cover.
+    let corona = lv.iter().any(|&l| l * g.len >= 1.0).then(|| match g.corner {
+        None => CoronaInner::Circle { cx: g.cx, cy: g.cy, r: g.hub + g.gap },
+        Some(_) => CoronaInner::Poly(frame.iter().rev().map(|&(q, _)| q).collect()),
+    });
+    p.ring_contour(&edge, corona);
     // The sparks: off the contour, where it is loudest, out past where the ripples end.
     {
         let foot = g.hub + g.gap;
@@ -1536,7 +1802,7 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
             let d = ((s + (soft - s) * relax) * amp + out).min(g.travel);
             (x + dx * d, y + dy * d)
         }));
-        closed_curve(&mut p.ripples, &pts);
+        p.ripple(&pts);
     }
     // The rings: off the contour (smoothed), quickly out and slowing, to where their brush
     // is gone.
@@ -1550,7 +1816,7 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
             let d = (s * amp + out).min(g.travel);
             (x + dx * d, y + dy * d)
         }));
-        closed_curve(&mut p.rings, &pts);
+        p.ring(&pts);
     }
 }
 
@@ -1559,9 +1825,9 @@ fn radial(p: &mut Paths, rip: &mut Ripples, sparks: &mut Sparks, (dt, heard): (f
 /// music is loudest, slowing and swaying as they go, each going out as it ages; a few all
 /// the time, a burst on every beat, the one heard or a rise in the levels (`dt` moves them
 /// on; with none, a still frame).
-fn bonfire(p: &mut Paths, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
+fn bonfire<S: Sink>(p: &mut S, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
     let (n, bands) = layout(look, stage);
-    let (w, h) = (stage.w, p.top_h);
+    let (w, h) = (stage.w, p.top_h());
     let dx = w / (n.max(2) - 1) as f32;
     let raw: Vec<f32> = (0..n).map(|k| get(levels, k.min(bands.saturating_sub(1)))).collect();
     // A light smoothing across neighbours: the coals read as one shape, not a comb.
@@ -1570,12 +1836,7 @@ fn bonfire(p: &mut Paths, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>)
     let foot = h - 2.0;
     if lv.iter().any(|&l| l * coals >= 0.5) {
         let pts: Vec<(f32, f32)> = lv.iter().enumerate().map(|(k, &l)| (k as f32 * dx, foot - shape(l) * coals)).collect();
-        Svg(&mut p.line).m(pts[0].0, pts[0].1);
-        let from = p.line.len();
-        curve(&mut p.line, &pts, 0.0, foot);
-        Svg(&mut p.fill).m(0.0, h).l(pts[0].0, pts[0].1);
-        p.fill.push_str(&p.line[from..]);
-        Svg(&mut p.fill).l(w, h).z();
+        p.open_curve(&pts, 0.0, foot, h, w);
     }
     let energy = lv.iter().sum::<f32>() / n.max(1) as f32;
     let low = (n / 8).max(1);
@@ -1603,13 +1864,13 @@ fn bonfire(p: &mut Paths, sparks: &mut Sparks, (dt, heard): (f32, Option<Pulse>)
 
 /// A spark's dot and, while it is young enough to show one, its disc of light: `u` is how
 /// far through its life it is (the young ones' dots, the old ones', the discs: three paths).
-fn spot(p: &mut Paths, x: f32, y: f32, r: f32, u: f32) {
+fn spot<S: Sink>(p: &mut S, x: f32, y: f32, r: f32, u: f32) {
     if r < 0.3 {
         return;
     }
-    dot(if u < 0.45 { &mut p.sparks } else { &mut p.sparks_old }, x, y, r);
+    p.dot(if u < 0.45 { DotLayer::Sparks } else { DotLayer::SparksOld }, x, y, r);
     if u < 0.6 {
-        dot(&mut p.sparks_glow, x, y, r * 2.6);
+        p.dot(DotLayer::SparksGlow, x, y, r * 2.6);
     }
 }
 
@@ -1777,7 +2038,7 @@ struct Grain {
 ///
 /// A still frame (dt 0, the Settings preview) draws the ring whole and calm, every grain in
 /// its place.
-fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>, f32), look: &Look, stage: &Stage, levels: &[f32]) {
+fn saturn<S: Sink>(p: &mut S, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>, f32), look: &Look, stage: &Stage, levels: &[f32]) {
     let (n, bands) = layout(look, stage);
     let g = halo(stage);
     let tau = std::f32::consts::TAU;
@@ -1795,7 +2056,7 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
     let energy = (lv.iter().sum::<f32>() / n.max(1) as f32).max(swell * 0.5);
     let (hit, _, period) = beat_of(heard, &mut st.beat, 0.7 * swell + 0.3 * energy, dt);
     st.push = if dt > 0.0 { (st.push * (-dt * 3.5).exp()).max(hit) } else { 0.0 };
-    (p.pulse, p.punch) = (swell.max(st.push), st.push);
+    p.set_pulse_punch(swell.max(st.push), st.push);
     if dt <= 0.0 {
         st.band_hit = 0.0;
     } else if hit > 0.0 {
@@ -1887,7 +2148,7 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
     }
     // A thin lit line round the cover.
     let rim: Vec<(f32, f32)> = g.frame(48.max(n / 4)).iter().map(|&(q, _)| q).collect();
-    closed_curve(&mut p.line, &rim);
+    p.ring_contour(&rim, None);
     let (cs, sn) = (SATURN_TURN.cos(), SATURN_TURN.sin());
     // Quieter than lately: smaller, fewer of them glowing.
     let big = (g.hub * 0.0065).clamp(0.8, 1.9) * shown * (0.8 + 0.2 * loud);
@@ -1904,17 +2165,17 @@ fn saturn(p: &mut Paths, st: &mut Saturn, (dt, heard, loud): (f32, Option<Pulse>
         let (i0, t) = (a.floor() as usize % n, a - a.floor());
         (lv[i0] * (1.0 - t) + lv[(i0 + 1) % n] * t).min(1.0)
     };
-    let put = |p: &mut Paths, (x, y): (f32, f32), behind: bool, r: f32, l: f32| -> (f32, f32, f32, u8) {
+    let put = |p: &mut S, (x, y): (f32, f32), behind: bool, r: f32, l: f32| -> (f32, f32, f32, u8) {
         if behind {
             let r = r * 0.85;
-            dot(&mut p.sparks_old, x, y, r);
+            p.dot(DotLayer::SparksOld, x, y, r);
             (x, y, r, 1)
         } else {
             let r = r * 1.12;
-            dot(&mut p.front, x, y, r);
+            p.dot(DotLayer::Front, x, y, r);
             // The loud ones only, and close about them: a wide flat disc reads as a bubble.
             if l > glows {
-                dot(&mut p.front_glow, x, y, r * 1.9);
+                p.dot(DotLayer::FrontGlow, x, y, r * 1.9);
                 (x, y, r, 3)
             } else {
                 (x, y, r, 2)
@@ -1992,11 +2253,11 @@ impl Round {
 
     /// A thin contour round the cover: the spectrum, reaching out `reach` at the most,
     /// jumping with the beat (`punch`).
-    fn contour(&self, out: &mut String, reach: f32, punch: f32) {
+    fn contour<S: Sink>(&self, p: &mut S, reach: f32, punch: f32) {
         let mut lv: Vec<f32> = self.lv.iter().map(|&l| shape(l + 0.2 * punch)).collect();
         smooth_ring(&mut lv, 1);
         let edge: Vec<(f32, f32)> = self.g.frame(self.n).iter().zip(&lv).map(|(&((x, y), (dx, dy)), &l)| (x + dx * l * reach, y + dy * l * reach)).collect();
-        closed_curve(out, &edge);
+        p.ring_contour(&edge, None);
     }
 }
 
@@ -2026,7 +2287,7 @@ const ECLIPSE_STEP: f32 = 0.19;
 /// a pair, the second opposite the first. Without beats: with a tempo, a small flare when the
 /// music swells (a rise in the levels topping out, no more than one a beat); without one, a
 /// small one after a second and a half with sound.
-fn eclipse(p: &mut Paths, st: &mut Eclipse, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
+fn eclipse<S: Sink>(p: &mut S, st: &mut Eclipse, (dt, heard): (f32, Option<Pulse>), look: &Look, stage: &Stage, levels: &[f32]) {
     let r = Round::of(look, stage, levels);
     let g = r.g;
     let level = 0.7 * r.swell + 0.3 * r.energy;
@@ -2035,8 +2296,8 @@ fn eclipse(p: &mut Paths, st: &mut Eclipse, (dt, heard): (f32, Option<Pulse>), l
     // while nobody does): with a tempo and no beats, it is what sends a flare.
     let swelled = heard.is_some() && dt > 0.0 && st.beat.step(level, dt);
     st.punch = if dt > 0.0 { (st.punch * (-dt / 0.13).exp()).max(hit) } else { 0.0 };
-    (p.pulse, p.punch) = (r.swell.max(st.punch), st.punch);
-    p.glow = 0.5 * r.swell.clamp(0.0, 1.0);
+    p.set_pulse_punch(r.swell.max(st.punch), st.punch);
+    p.set_glow(0.5 * r.swell.clamp(0.0, 1.0));
     let foot = g.hub + g.gap;
     let most = ((g.hub * 2.2) as usize).clamp(200, 600);
     let big = (g.hub * 0.011).clamp(0.9, 3.0);
@@ -2111,7 +2372,7 @@ fn eclipse(p: &mut Paths, st: &mut Eclipse, (dt, heard): (f32, Option<Pulse>), l
     if r.energy < 0.01 && st.motes.is_empty() {
         return;
     }
-    r.contour(&mut p.line, g.len * 0.3, st.punch);
+    r.contour(p, g.len * 0.3, st.punch);
     for q in &st.motes {
         let u = q.age / q.life;
         spot(p, q.x, q.y, q.size * (1.0 - u).powf(0.7), u);

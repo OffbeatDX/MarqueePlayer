@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Page } from "types.slint";
-import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer } from "stores.slint";
+import { Nav, Player, Queue, Playlists, Backdrop, Actions, Chrome, Library, Server, Focus, Keys, Equalizer, Visualizer } from "stores.slint";
 import { Icon, Icons, IconButton, Cover, Slider, ArtistLinks, LinkText, FocusRing, FocusTarget, MarqueeText } from "widgets.slint";
 import { QueueList } from "lists.slint";
 import { AutoFlickable, AutoscrollBlock } from "autoscroll.slint";
@@ -121,6 +121,8 @@ export component Sidebar inherits Rectangle {
     in property <length> window-height;
     // Open while the keyboard focus is in it too, so Tab never lands on a hidden item.
     out property <bool> open: Nav.sidebar-pinned || Nav.sidebar-forced || Nav.sidebar-hover-open || Focus.zone == "sidebar";
+    out property <bool> settled: (Nav.sidebar-pinned ? panel.x == 0px : !root.open && !panel.visible)
+        && root.bar-room == (Player.bar-up ? Theme.bar-height : 0px);
     private property <bool> hovering: edge.has-hover || panel.has-hover || edge-drop.has-drag || Focus.drop-playlist >= 0 || playlists.autoscrolling || drop-new.has-drag;
     changed hovering => {
         if self.hovering { Nav.sidebar-hover-open = true; }
@@ -162,6 +164,7 @@ export component Sidebar inherits Rectangle {
         y: 0;
         x: root.open ? 0px : -Theme.sidebar-width - 24px;
         animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        visible: root.open || self.x > -Theme.sidebar-width - 24px;
         width: Theme.sidebar-width;
         height: root.height - root.bar-room;
         // A middle press on the panel leaves the page under it alone.
@@ -356,9 +359,10 @@ export component PlayerBar inherits Rectangle {
     // The seek or volume slider is being dragged (or has not caught up with its release).
     out property <bool> dragging: seek.active || volume.active;
     // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
-    // no Skia), it falls back to the pre-blurred album art.
+    // no Skia), it falls back to the pre-blurred album art. While the macOS Metal visualizer
+    // underlay is active, keep the translucent tint without live Skia backdrop-blur.
     background: Theme.glass ? Theme.glass-tint : Theme.bg;
-    backdrop-blur: Theme.glass-radius-blur;
+    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
     if !Theme.glass: Rectangle {
         clip: true;
         Image {
@@ -586,6 +590,8 @@ export component QueueSidebar inherits Rectangle {
     in property <length> window-height;
     // Open while the keyboard focus is in it too, so Tab never lands on a hidden row.
     out property <bool> open: Nav.queue-pinned || Nav.queue-open || Nav.queue-hover-open || Focus.zone == "queue";
+    out property <bool> settled: (Nav.queue-pinned ? panel.x == root.width - Theme.queue-width : !root.open && !panel.visible)
+        && root.bar-room == (Player.bar-up ? Theme.bar-height : 0px);
     private property <bool> hovering: edge.has-hover || panel.has-hover || edge-drop.has-drag || list.dragging-over || list.autoscrolling;
     changed hovering => {
         if self.hovering { Nav.queue-hover-open = true; }
@@ -634,6 +640,7 @@ export component QueueSidebar inherits Rectangle {
         y: 0;
         x: root.open ? root.width - Theme.queue-width : root.width + 24px;
         animate x { duration: Theme.dur-sidebar; easing: ease-out; }
+        visible: root.open || self.x < root.width + 24px;
         width: Theme.queue-width;
         height: root.height;
         AutoscrollBlock { }
@@ -729,7 +736,7 @@ export component NavPill inherits Rectangle {
     width: min(row.preferred-width, 560px);
     border-radius: 20px;
     background: Theme.glass-fill;
-    backdrop-blur: Theme.glass-radius-blur;
+    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
     border-width: 1px;
     border-color: Theme.border;
     // Swallow clicks between the buttons.

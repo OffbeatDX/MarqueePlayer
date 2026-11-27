@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Page, AlbumCard, TrackRow, ShelfView, ShelfLayout, QueueRow, PlaylistRow, NamedCount, ShelfEdit } from "types.slint";
-import { Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions } from "stores.slint";
+import { Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions, StageBounds } from "stores.slint";
 import { HomePage } from "pages/home.slint";
 import { AlbumsPage, ShelfAllPage, ArtistsPage, GroupsPage, TracksPage } from "pages/browse.slint";
 import { AlbumPageView } from "pages/album.slint";
@@ -21,7 +21,7 @@ import { Icons } from "widgets.slint";
 import { Autoscroll } from "stores.slint";
 import { AutoscrollMark, AutoscrollBlock } from "autoscroll.slint";
 
-export { Theme, Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions, Icons }
+export { Theme, Nav, Home, Grid, AlbumPage, ArtistPage, Search, Playlists, Player, Queue, Library, ShelfEditor, Backdrop, Actions, Icons, StageBounds }
 export { Page, AlbumCard, TrackRow, ShelfView, ShelfLayout, QueueRow, PlaylistRow, NamedCount, ShelfEdit }
 export { Activity, MenuStore, Chrome, ShelfPage, Focus, Keys, Browse, TrackPage, Output, LastFm, ListenBrainz, Server, Discord, Lyrics, Visualizer, SettingsView, Autoscroll, Dialog, Meta, AboutView, SmartList, SmartEdit, Picker, Equalizer, EqPreview, PlatformWords }
 export { MenuItemData, KeyHelp, KeyRow, LyricLine, SettingHit, MetaRow, AboutFile, AboutCredit, SmartRow, SmartSlot, EqBandRow, EqNote, VizPresetRow } from "types.slint";
@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
     // fit the monitor (zoom.rs).
     min-width: Chrome.min-width;
     min-height: Chrome.min-height;
-    background: Theme.bg;
+    background: Visualizer.native-underlay ? transparent : Theme.bg;
     default-font-family: Theme.font-family;
     default-font-size: Theme.font-body;
     in property <image> app-icon;
@@ -66,6 +66,17 @@ export component AppWindow inherits Window {
     }
     // Whether the player bar is up (for the bench).
     out property <bool> bar-visible: Player.bar-up;
+    // The macOS Metal visualizer underlay runs beneath a transparent Slint foreground while
+    // chrome is settled and no modal/menu/transition needs live compositing over the stage.
+    out property <bool> viz-underlay-ok: left-sidebar.settled && right-sidebar.settled
+        && bar-area.y == (Player.bar-up ? self.height - bar-area.height : self.height)
+        && content.x == (Nav.sidebar-pinned ? Theme.sidebar-width : 0px)
+        && content.width == self.width - content.x - (Nav.queue-pinned ? Theme.queue-width : 0px)
+        && !root.transitioning && !Dialog.open && !Picker.open && !Autoscroll.on
+        && !MenuStore.open && Player.playing && !Player.buffering;
+    changed viz-underlay-ok => {
+        if !self.viz-underlay-ok && Visualizer.native-underlay { Actions.visualizer-wake(); }
+    }
     // Where the player bar and the caption buttons are, and what the bar needs (for the
     // interface size bench: everything inside the window at every size).
     out property <length> bar-top: bar-area.y;
@@ -163,12 +174,12 @@ export component AppWindow inherits Window {
             height: 100%;
             source: Backdrop.image;
             image-fit: cover;
-            visible: Backdrop.visible;
+            visible: Backdrop.visible && !Visualizer.native-underlay;
             opacity: Theme.backdrop-opacity;
         }
         Rectangle {
             background: @linear-gradient(180deg, Theme.backdrop-tint 0%, Theme.bg 70%);
-            visible: Backdrop.visible;
+            visible: Backdrop.visible && !Visualizer.native-underlay;
         }
 
         // Pages. The content shifts right only when the sidebar is pinned.
@@ -250,13 +261,13 @@ export component AppWindow inherits Window {
             }
         }
 
-        QueueSidebar {
+        right-sidebar := QueueSidebar {
             y: 0;
             window-width: root.width;
             window-height: root.height;
         }
 
-        Sidebar { x: 0; y: 0; window-height: root.height; }
+        left-sidebar := Sidebar { x: 0; y: 0; window-height: root.height; }
 
         // With auto-hide, the bar's place at the bottom: the pointer reaching it brings the
         // bar back. Under the bar, so it only sees the pointer while the bar is away. It

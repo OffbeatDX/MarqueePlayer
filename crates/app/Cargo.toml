@@ -87,5 +87,9 @@ souvlaki = "0.9.3"
 libc = "0.2"
 objc2 = "0.6.3"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "NSUserDefaults"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSEvent", "NSGraphics", "NSPasteboard", "NSResponder", "NSScreen", "NSWorkspace", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSAppleEventDescriptor", "NSAppleEventManager", "NSArray", "NSError", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "NSUserDefaults", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSColor", "NSEvent", "NSGraphics", "NSPasteboard", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFData"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColor", "CGColorSpace", "CGDataProvider", "CGImage"] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CAGradientLayer", "CALayer", "CAMetalLayer", "CATransaction", "objc2-core-foundation", "objc2-core-graphics", "objc2-metal"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = ["std", "MTLBuffer", "MTLCommandBuffer", "MTLCommandEncoder", "MTLCommandQueue", "MTLDepthStencil", "MTLDevice", "MTLDrawable", "MTLLibrary", "MTLPixelFormat", "MTLRenderCommandEncoder", "MTLRenderPass", "MTLRenderPipeline", "MTLResource", "MTLSampler", "MTLTexture", "MTLTypes"] }
