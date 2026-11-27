@@ -484,6 +484,9 @@ pub fn run() {
         let ti = crate::menus::TrackInfo { path: t.first().map(|t| t.path.clone()).unwrap_or_default(), ..Default::default() };
         let tl = labels(crate::menus::build("track", "album", 0, 0, Some(ti), None, None));
         check(r, "nor its track's", !tl.iter().any(|l| l == show), format!("{tl:?}"));
+        let qi = crate::menus::QueueInfo { path: t.first().map(|t| t.path.clone()).unwrap_or_default(), ..Default::default() };
+        let ql = labels(crate::menus::build("queue", "", 0, 0, None, None, Some(qi)));
+        check(r, "nor in the queue", !ql.iter().any(|l| l == show) && ql.iter().any(|l| l == "View metadata"), format!("{ql:?}"));
         if let Some(t) = t.into_iter().next() {
             crate::metadata::view::open_track(st, t);
         }

@@ -136,7 +136,7 @@ to remove it; rows chosen together move and go together (see [Selecting several 
 to its end; a drag reaching the left edge slides the sidebar in. Dropped on the sidebar's
 Playlists heading or the empty space under the playlists, they make a new one (the name prompt,
 at the drop point). Track menus there have
-"Remove from playlist"; every track menu has "Show in Explorer" (a new Explorer window
+"Remove from playlist"; every track and queue menu has "Show in Explorer" (a new Explorer window
 with the file selected), and album menus show the album's folder. Track, queue and album
 menus end with "View metadata" (see [Metadata](metadata.md#metadata)). The album page's header has the album's
 menu too: right-click it, or the "⋯" button beside the heart.

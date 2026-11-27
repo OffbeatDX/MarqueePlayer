@@ -154,6 +154,15 @@ pub struct AlbumInfo {
     pub folder: String,
 }
 
+/// What a queue menu needs to know about its item (filled in `open_menu`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct QueueInfo {
+    pub album: i32,
+    /// Its credited artists (key, name), or the credit's names for a file from outside.
+    pub artists: Vec<(String, String)>,
+    pub path: String,
+}
+
 struct Open {
     entries: Vec<Entry>,
     /// (name, id) of the playlists in the submenu.
@@ -298,7 +307,7 @@ fn go_to_artists(artists: &[(String, String)]) -> Vec<Entry> {
 }
 
 /// The entries of a menu.
-pub fn build(kind: &str, ctx: &str, index: i32, id: i32, track: Option<TrackInfo>, album: Option<AlbumInfo>, queue: Option<(i32, Vec<(String, String)>)>) -> Vec<Entry> {
+pub fn build(kind: &str, ctx: &str, index: i32, id: i32, track: Option<TrackInfo>, album: Option<AlbumInfo>, queue: Option<QueueInfo>) -> Vec<Entry> {
     match kind {
         "album" => {
             let a = album.unwrap_or_default();
@@ -343,14 +352,18 @@ pub fn build(kind: &str, ctx: &str, index: i32, id: i32, track: Option<TrackInfo
             v
         }
         "queue" => {
-            let (album, artists) = queue.unwrap_or_default();
+            let q = queue.unwrap_or_default();
             let mut v = vec![
                 item("Play", Act::QueuePlay(index)),
                 item("Remove from queue", Act::QueueRemove(index)),
                 Entry::Separator,
-                item("Go to album", Act::OpenAlbum(album)),
+                item("Go to album", Act::OpenAlbum(q.album)),
             ];
-            v.extend(go_to_artists(&artists));
+            v.extend(go_to_artists(&q.artists));
+            // A track only the server has has no file here to show.
+            if !library::remote::is_remote(&q.path) {
+                v.push(item(crate::platform::system::words().show_in, Act::ShowInExplorer(q.path)));
+            }
             v.push(item("View metadata", Act::QueueMetadata(index)));
             v
         }
@@ -510,7 +523,13 @@ fn open_menu(st: &Rc<State>, kind: &str, ctx: &str, index: i32, id: i32, x: f32,
             path: t.path.clone(),
         });
     let queue = (kind == "queue")
-        .then(|| st.queue.borrow().items().get(index.max(0) as usize).map(|i| (i.track.album_id as i32, credited(st, i.track.id, &i.track.artist))))
+        .then(|| {
+            st.queue.borrow().items().get(index.max(0) as usize).map(|i| QueueInfo {
+                album: i.track.album_id as i32,
+                artists: credited(st, i.track.id, &i.track.artist),
+                path: i.track.path.clone(),
+            })
+        })
         .flatten();
     if kind == "track" && track.is_none() || kind == "queue" && queue.is_none() {
         return;
@@ -886,7 +905,10 @@ mod tests {
             labels(build("track", "album", 2, 0, track(), None, None)),
             ["Play", "Play next", "Add to queue", "Add to playlist", "-", "Remove from favourites", "Go to album", "Go to artist", SHOW, "View metadata"]
         );
-        assert_eq!(labels(build("queue", "", 3, 0, None, None, Some((7, vec![("n:a".into(), "A".into())])))), ["Play", "Remove from queue", "-", "Go to album", "Go to artist", "View metadata"]);
+        assert_eq!(
+            labels(build("queue", "", 3, 0, None, None, Some(QueueInfo { album: 7, artists: vec![("n:a".into(), "A".into())], path: "M:/a/01.flac".into() }))),
+            ["Play", "Remove from queue", "-", "Go to album", "Go to artist", SHOW, "View metadata"]
+        );
         assert_eq!(
             labels(build("playlist", "", 0, 5, None, None, None)),
             ["Play", "Shuffle", "Add to queue", "-", "Open", "-", "Export as M3U8\u{2026}", "Export with relative paths\u{2026}"]
@@ -922,6 +944,9 @@ mod tests {
         let a = build("album", "", 0, 3, None, Some(AlbumInfo { artists: vec![], folder: library::remote::album_folder("al1") }), None);
         assert!(!labels(a.clone()).iter().any(|l| l == SHOW));
         assert_eq!(a.last(), Some(&Entry::Item { label: "View metadata".into(), act: Act::AlbumMetadata(3) }));
+        let q = build("queue", "", 0, 0, None, None, Some(QueueInfo { path: library::remote::song_path("s1"), ..Default::default() }));
+        assert!(!labels(q.clone()).iter().any(|l| l == SHOW), "{:?}", labels(q.clone()));
+        assert_eq!(q.last(), Some(&Entry::Item { label: "View metadata".into(), act: Act::QueueMetadata(0) }));
     }
 
     #[test]
@@ -933,6 +958,9 @@ mod tests {
         assert!(a.contains(&Entry::Item { label: SHOW.into(), act: Act::ShowInExplorer("M:/b".into()) }));
         assert_eq!(a.last(), Some(&Entry::Item { label: "View metadata".into(), act: Act::AlbumMetadata(3) }));
         assert!(a.contains(&Entry::Item { label: "Go to artist".into(), act: Act::OpenArtist("n:b".into()) }));
+        let q = build("queue", "", 2, 0, None, None, Some(QueueInfo { album: 7, artists: vec![("n:a".into(), "A".into())], path: "M:/a/01.flac".into() }));
+        assert!(q.contains(&Entry::Item { label: SHOW.into(), act: Act::ShowInExplorer("M:/a/01.flac".into()) }));
+        assert_eq!(q.last(), Some(&Entry::Item { label: "View metadata".into(), act: Act::QueueMetadata(2) }));
     }
 
     #[test]

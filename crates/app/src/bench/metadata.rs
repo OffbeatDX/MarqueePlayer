@@ -497,6 +497,8 @@ pub fn run() {
         app.global::<Nav>().set_queue_open(true);
         crate::menus::request(st, "queue", "", 0, 0, 1500.0, 300.0);
         let labels = menu_labels(app);
+        let show = crate::platform::system::words().show_in;
+        check(r, "the queue's menu has Show in Explorer", labels.iter().any(|l| l == show), format!("{labels:?}"));
         check(r, "the queue's menu has View metadata", labels.last().map(String::as_str) == Some("View metadata"), format!("{labels:?}"));
         open_menu_entry(st, app, "View metadata");
     });
