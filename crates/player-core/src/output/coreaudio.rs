@@ -620,6 +620,10 @@ impl Device for CoreAudioDevice {
         Duration::from_secs_f64(s.ring.delay.load(Ordering::Relaxed) as f64 / f64::from(self.rate.max(1)))
     }
 
+    fn queued_includes_latency(&self) -> bool {
+        true
+    }
+
     fn pads_underruns(&self) -> bool {
         true
     }

@@ -174,8 +174,8 @@ export component Sidebar inherits Rectangle {
             // When pinned, the content shrinks clear of the sidebar so only the pre-blurred
             // backdrop sits behind it; skipping live backdrop-blur saves a full-height pass
             // every frame with no visual change.
-            background: Theme.glass-fill;
-            backdrop-blur: Nav.sidebar-pinned ? 0px : Theme.glass-radius-blur;
+            background: Visualizer.native-underlay && !Nav.sidebar-pinned ? Theme.surface.with-alpha(0.95) : Theme.glass-fill;
+            backdrop-blur: Nav.sidebar-pinned || Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: Nav.sidebar-pinned ? 0px : 28px;
@@ -358,19 +358,13 @@ export component PlayerBar inherits Rectangle {
     height: Theme.bar-height;
     // The seek or volume slider is being dragged (or has not caught up with its release).
     out property <bool> dragging: seek.active || volume.active;
-    // Avoid live Skia backdrop-blur on the full-width player bar (-18% CPU, -13% GPU,
-    // -18 MB RAM while scrolling). Behind Now Playing with a reflecting visualizer, keep the
-    // translucent glass tint so the reflection shines through; everywhere else use the
-    // pre-blurred album backdrop so scrolled content stays cleanly separated.
-    private property <bool> show-reflection: Theme.glass
-        && Nav.page == Page.now-playing
-        && Player.visualizer
-        && Visualizer.placement == 0
-        && !Visualizer.ring
-        && Visualizer.refl-share > 0;
-    background: root.show-reflection ? Theme.glass-tint : Theme.bg;
-    backdrop-blur: 0px;
-    if !root.show-reflection: Rectangle {
+    // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
+    // no Skia), it falls back to the pre-blurred album art. While the macOS Metal visualizer
+    // underlay is active, keep the translucent tint over the live visualizer without a live
+    // Skia blur pass.
+    background: Theme.glass ? Theme.glass-tint : Theme.bg;
+    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
+    if !Theme.glass: Rectangle {
         clip: true;
         Image {
             width: 100%;
@@ -652,9 +646,11 @@ export component QueueSidebar inherits Rectangle {
         height: root.height;
         AutoscrollBlock { }
         Rectangle {
-            background: Theme.glass-fill;
+            background: Visualizer.native-underlay && !Nav.queue-pinned ? Theme.surface.with-alpha(0.95) : Theme.glass-fill;
             // When pinned, content clears the queue panel so only the pre-blurred backdrop is behind it.
-            backdrop-blur: Nav.queue-pinned ? 0px : Theme.glass-radius-blur;
+            // While the Metal visualizer underlay is active, Slint's foreground has transparent pixels over
+            // the stage so skip live backdrop-blur and use an almost-opaque tint instead.
+            backdrop-blur: Nav.queue-pinned || Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
             border-width: 1px;
             border-color: Theme.border;
             drop-shadow-blur: Nav.queue-pinned ? 0px : 28px;
@@ -742,8 +738,8 @@ export component NavPill inherits Rectangle {
     // A long page title or note is cut short (…) rather than stretching the pill.
     width: min(row.preferred-width, 560px);
     border-radius: 20px;
-    background: Theme.surface.with-alpha(0.94);
-    backdrop-blur: 0px;
+    background: Visualizer.native-underlay ? Theme.surface.with-alpha(0.94) : Theme.glass-fill;
+    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
     border-width: 1px;
     border-color: Theme.border;
     // Swallow clicks between the buttons.

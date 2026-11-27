@@ -12,6 +12,7 @@
 //!   curve/corona silhouettes, circular/rounded-box cover clip and drop shadow).
 
 use std::ptr::NonNull;
+use std::time::Duration;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -38,7 +39,7 @@ use objc2_quartz_core::{
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::WinitWindowAccessor;
-use slint::{Brush, Color, ComponentHandle, Image};
+use slint::{Brush, Color, ComponentHandle, Image, Timer};
 
 use crate::visualizer::Where;
 use crate::visualizer::draw::{
@@ -948,11 +949,27 @@ impl Presenter {
     }
 
     pub(crate) fn remove(&mut self, app: &AppWindow) {
+        let was_active = self.active;
+        if self.active {
+            self.active = false;
+            app.global::<Visualizer>().set_native_underlay(false);
+        }
         if let Some(scene) = self.scene.take() {
-            CATransaction::begin();
-            CATransaction::setDisableActions(true);
-            scene.removeFromSuperlayer();
-            CATransaction::commit();
+            if was_active {
+                // Keep the opaque backdrop/visualizer scene mounted briefly while Slint paints
+                // its opaque replacement frame, preventing a 1-frame transparent/black flash.
+                Timer::single_shot(Duration::from_millis(40), move || {
+                    CATransaction::begin();
+                    CATransaction::setDisableActions(true);
+                    scene.removeFromSuperlayer();
+                    CATransaction::commit();
+                });
+            } else {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                scene.removeFromSuperlayer();
+                CATransaction::commit();
+            }
         }
         self.foreground = None;
         self.panel_layer = None;
@@ -963,10 +980,6 @@ impl Presenter {
         self.layout_state = None;
         self.cover_image = None;
         self.cover_tex = None;
-        if self.active {
-            self.active = false;
-            app.global::<Visualizer>().set_native_underlay(false);
-        }
         #[cfg(feature = "bench")]
         {
             self.last = None;
@@ -1112,6 +1125,12 @@ impl Presenter {
         if !self.active {
             self.active = true;
             g.set_native_underlay(true);
+            let weak = app.as_weak();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = weak.upgrade() {
+                    keep_window_opaque(&app);
+                }
+            });
         }
 
         #[cfg(feature = "bench")]
@@ -1410,6 +1429,7 @@ impl Presenter {
         viz.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
         viz.setOpaque(true);
         viz.setFramebufferOnly(true);
+        viz.setMaximumDrawableCount(2);
         viz.setDisplaySyncEnabled(true);
         scene.addSublayer(&viz);
 

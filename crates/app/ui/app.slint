@@ -67,13 +67,10 @@ export component AppWindow inherits Window {
     // Whether the player bar is up (for the bench).
     out property <bool> bar-visible: Player.bar-up;
     // The macOS Metal visualizer underlay runs beneath a transparent Slint foreground while
-    // chrome is settled and no modal/menu/transition needs live compositing over the stage.
-    out property <bool> viz-underlay-ok: left-sidebar.settled && right-sidebar.settled
-        && bar-area.y == (Player.bar-up ? self.height - bar-area.height : self.height)
-        && content.x == (Nav.sidebar-pinned ? Theme.sidebar-width : 0px)
-        && content.width == self.width - content.x - (Nav.queue-pinned ? Theme.queue-width : 0px)
-        && !root.transitioning && !Dialog.open && !Picker.open && !Autoscroll.on
-        && !MenuStore.open && Player.playing && !Player.buffering;
+    // playing on Now Playing. Sidebars, menus, and the player bar draw in Slint's foreground
+    // right on top of the underlay, so they never need to detach or flash it.
+    out property <bool> viz-underlay-ok: !root.transitioning && !Dialog.open && !Picker.open
+        && !Autoscroll.on && Player.playing && !Player.buffering;
     changed viz-underlay-ok => {
         if !self.viz-underlay-ok && Visualizer.native-underlay { Actions.visualizer-wake(); }
     }

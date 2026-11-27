@@ -6,7 +6,7 @@
 // highlighted, and the list keeps the focus and passes those keys on (lists.slint).
 import { Theme } from "theme.slint";
 import { MenuItemData } from "types.slint";
-import { MenuStore, Actions } from "stores.slint";
+import { MenuStore, Actions, Visualizer } from "stores.slint";
 import { Icon, Icons } from "widgets.slint";
 
 component MenuRow inherits Rectangle {
@@ -98,8 +98,8 @@ component MenuPanel inherits Rectangle {
     accessible-role: list;
     accessible-delegate-focus: root.highlight;
     accessible-item-count: root.entries.length;
-    background: Theme.glass-fill;
-    backdrop-blur: Theme.glass-radius-blur;
+    background: Visualizer.native-underlay ? Theme.surface.with-alpha(0.95) : Theme.glass-fill;
+    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
     border-width: 1px;
     border-color: Theme.border;
     drop-shadow-blur: 24px;

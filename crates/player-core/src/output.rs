@@ -261,6 +261,11 @@ pub trait Device {
     fn latency(&mut self) -> Duration {
         Duration::ZERO
     }
+    /// True when `queued()` already includes `latency()` (CoreAudio's `in_ring() + in_pipe()`),
+    /// so the visualizer's tap should not add `latency()` a second time.
+    fn queued_includes_latency(&self) -> bool {
+        false
+    }
     /// True when the device this should be open on is no longer the one it is open on:
     /// the system default changed while following it, the chosen device went away or came
     /// back. Cheap enough to call every loop.
@@ -1508,7 +1513,8 @@ impl Output {
             self.report_output();
         }
         let queued = self.dev.queued() as u64;
-        self.shared.spectrum.publish(queued + self.latency_frames);
+        let tap_delay = if self.dev.queued_includes_latency() { queued } else { queued + self.latency_frames };
+        self.shared.spectrum.publish(tap_delay);
         self.note_health();
         let mut st = self.shared.status.lock().unwrap();
         if self.stopped() {
@@ -2078,5 +2084,62 @@ mod tests {
         assert_eq!(d.written.max(d.played), d.played, "nothing written after the audio");
         assert!(d.stopped_at.unwrap() >= d.music_end);
         assert!(took < Duration::from_millis(40 + 200), "drained in {took:?}");
+    }
+
+    /// A device whose `queued()` already includes device latency (CoreAudio) must not have
+    /// `latency_frames` added a second time when publishing the spectrum tap's heard position.
+    #[test]
+    fn spectrum_tap_does_not_double_count_latency_when_queued_includes_it() {
+        struct DelayDev {
+            queued: usize,
+            includes_latency: bool,
+        }
+        impl Device for DelayDev {
+            fn open(&mut self, _rate: u32) -> Result<(), String> {
+                Ok(())
+            }
+            fn wait(&mut self, _timeout: Duration) {}
+            fn available(&mut self) -> Result<usize, String> {
+                Ok(0)
+            }
+            fn queued(&mut self) -> usize {
+                self.queued
+            }
+            fn queued_includes_latency(&self) -> bool {
+                self.includes_latency
+            }
+            fn write(&mut self, _samples: &[f32]) -> Result<(), String> {
+                Ok(())
+            }
+            fn start(&mut self) -> Result<(), String> {
+                Ok(())
+            }
+            fn stop(&mut self) {}
+            fn flush(&mut self) {}
+            fn realtime(&self) -> bool {
+                false
+            }
+        }
+
+        // Push a stereo ramp where frame `i` has value `i as f32` so reading back reveals the
+        // exact audible end frame selected by `publish_position`.
+        let last_heard = |includes_latency: bool| -> f32 {
+            let dev = DelayDev { queued: 300, includes_latency };
+            let (mut out, _tx) = test_output_on(Box::new(dev), EqParams::default());
+            out.latency_frames = 100;
+            out.shared.spectrum.set_active(true);
+            let samples: Vec<f32> = (0..1000).flat_map(|i| [i as f32, i as f32]).collect();
+            out.shared.spectrum.push(&samples, 48_000);
+            out.publish_position();
+            let mut buf = [0.0f32; 4];
+            out.shared.spectrum.read(&mut buf, false);
+            buf[3]
+        };
+
+        // 1000 frames pushed (indices 0..=999).
+        // `queued_includes_latency == true`: delay = 300 -> audible = 700 -> last frame = 699.
+        assert_eq!(last_heard(true), 699.0);
+        // `queued_includes_latency == false`: delay = 300 + 100 -> audible = 600 -> last frame = 599.
+        assert_eq!(last_heard(false), 599.0);
     }
 }
