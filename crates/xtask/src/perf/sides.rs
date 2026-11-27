@@ -309,9 +309,11 @@ mod tests {
 
     #[test]
     fn a_build_output_naming_another_checkouts_files_is_foreign() {
-        let out = "cargo:rerun-if-changed=/Users/a/Main/crates/app/ui/app.slint\ncargo:rustc-env=X=1\n";
-        assert!(names_foreign_file(out, Path::new("/Users/a/worktree")));
-        assert!(!names_foreign_file(out, Path::new("/Users/a/Main")));
-        assert!(!names_foreign_file("cargo:rerun-if-changed=build.rs\n", Path::new("/Users/a/worktree")));
+        let (main, worktree) = if cfg!(windows) { (Path::new(r"C:\a\Main"), Path::new(r"C:\a\worktree")) } else { (Path::new("/Users/a/Main"), Path::new("/Users/a/worktree")) };
+        let file = main.join("crates").join("app").join("ui").join("app.slint");
+        let out = format!("cargo:rerun-if-changed={}\ncargo:rustc-env=X=1\n", file.display());
+        assert!(names_foreign_file(&out, worktree));
+        assert!(!names_foreign_file(&out, main));
+        assert!(!names_foreign_file("cargo:rerun-if-changed=build.rs\n", worktree));
     }
 }
