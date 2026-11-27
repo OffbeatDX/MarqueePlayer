@@ -358,12 +358,19 @@ export component PlayerBar inherits Rectangle {
     height: Theme.bar-height;
     // The seek or volume slider is being dragged (or has not caught up with its release).
     out property <bool> dragging: seek.active || volume.active;
-    // With glass, the bar blurs the page scrolling under it. Without (glass-blur = 0 or
-    // no Skia), it falls back to the pre-blurred album art. While the macOS Metal visualizer
-    // underlay is active, keep the translucent tint without live Skia backdrop-blur.
-    background: Theme.glass ? Theme.glass-tint : Theme.bg;
-    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
-    if !Theme.glass: Rectangle {
+    // Avoid live Skia backdrop-blur on the full-width player bar (-18% CPU, -13% GPU,
+    // -18 MB RAM while scrolling). Behind Now Playing with a reflecting visualizer, keep the
+    // translucent glass tint so the reflection shines through; everywhere else use the
+    // pre-blurred album backdrop so scrolled content stays cleanly separated.
+    private property <bool> show-reflection: Theme.glass
+        && Nav.page == Page.now-playing
+        && Player.visualizer
+        && Visualizer.placement == 0
+        && !Visualizer.ring
+        && Visualizer.refl-share > 0;
+    background: root.show-reflection ? Theme.glass-tint : Theme.bg;
+    backdrop-blur: 0px;
+    if !root.show-reflection: Rectangle {
         clip: true;
         Image {
             width: 100%;
@@ -735,8 +742,8 @@ export component NavPill inherits Rectangle {
     // A long page title or note is cut short (…) rather than stretching the pill.
     width: min(row.preferred-width, 560px);
     border-radius: 20px;
-    background: Theme.glass-fill;
-    backdrop-blur: Visualizer.native-underlay ? 0px : Theme.glass-radius-blur;
+    background: Theme.surface.with-alpha(0.94);
+    backdrop-blur: 0px;
     border-width: 1px;
     border-color: Theme.border;
     // Swallow clicks between the buttons.
