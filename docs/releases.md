@@ -226,6 +226,9 @@ asks "Install for me only" (the default: no administrator rights, `%LOCALAPPDATA
 Marquee Player`) or "Install for all users" (elevates, `C:\Program Files\Marquee Player`). An
 update finds the earlier installation and keeps its scope without asking
 (`UsePreviousPrivileges`). Windows 10 1809 or newer, x64 (and Windows 11 on ARM, emulated).
+On Inno Setup 6.7+, `RedirectionGuard=no` is set so the post-install launch does not inherit
+Windows' `ProcessRedirectionTrustPolicy` on per-user installs (which would block traversing
+user-created NTFS junctions such as a redirected `%APPDATA%\MarqueePlayer` or music folders).
 
 What it installs: the exe, the runtime DLLs, `README.md`, `LICENSE.txt` (shown as the licence
 page too), `THIRD-PARTY-NOTICES.txt`; a Start menu shortcut; a desktop shortcut (a task,

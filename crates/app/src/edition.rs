@@ -111,8 +111,23 @@ pub fn one_folder(dir: &Path) -> Dirs {
 /// folder the user may not write to, says so instead of quietly keeping its library
 /// somewhere else. Creates the folders.
 pub fn check_writable(paths: &Paths) -> Result<(), String> {
-    for dir in [&paths.config, &paths.data, &paths.state, &paths.cache] {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut checked: Vec<&Path> = Vec::with_capacity(4);
+    for dir in [paths.config.as_path(), paths.data.as_path(), paths.state.as_path(), paths.cache.as_path()] {
+        if checked.contains(&dir) {
+            continue;
+        }
+        checked.push(dir);
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            // `create_dir_all` maps an unreadable junction/symlink target (e.g. broken target or
+            // Windows RedirectionGuard's untrusted mount point, error 448) to `AlreadyExists`
+            // because `CreateDirectory` sees the entry while `is_dir()` fails to traverse it.
+            let err = if e.kind() == std::io::ErrorKind::AlreadyExists && std::fs::symlink_metadata(dir).is_ok() {
+                std::fs::metadata(dir).err().unwrap_or(e)
+            } else {
+                e
+            };
+            return Err(format!("{}: {err}", dir.display()));
+        }
         let probe = dir.join(format!(".write-test-{}", std::process::id()));
         std::fs::write(&probe, b"x").map_err(|e| format!("{}: {e}", dir.display()))?;
         let _ = std::fs::remove_file(&probe);
@@ -214,5 +229,41 @@ mod tests {
             assert!(!e.short().is_empty());
             assert!(e.describe().ends_with('.'), "{}", e.describe());
         }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[test]
+    fn a_junction_or_symlink_is_checked_and_broken_targets_surface_the_real_error() {
+        let dir = std::env::temp_dir().join(format!("mp-edition-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let target = dir.join("target");
+        let link = dir.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&target)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J failed: {} {}", out.status, String::from_utf8_lossy(&out.stderr));
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let paths = Paths::from_dirs(one_folder(&link));
+        assert!(check_writable(&paths).is_ok());
+        assert!(target.join("cache").is_dir());
+
+        std::fs::remove_dir_all(&target).unwrap();
+        let err = check_writable(&paths).unwrap_err();
+        let lower = err.to_lowercase();
+        assert!(!lower.contains("already exists") && !err.contains("os error 183"), "expected target error, got: {err}");
+
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_file(&link);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

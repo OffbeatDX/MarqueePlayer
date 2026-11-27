@@ -80,6 +80,16 @@ SetupMutex=MarqueePlayerSetup,Global\MarqueePlayerSetup
 ; else holding the files, and the app is not restarted behind the user's back.
 CloseApplications=yes
 RestartApplications=no
+; Inno Setup 6.7+ enables Windows' RedirectionGuard by default, which blocks traversing NTFS
+; junctions and symlinks created by non-admin users. Child processes inherit it whenever Setup
+; did not elevate (including the default PrivilegesRequired=lowest install and pre-elevated
+; runs, and in 6.7.0-6.7.3 all postinstall launches), breaking the first launch after setup
+; when %APPDATA%\MarqueePlayer (or a music folder) is reached through a user-created junction,
+; as well as per-user installs/uninstalls through junctions. In all-users mode this installer
+; writes only to admin-owned locations (never {commonappdata}).
+#if VER >= 0x06070000
+RedirectionGuard=no
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

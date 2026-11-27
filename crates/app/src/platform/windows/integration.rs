@@ -315,6 +315,7 @@ mod tests {
         for name in [REGISTERED_NAME, APPLICATION_KEY, INSTALLED_MUTEX, QUIT_EVENT, RUN_KEY, "registeredAppUser", "registeredAppMachine"] {
             assert!(iss.contains(name), "MarqueePlayer.iss does not name {name}");
         }
+        assert!(iss.contains("RedirectionGuard=no"), "MarqueePlayer.iss must disable RedirectionGuard so postinstall does not inherit ProcessRedirectionTrustPolicy");
         let line = iss.lines().find_map(|l| l.strip_prefix("#define Extensions \"")).expect("#define Extensions");
         let listed: Vec<&str> = line.trim_end_matches('"').split(';').collect();
         for ext in library::scan::AUDIO_EXTS {
