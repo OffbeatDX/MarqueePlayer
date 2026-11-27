@@ -121,7 +121,18 @@ fn halo_trace() {
         }
         analyzer.update(Some((&window, rate)), bands, dt);
         let heard = tracker.update(&window, rate, dt);
-        let pulse = Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, bright: heard.bright, beat: heard.beat, phase: heard.phase, low: heard.low };
+        let pulse = Pulse {
+            hit: heard.hit,
+            snap: heard.snap,
+            period: heard.period,
+            bright: heard.bright,
+            beat: heard.beat,
+            phase: heard.phase,
+            low: heard.low,
+            low_near: heard.low_near,
+            crest: heard.crest,
+            under_top: heard.under_top,
+        };
         let given = gate.one_hit(beat_hit(&pulse), pulse.period, dt);
         d.pulse(pulse);
         d.tick(dt);

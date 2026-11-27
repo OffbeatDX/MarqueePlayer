@@ -48,6 +48,13 @@ const FLOOR: f32 = 6e-7;
 const SNAP_FLOOR: f32 = 2e-7;
 /// How long after it started a kick is told (seconds: the window filling, a frame).
 const TOLD: f32 = 0.025;
+/// Fixed sub-frame analysis cadence (Hz) so 30 fps (battery), 60 fps and 120/144 fps
+/// evaluate `Riser` at identical intervals with no 30 fps blind spot between 35 ms Hann windows.
+const SUB_HZ: f32 = 60.0;
+const SUB_DT: f32 = 1.0 / SUB_HZ;
+/// How long a meter low-band onset is held to corroborate a `Riser` kick (seconds): bridges
+/// the 1-2 frame lag between `meter`'s 21 ms Hann window and `Riser`'s 35 ms Hann window.
+const LOW_HOLD: f32 = 0.055;
 
 /// What was heard this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -66,6 +73,12 @@ pub struct Heard {
     pub beat: bool,
     /// The low notes' onset in this frame over what is usual lately (`Metered::low`).
     pub low: f32,
+    /// Peak of `low` over the newest `LOW_HOLD` seconds, aligned with `Riser`'s 35 ms window.
+    pub low_near: f32,
+    /// How far the low-band log energy stands above its 250 ms moving average (`None` on silence).
+    pub crest: Option<f32>,
+    /// How far below the recent loudest low-band peak this kick fell (`None` when no kick).
+    pub under_top: Option<f32>,
     /// How bright the sound is now: the energy of its sample-to-sample change over its
     /// energy above 300 Hz (the low notes left out of it: a kick's body under a clap is
     /// not what tells the clap). A snare's or a clap's noise is bright for as long as it
@@ -93,6 +106,9 @@ struct Riser {
     usual: f32,
     /// The loudest the band has lately been (its log), forgotten slowly.
     top: f32,
+    /// Moving average of `level` over ~250 ms, used to distinguish sharp transients from
+    /// steady phase-beating drones.
+    avg: f32,
     /// Since the last one told, and how loud that one got (its log, followed for the 80 ms
     /// after it was told: it is told before its peak).
     since: f32,
@@ -102,18 +118,24 @@ struct Riser {
 
 impl Default for Riser {
     fn default() -> Self {
-        Riser { last: 0.0, rise: 0.0, told: false, usual: 0.0, top: f32::MIN, since: 9.0, peak: f32::MIN, started: false }
+        Riser { last: 0.0, rise: 0.0, told: false, usual: 0.0, top: f32::MIN, avg: -15.0, since: 9.0, peak: f32::MIN, started: false }
     }
 }
 
 impl Riser {
-    /// This frame's energy: the strength of a rise told now (0.3 to 1), or 0.
-    fn step(&mut self, energy: f32, floor: f32, dt: f32) -> f32 {
+    /// This frame's energy: `(strength, under_top, crest)`. `strength` is 0.3..=1.0 for a
+    /// rise told now, or 0.
+    fn step(&mut self, energy: f32, floor: f32, dt: f32) -> (f32, f32, f32) {
         self.since += dt;
         // Never under the floor: a rise out of silence is counted from there.
         let level = energy.max(floor * 0.5).ln();
         let grew = if self.started { level - self.last } else { 0.0 };
+        if !self.started {
+            self.avg = level;
+        }
         (self.started, self.last) = (true, level);
+        let crest = (level - self.avg).max(0.0);
+        self.avg += (level - self.avg) * (1.0 - (-dt / 0.25).exp());
         self.top = level.max(self.top - dt * FORGET);
         if self.since < 0.08 {
             self.peak = self.peak.max(level);
@@ -122,6 +144,7 @@ impl Riser {
         // against a bass note is not a second kick, a second kick is.
         let again = self.since >= AGAIN || level >= self.peak - 0.35;
         let mut told = 0.0;
+        let mut under_top = 0.0;
         if grew > 0.02 {
             // The rise: summed while the energy keeps growing.
             self.rise = (self.rise + grew).min(MOST);
@@ -131,6 +154,7 @@ impl Riser {
                 self.since = 0.0;
                 self.peak = level;
                 told = (0.4 + (self.rise - needs) * 0.3).clamp(0.3, 1.0);
+                under_top = (self.top - level).max(0.0);
             }
         } else {
             if self.told {
@@ -141,7 +165,7 @@ impl Riser {
         }
         // Too rare to judge by: the usual rise eases back, so a quieter passage's are heard.
         self.usual *= (-dt / 6.0).exp();
-        told
+        (told, under_top, crest)
     }
 
     /// Nothing playing: no rise carries over.
@@ -181,16 +205,20 @@ impl Count {
             // Where the kick started (it is told a frame or two after).
             let at = (m.phase - TOLD / m.period).rem_euclid(1.0);
             (self.on, self.half) = (self.on * 0.85, self.half * 0.85);
-            if (at - 0.5).abs() <= 0.15 {
-                self.half += kick;
-            } else if at <= 0.15 || at >= 0.85 {
-                self.on += kick;
+            // Weight by kick presence (floored at 0.75) so heavily compressed music whose
+            // kicks read 0.40-0.50 can still flip a half-beat-locked meter in 3-4 beats
+            // (with raw `kick = 0.44` and decay 0.85, the series maxed out at 2.93 < 3.0!).
+            let w = kick.max(0.75);
+            if (at - 0.5).abs() <= 0.16 {
+                self.half += w;
+            } else if at <= 0.16 || at >= 0.84 {
+                self.on += w;
             }
-            // The meter is believed unless the kicks plainly say otherwise: four in five of
-            // the last several halfway between its pulses (where a bass line plays on the
-            // beats and between them alike, the kicks told fall on both sides, and say
-            // nothing). As soon as they do not, it is believed again.
-            if self.half > 3.0 && self.half > 4.0 * self.on {
+            // The meter is believed unless the kicks plainly say otherwise: several in a row
+            // halfway between its pulses (where a bass line plays on the beats and between
+            // them alike, the kicks told fall on both sides, and say nothing). As soon as
+            // they do not, it is believed again.
+            if self.half > 2.2 && self.half > 3.5 * self.on {
                 self.halfway = true;
             } else if self.on > self.half {
                 self.halfway = false;
@@ -216,11 +244,33 @@ pub struct Tracker {
     meter: Meter,
     /// The meter tells a pulse: on the beat, or halfway between two (`Count`).
     count: Count,
+    /// Time accumulated toward the next fixed 60 Hz sub-step (seconds).
+    owed: f32,
+    /// Recent `(age_s, meter_low)` ring used to compute `Heard::low_near`.
+    recent_low: [(f32, f32); 6],
+    recent_i: usize,
+    /// Last sub-step's phase/period/bright for high-FPS frames where 0 sub-steps elapse.
+    last_period: f32,
+    last_phase: f32,
+    last_bright: f32,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
-        Tracker { now: 0.0, window: Vec::new(), low: Riser::default(), high: Riser::default(), meter: Meter::default(), count: Count::default() }
+        Tracker {
+            now: 0.0,
+            window: Vec::new(),
+            low: Riser::default(),
+            high: Riser::default(),
+            meter: Meter::default(),
+            count: Count::default(),
+            owed: 0.0,
+            recent_low: [(9.0, 0.0); 6],
+            recent_i: 0,
+            last_period: 0.0,
+            last_phase: 0.0,
+            last_bright: 0.0,
+        }
     }
 }
 
@@ -239,6 +289,8 @@ impl Tracker {
         self.now += f64::from(dt);
         self.low.rest(dt);
         self.high.rest(dt);
+        self.owed = 0.0;
+        self.recent_low = [(9.0, 0.0); 6];
         // A pause of some seconds: what comes after need not go on in time with what was.
         if self.low.since > 3.0 && self.meter.period() > 0.0 {
             self.meter.reset();
@@ -246,17 +298,90 @@ impl Tracker {
         Heard::default()
     }
 
+    /// Run one fixed 60 Hz analysis sub-step over the audio ending at `slice`.
+    fn step_one(&mut self, slice: &[f32], rate: u32, dt: f32) -> Heard {
+        let (low_e, high_e, bright) = self.energies(slice, rate);
+        let (kick, under_top, crest) = self.low.step(low_e, FLOOR, dt);
+        let (snap, _, _) = self.high.step(high_e, SNAP_FLOOR, dt);
+        let m = self.meter.update(slice, rate, dt);
+        for slot in &mut self.recent_low {
+            slot.0 += dt;
+        }
+        self.recent_low[self.recent_i] = (0.0, m.low);
+        self.recent_i = (self.recent_i + 1) % self.recent_low.len();
+        let low_near = self.recent_low.iter().filter(|(age, _)| *age <= LOW_HOLD).map(|(_, v)| *v).fold(0.0f32, f32::max);
+        let (phase, beat) = self.count.step(&m, kick);
+        let audible = low_e > 0.0 || high_e > 0.0 || m.low > 0.0;
+        self.last_period = m.period;
+        self.last_phase = phase;
+        self.last_bright = bright;
+        Heard {
+            hit: kick,
+            kick: kick > 0.0,
+            snap,
+            period: m.period,
+            phase,
+            beat,
+            low: m.low,
+            low_near,
+            crest: audible.then_some(crest),
+            under_top: (kick > 0.0).then_some(under_top),
+            bright,
+        }
+    }
+
     /// A frame: `samples` are the newest being heard (mono, oldest first), `dt` seconds
     /// after the last frame's.
     pub fn update(&mut self, samples: &[f32], rate: u32, dt: f32) -> Heard {
         let dt = dt.clamp(0.0, 0.25);
         self.now += f64::from(dt);
-        let (low, high, bright) = self.energies(samples, rate);
-        let kick = self.low.step(low, FLOOR, dt);
-        let snap = self.high.step(high, SNAP_FLOOR, dt);
-        let m = self.meter.update(samples, rate, dt);
-        let (phase, beat) = self.count.step(&m, kick);
-        Heard { hit: kick, kick: kick > 0.0, snap, period: m.period, phase, beat, low: m.low, bright }
+        if dt > 0.12 {
+            self.owed = 0.0;
+        }
+        self.owed += dt;
+        let steps = ((self.owed + 1e-4) * SUB_HZ).floor() as usize;
+        self.owed = (self.owed - steps as f32 * SUB_DT).max(0.0);
+        if steps == 0 {
+            let period = self.last_period;
+            let phase = if period > 0.0 { (self.last_phase + dt / period) % 1.0 } else { 0.0 };
+            self.last_phase = phase;
+            return Heard { period, phase, bright: self.last_bright, ..Heard::default() };
+        }
+        let step_frames = (rate as f32 * SUB_DT).round() as usize;
+        let mut out = Heard::default();
+        let mut has_kick = false;
+        let count = steps.min(6);
+        for k in (0..count).rev() {
+            let Some(end) = samples.len().checked_sub(k * step_frames) else { continue };
+            if end < 64 {
+                continue;
+            }
+            let h = self.step_one(&samples[..end], rate, SUB_DT);
+            if h.hit > out.hit {
+                // Keep the exact sub-step's phase, low_near, crest and under_top where the
+                // kick fired so multi-step (30 fps) frames match 60 fps phase alignment.
+                out.hit = h.hit;
+                out.kick = true;
+                out.phase = h.phase;
+                out.period = h.period;
+                out.low_near = h.low_near;
+                out.crest = h.crest;
+                out.under_top = h.under_top;
+                has_kick = true;
+            } else if !has_kick {
+                out.period = h.period;
+                out.phase = h.phase;
+                out.low_near = out.low_near.max(h.low_near);
+                if h.low >= out.low {
+                    out.crest = h.crest;
+                }
+            }
+            out.snap = out.snap.max(h.snap);
+            out.beat |= h.beat;
+            out.low = out.low.max(h.low);
+            out.bright = h.bright;
+        }
+        out
     }
 
     /// In the newest `WINDOW` of `samples`: the energy at the kick band's frequencies (a
@@ -577,5 +702,34 @@ mod tests {
             notes = notes.max(after(t + 0.125));
         }
         assert!(claps > 0.1 && edges < 0.04 && notes < 0.04, "claps {claps}, kicks' edges {edges}, notes {notes}");
+    }
+
+    #[test]
+    fn compressed_kicks_still_flip_a_half_beat_locked_meter() {
+        // Compressed/mastered tracks often report kick strength ~0.42. With decay 0.85 and raw
+        // kick weight, the geometric series maxed out at 0.42 / 0.15 = 2.80 < 3.0 and never
+        // flipped `halfway`. Verify moderate kicks halfway between pulses still flip it.
+        let m = |phase: f32, beat: bool| Metered { beat, period: 0.468, phase, low: 0.0, sure: 1.0 };
+        let mut c = Count::default();
+        for _ in 0..10usize {
+            for step in 0..20 {
+                let phase = step as f32 / 20.0;
+                let kick = (phase - 0.56).abs() < 0.01;
+                c.step(&m(phase, step == 0), if kick { 0.42 } else { 0.0 });
+            }
+        }
+        assert!(c.halfway, "moderate kicks on the half beat must flip Count::halfway");
+    }
+
+    #[test]
+    fn thirty_fps_and_sixty_fps_detect_the_same_kicks() {
+        // Punchy short kicks (like compressed EDM/DnB) used to vanish at 30 fps (battery)
+        // because Riser only evaluated one 35 ms Hann window per 33.3 ms frame.
+        let sound = track(128.0, 10.0, 0.55, &[]);
+        let k60 = listen(&sound, 60.0).iter().filter(|h| h.1.kick && h.0 >= 1.0).count();
+        let k30 = listen(&sound, 30.0).iter().filter(|h| h.1.kick && h.0 >= 1.0).count();
+        let k120 = listen(&sound, 120.0).iter().filter(|h| h.1.kick && h.0 >= 1.0).count();
+        assert!((k60 as isize - k30 as isize).abs() <= 1, "60fps={k60} vs 30fps={k30}");
+        assert!((k60 as isize - k120 as isize).abs() <= 1, "60fps={k60} vs 120fps={k120}");
     }
 }

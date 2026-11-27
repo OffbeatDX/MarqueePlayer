@@ -658,6 +658,12 @@ pub struct Pulse {
     pub beat: bool,
     pub phase: f32,
     pub low: f32,
+    /// Peak of `low` over the newest ~55 ms (bridges `meter`'s 21 ms window and `Riser`'s 35 ms).
+    pub low_near: f32,
+    /// Low-band log energy above its 250 ms moving average (`None` when caller does not supply).
+    pub crest: Option<f32>,
+    /// Distance below recent loudest low-band peak (`None` when caller does not supply).
+    pub under_top: Option<f32>,
 }
 
 /// Draws frames, keeping what must carry over between them (the ring's ripples on their
@@ -1119,35 +1125,30 @@ const RIPPLE_LULL: f32 = 2.4;
 /// those of 0.55 to 0.85 had nothing audible with them about half the time (those over it, a
 /// quarter); the ones the low notes bear out are kept so that a new track's first kicks are
 /// taken before its tempo is known, for half a hit for nothing a minute.
-const RIPPLE_SURE: (f32, f32) = (0.55, 0.85);
+const RIPPLE_SURE: (f32, f32) = (0.45, 0.85);
 /// With a beat to go by, what counts as one (what sends a ripple, punches the contour, bursts
 /// the sparks and moves the other looks: `beat_hit`) depends on where in the beat it is. A kick is
 /// told this long after it started (seconds); it is on the beat, or on the half beat,
 /// within this share of a beat. On the beat: a kick told (a weak one, under `GRID_WEAK.0`,
-/// only if the low notes bear it out, `GRID_WEAK.1`), or an onset of the low notes this many
-/// times the usual (`GRID_LOW.0`: a kick the tracker missed under a bass line; never much
-/// before the beat, `GRID_EARLY`). On the half beat: a firm kick (`GRID_HIT`) that the low
-/// notes bear out (`GRID_LOW.1`). Off both: nothing. Measured over the steady excerpts of
-/// a real library (3,964 beats): of the kicks told, 57% were on the beat, 19% on the half
-/// beat and 24% off both, as strong off the beat as on it (a bass line's notes, which
-/// fall anywhere: they are what made the ripples leave at random). The low notes had an
-/// onset of 3 times the usual on three beats in four, but just as often where nothing is
-/// heard: over a minute each of 63 tracks, half of them without a clear kick (2026-11-25),
-/// that rule gave three hits in five, half of them with no rise in the sound to hear (the
-/// low band's and the whole sound's, against the track's own moments at random: 73% of those
-/// are without one); at 8 times the usual, 27%. Weak kicks with the low notes under twice the
-/// usual were 47% for nothing. With these rules (and `RIPPLE_SURE`) hits for nothing went from
-/// 42 a minute to 17 (36 to 15 on the music with a clear kick, 47 to 18 on the rest), the hits
-/// on a reference beat from 60% to 66% (chance: 20%), and the beats with an audible rise of
-/// the low notes that had a hit from 85% to 77% (with a clear kick) and 62% to 49% (the rest).
+/// only if recent low notes bear it out, `GRID_WEAK.1`), or an onset of the low notes this many
+/// times the usual (`GRID_LOW.0`, gated by `CREST_ON` so steady drones don't trigger). On the
+/// half beat: a kick (`GRID_HIT`) corroborated by recent low notes (`GRID_LOW.1`). Off both:
+/// only an unmistakable, near-peak corroborated kick (`OFF_GRID_HIT`, `OFF_GRID_LOW`,
+/// `OFF_GRID_UNDER_TOP`, `CREST_OFF`) so syncopated tracks and tracks whose meter locked
+/// off-phase still react while quiet off-beat bass notes stay filtered out.
 const RIPPLE_LATE: f32 = 0.025;
 const GRID_NEAR: f32 = 0.14;
-const GRID_LOW: (f32, f32) = (8.0, 3.0);
+const GRID_LOW: (f32, f32) = (5.0, 2.5);
 const GRID_WEAK: (f32, f32) = (0.55, 2.0);
 /// An onset of the low notes sends its ripple no sooner than this share of a beat before
 /// the beat (the low notes waver: one that only leads up to the kick is not it).
 const GRID_EARLY: f32 = 0.05;
-const GRID_HIT: f32 = 0.75;
+const GRID_HIT: f32 = 0.50;
+const OFF_GRID_HIT: f32 = 0.48;
+const OFF_GRID_LOW: f32 = 4.8;
+const OFF_GRID_UNDER_TOP: f32 = 0.70;
+const CREST_ON: f32 = 0.25;
+const CREST_OFF: f32 = 0.55;
 
 /// What of a hit heard is the music's beat, for every look that moves with it (its strength
 /// to 1, 0 for none). Without a tempo to go by: a hit that is surely a kick. With one: it
@@ -1155,20 +1156,26 @@ const GRID_HIT: f32 = 0.75;
 /// kick told counts as a soft one, harder the stronger.
 fn beat_hit(h: &Pulse) -> f32 {
     let hit = h.hit.clamp(0.0, 1.0);
+    let low_near = h.low_near.max(h.low);
+    let crest = h.crest.unwrap_or(f32::INFINITY);
+    let under_top = h.under_top.unwrap_or(0.0);
     if h.period <= 0.0 {
-        let sure = hit >= RIPPLE_SURE.1 || (hit >= RIPPLE_SURE.0 && h.low >= GRID_LOW.1);
+        let sure = crest >= CREST_OFF && (hit >= RIPPLE_SURE.1 || (hit >= RIPPLE_SURE.0 && low_near >= 3.0));
         return if sure { hit } else { 0.0 };
     }
     let (past, to_half) = beat_place(h);
     if past.abs() <= GRID_NEAR {
         if hit > 0.0 {
-            if hit < GRID_WEAK.0 && h.low < GRID_WEAK.1 { 0.0 } else { hit }
-        } else if h.low >= GRID_LOW.0 && past >= -GRID_EARLY {
+            if (hit < GRID_WEAK.0 && low_near < GRID_WEAK.1) || crest < CREST_ON { 0.0 } else { hit }
+        } else if h.low >= GRID_LOW.0 && past >= -GRID_EARLY && crest >= CREST_ON {
             (0.3 + 0.08 * (h.low - GRID_LOW.0)).min(0.7)
         } else {
             0.0
         }
-    } else if to_half <= GRID_NEAR && hit >= GRID_HIT && h.low >= GRID_LOW.1 {
+    } else if under_top <= OFF_GRID_UNDER_TOP
+        && crest >= CREST_OFF
+        && ((to_half <= GRID_NEAR && hit >= GRID_HIT && low_near >= GRID_LOW.1) || (hit >= OFF_GRID_HIT && low_near >= OFF_GRID_LOW))
+    {
         hit
     } else {
         0.0
@@ -3197,12 +3204,16 @@ mod tests {
             (0.0, 9.0, 0.95, false),
             (0.0, 4.0, 0.06, false),
             (0.0, 2.0, 0.06, false),
-            (0.6, 9.0, 0.55, false),
+            (0.45, 9.0, 0.55, false),
+            (0.6, 9.0, 0.55, true),
             (0.8, 2.0, 0.55, false),
             (0.8, 4.0, 0.55, true),
             (0.0, 9.0, 0.55, false),
-            (1.0, 9.0, 0.3, false),
-            (1.0, 9.0, 0.8, false),
+            (0.45, 9.0, 0.3, false),
+            (1.0, 3.0, 0.3, false),
+            (1.0, 3.0, 0.8, false),
+            (1.0, 9.0, 0.3, true),
+            (1.0, 9.0, 0.8, true),
         ] {
             assert_eq!(sent(hit, low, phase), goes, "a hit of {hit}, an onset of {low}, at {phase} of the beat");
         }
@@ -3418,12 +3429,15 @@ mod tests {
                 d.draw(&l, &s, true, &sound, &sound).clone()
             };
             let none = last(Pulse { period: 0.5, phase: 0.3, ..Pulse::default() });
-            // A bass line's note: as hard as a kick, but off the beat and off the half beat.
-            // (Saturn's ring goes by where in the beat it is: what the same frame without it
-            // draws.)
+            // A bass line's note off the beat and off the half beat (moderate onset or quieter
+            // than the kicks' peak): still dropped, whereas a loud corroborated syncopated kick
+            // passes through.
             for phase in [0.3, 0.8] {
                 let none = last(Pulse { period: 0.5, phase, ..Pulse::default() });
-                assert_eq!(last(Pulse { hit: 1.0, period: 0.5, phase, low: 9.0, ..Pulse::default() }), none, "{style:?}: a hit at {phase} of the beat");
+                assert_eq!(last(Pulse { hit: 0.7, period: 0.5, phase, low: 2.0, ..Pulse::default() }), none, "{style:?}: a weak off-grid note at {phase}");
+                assert_eq!(last(Pulse { hit: 1.0, period: 0.5, phase, low: 9.0, under_top: Some(1.1), ..Pulse::default() }), none, "{style:?}: a quiet bass note at {phase}");
+                let syncopated = last(Pulse { hit: 0.9, period: 0.5, phase, low: 6.0, under_top: Some(0.1), crest: Some(1.0), ..Pulse::default() });
+                assert!(syncopated != none, "{style:?}: a strong corroborated syncopated kick at {phase}");
             }
             // A hit that is not surely a kick while no tempo is known.
             for hit in [0.44, 0.7] {
@@ -3446,7 +3460,7 @@ mod tests {
                 }
             }
             // An onset of the low notes on the beat with no kick told: a soft one.
-            let soft = last(Pulse { period: 0.5, phase: 0.06, low: 9.0, ..Pulse::default() });
+            let soft = last(Pulse { period: 0.5, phase: 0.06, low: 6.0, ..Pulse::default() });
             if style != Style::Bonfire {
                 assert!((soft.punch - 0.38).abs() < 0.01, "{style:?}: {}", soft.punch);
             }
@@ -3858,7 +3872,18 @@ mod tests {
                 assert_eq!(h.period, 0.0, "a tempo {} s into the new track", (end - change) as f32 / RATE as f32);
             }
             d.tick(dt);
-            d.pulse(Pulse { hit: h.hit, snap: h.snap, period: h.period, bright: h.bright, beat: h.beat, phase: h.phase, low: h.low });
+            d.pulse(Pulse {
+                hit: h.hit,
+                snap: h.snap,
+                period: h.period,
+                bright: h.bright,
+                beat: h.beat,
+                phase: h.phase,
+                low: h.low,
+                low_near: h.low_near,
+                crest: h.crest,
+                under_top: h.under_top,
+            });
             d.draw(&l, &s, true, &levels, &levels);
             if end >= change && new(&d) {
                 flared.push((end - change) as f32 / RATE as f32);
