@@ -105,14 +105,12 @@ fn halo_trace() {
     let mut analyzer = Analyzer::new(analysis(&look));
     let mut tracker = Tracker::default();
     let mut d = Draw::default();
-    // What the looks are given as the beat (`beat_hit`, then `one_hit`), apart from the drawing.
-    let mut gate = Draw::default();
     let n = Analyzer::fft_size(rate);
     let dt = 1.0 / 60.0;
     let mut window = vec![0.0f32; n];
     let mut lines = String::new();
-    let (most, life) = ripple_room(&g);
-    let _ = writeln!(lines, "{{\"stage\":[{},{}],\"hub\":{:.1},\"len\":{:.1},\"travel\":{:.1},\"most\":{most},\"life\":{life:.3},\"ring_reach\":{RING_REACH}}}", stage.w, stage.h, g.hub, g.len, g.travel);
+    let (most, _, _, life) = ripple_room(&g);
+    let _ = writeln!(lines, "{{\"stage\":[{},{}],\"hub\":{:.1},\"len\":{:.1},\"travel\":{:.1},\"most\":{most},\"life\":{life:.3}}}", stage.w, stage.h, g.hub, g.len, g.travel);
     for f in 1..(samples.len() as f32 / rate as f32 / dt) as usize {
         let t = f as f32 * dt;
         let end = (t * rate as f32) as usize;
@@ -121,19 +119,7 @@ fn halo_trace() {
         }
         analyzer.update(Some((&window, rate)), bands, dt);
         let heard = tracker.update(&window, rate, dt);
-        let pulse = Pulse {
-            hit: heard.hit,
-            snap: heard.snap,
-            period: heard.period,
-            bright: heard.bright,
-            beat: heard.beat,
-            phase: heard.phase,
-            low: heard.low,
-            low_near: heard.low_near,
-            crest: heard.crest,
-            under_top: heard.under_top,
-        };
-        let given = gate.one_hit(beat_hit(&pulse), pulse.period, dt);
+        let pulse = Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, phase: heard.phase };
         d.pulse(pulse);
         d.tick(dt);
         d.level(analyzer.level_slide_db());
@@ -141,13 +127,9 @@ fn halo_trace() {
         d.draw(&look, &stage, true, &lv, &pk);
         let low = (bands / 8).max(1);
         let swell = lv[..low].iter().sum::<f32>() / low as f32;
-        let _ = write!(lines, "{{\"t\":{t:.4},\"hit\":{:.3},\"kick\":{},\"snap\":{:.3},\"bpm\":{:.1},\"swell\":{swell:.3},\"punch\":{:.3},\"bright\":{:.4},\"beat\":{},\"phase\":{:.3},\"low\":{:.2},\"per\":{:.4},\"given\":{given:.3},\"rip\":[", heard.hit, heard.kick, heard.snap, heard.bpm(), d.paths.punch, heard.bright, heard.beat, heard.phase, heard.low, heard.period);
+        let _ = write!(lines, "{{\"t\":{t:.4},\"hit\":{:.3},\"kick\":{},\"snap\":{:.3},\"bpm\":{:.1},\"swell\":{swell:.3},\"punch\":{:.3},\"phase\":{:.3},\"per\":{:.4},\"rip\":[", heard.hit, heard.kick, heard.snap, heard.bpm(), d.paths.punch, heard.phase, heard.period);
         for (i, r) in d.ripples.list.iter().enumerate() {
-            let _ = write!(lines, "{}[{:.4},{:.3},{},{:.3}]", if i > 0 { "," } else { "" }, r.far, r.throw, u8::from(r.leaving), r.age);
-        }
-        lines.push_str("],\"rings\":[");
-        for (i, r) in d.ripples.rings.iter().filter(|r| r.shown).enumerate() {
-            let _ = write!(lines, "{}[{:.4},{:.3}]", if i > 0 { "," } else { "" }, r.far(), r.age);
+            let _ = write!(lines, "{}[{:.4},{:.3}]", if i > 0 { "," } else { "" }, (r.age / r.life).clamp(0.0, 1.0), r.age);
         }
         lines.push_str("]}\n");
         if windows.iter().any(|&(a, b)| t >= a && t < b) {
@@ -252,10 +234,7 @@ fn saturn_trace() {
             let beat = phase < dt / period;
             let n = (t / period).floor() as usize;
             let quiet = name == "quiet" && (4.0..8.0).contains(&t);
-            // The slow one's beats: weak kicks (0.35 to 0.5), the low notes bearing them out
-            // (twice the usual or more, what a weak kick needs to count, `GRID_WEAK`).
             let strength = if quiet { 0.0 } else if name == "slow" { 0.35 + 0.15 * ((n * 7 % 5) as f32) / 4.0 } else { [1.0, 0.75, 0.9, 0.75][n % 4] };
-            let low = if beat && strength > 0.0 { if name == "slow" { 2.5 } else { 4.0 } } else { 0.0 };
             if beat {
                 kick = kick.max(strength);
             }
@@ -271,7 +250,7 @@ fn saturn_trace() {
                 .collect();
             d.tick(dt);
             d.level(if quiet { -12.0 } else { 0.0 });
-            d.pulse(Pulse { hit: if beat { strength } else { 0.0 }, period, phase, beat, low, ..Pulse::default() });
+            d.pulse(Pulse { hit: if beat { strength } else { 0.0 }, period, phase, ..Pulse::default() });
             d.draw(&look, &stage, true, &levels, &levels);
             let st = &d.saturn;
             let p = &d.paths;

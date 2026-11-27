@@ -25,7 +25,6 @@
 //! detection.
 
 pub(crate) mod beat;
-mod meter;
 pub(crate) mod draw;
 pub(crate) mod look;
 #[cfg(target_os = "macos")]
@@ -1087,18 +1086,7 @@ fn frame(st: &Rc<State>) {
             // The beat, for the looks that move with it: listened for in the same samples.
             if l.hears_beat() {
                 let heard = z.beat.update(&z.samples, rate, dt);
-                z.draw.pulse(draw::Pulse {
-                    hit: heard.hit,
-                    snap: heard.snap,
-                    period: heard.period,
-                    bright: heard.bright,
-                    beat: heard.beat,
-                    phase: heard.phase,
-                    low: heard.low,
-                    low_near: heard.low_near,
-                    crest: heard.crest,
-                    under_top: heard.under_top,
-                });
+                z.draw.pulse(draw::Pulse { hit: heard.hit, snap: heard.snap, period: heard.period, phase: heard.phase });
                 #[cfg(feature = "bench")]
                 HEARD.with(|h| {
                     let (bpm, hits) = h.get();
